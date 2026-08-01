@@ -1,0 +1,8 @@
+{
+  "id": "pi",
+  "name": "Pi",
+  "version": "0.0.1",
+  "dependsOn": {
+    "ghcr.io/devcontainers/features/node:2": {}
+  }
+}

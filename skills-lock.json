@@ -1,4 +1,35 @@
 {
   "version": 1,
-  "skills": {}
+  "skills": {
+    "code-review": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/code-review/SKILL.md",
+      "computedHash": "56a409d679605958439d1e9ca6c11c29835a4be95584825967ea4a491803ebd2"
+    },
+    "grill-me": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/productivity/grill-me/SKILL.md",
+      "computedHash": "f361db4e15e6bfd562a9282b1dccda513910a50061f9e838ce017be9c69dde3f"
+    },
+    "grilling": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/productivity/grilling/SKILL.md",
+      "computedHash": "4ebdd12fe61ff3abf20cff6683740e2b9b3739454be0a3f4a928a1c4d07d6b34"
+    },
+    "improve-codebase-architecture": {
+      "source": "mattpocock/skills",
+      "sourceType": "github",
+      "skillPath": "skills/engineering/improve-codebase-architecture/SKILL.md",
+      "computedHash": "66e8a50c83c3c724fcfe0769701b665c56cec220cc4f49cc1aee8bdfc07de94a"
+    },
+    "rust-best-practices": {
+      "source": "apollographql/skills",
+      "sourceType": "github",
+      "skillPath": "skills/rust-best-practices/SKILL.md",
+      "computedHash": "0ac6606adb27e64a31bdc8c1ed34e446ae0c14bff1c7648867c46e106adc048f"
+    }
+  }
 }

@@ -3,7 +3,7 @@
   "build": { "dockerfile": "./Dockerfile" },
   "name": "cdenv",
   "features": {
-    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false },
+    "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false }
   },
   "postCreateCommand": "./.devcontainer/post-create.sh",
   "postStartCommand": "./.devcontainer/post-start.sh"

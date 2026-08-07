@@ -4,9 +4,11 @@
 **Website:** `cdenv.sh`
 **Implementation:** Rust 2024 edition
 **Hosts:** macOS and Linux on x86_64 and arm64
-**Containers:** Local Docker, managed through the official Dev Container CLI
+**Containers:** Local Docker, managed by cdenv’s Dev Container implementation
 **Workspace format:** Development Containers (`devcontainer.json`)
-**Docker API:** Bollard
+**Dev Container compatibility:** Versioned cdenv V1 profile pinned to an upstream specification revision
+**Docker integration:** Docker CLI for specification-facing operations; Bollard for cdenv-owned operations
+**Compose integration:** Docker Compose V2
 **Editor integration:** Standard OpenSSH; no editor-specific implementation
 
 ---
@@ -33,7 +35,7 @@ Each workspace owns:
 
 - a Git checkout under `~/.cdenv/workspaces/<name>/checkout/<name>/`;
 - metadata and bounded logs under `~/.cdenv/workspaces/<name>/`;
-- a Dev Container CLI-created primary development container;
+- a cdenv-created Dev Container environment and its primary development container;
 - an injected static Rust SSH agent;
 - a stable SSH hostname, `<name>.cdenv`;
 - a stable SSH host key.
@@ -44,7 +46,7 @@ The container does not run OpenSSH `sshd` and does not publish port 22. OpenSSH 
 cdenv-agent ssh-server --stdio
 ```
 
-SSH protocol bytes flow through stdin/stdout. Each SSH connection has one host proxy process and one container agent process. There is no persistent cdenv daemon.
+SSH protocol bytes flow through stdin/stdout. Each SSH connection has one host proxy process and one container agent process. There is no installation-wide daemon or permanent container SSH daemon. A workspace may have a scoped host forwarding supervisor while configuration-declared ports are active, and a temporary container lifecycle runner while background lifecycle work remains.
 
 ---
 
@@ -54,18 +56,22 @@ SSH protocol bytes flow through stdin/stdout. Each SSH connection has one host p
 
 1. Provide a simple repository-first CLI for local Docker development containers.
 2. Keep cdenv-managed host files under one configurable root, defaulting to `~/.cdenv`.
-3. Delegate Development Container behavior to the official Dev Container CLI.
-4. Use Bollard for cdenv-owned Docker inspection, upload, status, stop, and exec operations.
-5. Expose workspaces through standard OpenSSH behavior without `sshd` or published SSH ports.
-6. Preserve the host checkout across stop, start, and rebuild.
-7. Support concurrent SSH clients, multiplexed channels, PTYs, commands, signals, and local TCP forwarding.
-8. Install one host binary containing Linux x86_64 and arm64 static agent artifacts.
-9. Produce actionable diagnostics without ever corrupting the SSH byte stream.
-10. Keep modules and implementation chunks small enough to test independently without pre-inventing abstractions.
+3. Implement the documented `cdenv-devcontainer-v1` compatibility profile without a Node.js or `@devcontainers/cli` runtime dependency.
+4. Use the Docker CLI for specification-facing pull/build/create operations and Compose V2 for orchestration.
+5. Use Bollard for cdenv-owned Docker discovery, verification, upload, status, stop/start, and exec operations.
+6. Expose workspaces through standard OpenSSH behavior without `sshd` or published SSH ports.
+7. Preserve the host checkout across stop, start, and rebuild.
+8. Support configuration-declared published and forwarded ports plus ad-hoc forwarding.
+9. Support concurrent SSH clients, multiplexed channels, PTYs, commands, signals, and local TCP forwarding.
+10. Install one host binary containing Linux x86_64 and arm64 static agent artifacts.
+11. Produce actionable diagnostics without ever corrupting the SSH byte stream.
+12. Keep modules and implementation chunks small enough to test independently without pre-inventing abstractions.
 
-### 2.2 Ad-hoc port forwarding
+### 2.2 Declared and ad-hoc port forwarding
 
-A user can expose a container service without changing `devcontainer.json`, rebuilding, or publishing a Docker port:
+`appPort`, `forwardPorts`, and applicable `portsAttributes` are part of the supported Dev Container profile. Published `appPort` mappings are fixed when the container is created. Declared `forwardPorts` mappings are maintained by a scoped host forwarding supervisor from successful `up` until explicit `down`.
+
+A user can additionally expose a container service without changing `devcontainer.json` or rebuilding:
 
 ```bash
 cdenv forward project 8080:3000
@@ -77,7 +83,7 @@ The command is foreground and session-scoped. It delegates to system OpenSSH loc
 
 ### 2.3 Compatibility promise
 
-V1 promises the SSH behavior verified by the in-repository OpenSSH compatibility suite. Named editors are not release gates. Documentation may record editor versions observed to work, but cdenv contains no editor-specific behavior.
+V1 promises the Dev Container behavior explicitly listed by `cdenv-devcontainer-v1` and verified by the in-repository profile suite, plus the SSH behavior verified by the OpenSSH compatibility suite. It does not promise every upstream property or undocumented reference-CLI extension. Named editors are not release gates. Documentation may record editor versions observed to work, but cdenv contains no editor-specific behavior.
 
 ---
 
@@ -86,19 +92,21 @@ V1 promises the SSH behavior verified by the in-repository OpenSSH compatibility
 - remote Docker daemons, repository synchronization, or remote workspace placement;
 - Kubernetes, cloud providers, Windows hosts, or Windows containers;
 - automatic editor launching;
-- reimplementation of the Dev Container specification;
-- a persistent host or container cdenv daemon;
+- full compatibility with every current or future Dev Container property or undocumented `@devcontainers/cli` behavior;
+- Dev Container template, prebuild, publish, or configuration-generation commands;
+- legacy Docker Compose V1 or reimplementation of the Compose specification;
+- an installation-wide always-on daemon or permanent container SSH daemon;
 - automatic self-update;
-- background or persistent port-forward management;
+- background management of ad-hoc user-requested forwards beyond configuration-declared `forwardPorts`;
 - SFTP, SSH agent forwarding, reverse forwarding, or Unix-socket forwarding;
 - destructive workspace/repository deletion commands;
 - Git pull, branch, reset, clean, stash, or credential management;
 - snapshots or background synchronization;
-- managing Docker Compose sibling services directly;
+- automatic process-based port discovery or an embedded browser/preview UI;
 - guaranteed editor-server support in every image, especially minimal/musl images;
 - shell completions unless added after core V1 work is complete.
 
-Remote Docker is not being pre-designed. Local transport assumptions must remain inside the local Docker adapter, but remote support is not expected to be “just another adapter”: repository placement and Dev Container execution would also need design.
+Remote Docker is not being pre-designed. Local transport assumptions must remain inside the Docker CLI/Compose/Bollard adapters, but remote support is not expected to be “just another adapter”: repository placement and Dev Container execution would also need design.
 
 ---
 
@@ -107,14 +115,14 @@ Remote Docker is not being pre-designed. Local transport assumptions must remain
 The host must provide:
 
 - a reachable local Docker Engine or Docker Desktop daemon;
-- the Docker CLI required transitively by the official Dev Container CLI;
-- the official `devcontainer` CLI;
+- a compatible Docker CLI;
+- the Docker Compose V2 plugin for Compose configurations;
 - Git;
 - an OpenSSH-compatible `ssh` client.
 
-`cdenv` never directly invokes `docker` for its own Docker operations. The Dev Container CLI is permitted to invoke Docker internally.
+`cdenv` invokes the Docker CLI for specification-facing image pull, build, and container creation operations. It invokes Compose V2 for Compose orchestration. Bollard remains the adapter for cdenv-owned discovery, verification, upload, status, stop/start, and Exec operations. All adapters target the same resolved daemon.
 
-Commands must perform only the dependency checks they need. For example, `list` remains useful when Docker is unavailable, while `create` performs a complete preflight before starting expensive work.
+Commands must perform only the dependency checks they need. For example, `list` remains useful when Docker is unavailable. `create` performs generic Git/Docker/agent preflight before clone and configuration-specific Docker/Compose/profile preflight immediately after discovery, before image work.
 
 ### 4.1 Docker endpoint consistency
 
@@ -124,19 +132,19 @@ Resolve one local Unix-domain Docker socket at startup:
 2. support known Docker Desktop, rootless, and `/var/run/docker.sock` local paths;
 3. reject TCP, SSH, and remote context endpoints in V1;
 4. construct Bollard from the resolved socket;
-5. pass the same socket to Dev Container CLI subprocesses as `DOCKER_HOST=unix://...`.
+5. pass the same socket to Docker and Compose subprocesses as `DOCKER_HOST=unix://...`.
 
-This prevents the Dev Container CLI and Bollard from accidentally targeting different daemons.
+This prevents Docker CLI, Compose, and Bollard from accidentally targeting different daemons.
 
-### 4.2 External version support
+### 4.2 External and profile version support
 
-The feasibility spike determines the minimum supported Dev Container CLI version from verified flags and output schemas. V1 must:
+The feasibility spike determines minimum supported Docker Engine, Docker CLI, and Compose V2 versions from verified behavior. V1 must:
 
-- reject older versions with an actionable message;
-- accept newer versions unless a real compatibility check fails;
+- reject older external versions with an actionable message;
+- accept newer versions unless a real capability check fails;
 - record detected versions in operation logs and `doctor` output.
 
-Required CI uses the declared minimum and the repository’s pinned/tested version. Testing `latest` on a schedule is a future improvement, not a V1 requirement.
+Pin the exact upstream Dev Container specification commit selected during Chunk 0 and expose it as `cdenv-devcontainer-v1`. Do not download schemas or silently track upstream at runtime. Additive support may remain within V1; observable semantic changes require a new profile version. Required CI uses the declared minimum and repository-pinned Docker/Compose versions. A scheduled upstream/latest compatibility job is not a V1 requirement.
 
 ---
 
@@ -156,34 +164,42 @@ OpenSSH
 
 ### 5.2 Spike fixtures
 
-Prove both:
+Prove at least:
 
-1. a single-container Dev Container fixture;
-2. a two-service Compose fixture where only the primary development service is accessed.
+1. an image-based configuration;
+2. a Dockerfile configuration with a public OCI Feature and lifecycle commands;
+3. a two-service Compose V2 configuration with a primary service, dependency, and declared forwarding;
+4. image metadata merge and local/HTTPS Feature fixtures.
 
-For Compose, prove that two cdenv workspace identities result in isolated Compose projects.
+For Compose, prove that two cdenv workspace identities result in isolated projects and that complete managed service sets stop without deleting named volumes.
 
 ### 5.3 Spike success criteria
 
-- `--id-label` applies stable custom labels to image- and Compose-backed primary containers;
-- Dev Container JSON output reliably provides the primary container ID, remote user, and remote workspace folder;
+- the pinned Dev Container schema and merge rules produce deterministic effective plans;
+- Docker CLI-created image- and Compose-backed primary containers receive stable cdenv labels;
+- Dockerfile context, BuildKit, `build.options`, and reserved-option validation are feasible;
+- public OCI anonymous bearer negotiation, digest verification, and lockfile generation work without Node.js;
+- generated Feature/UID Dockerfiles work on supported architectures and Debian/Alpine fixtures;
+- Compose V2 override generation, managed service discovery, and project isolation are deterministic;
+- lifecycle checkpointing, `waitFor`, cancellation, and detached background execution are recoverable;
+- a declared forward remains available after `up` exits and is removed by `down`;
 - Bollard Exec supports binary-clean, bidirectional, cancellation-aware stdio;
 - Docker stdout/stderr framing never reaches SSH stdout;
 - Russh can serve a connection over a generic stdio stream;
 - system OpenSSH completes authentication and command execution;
 - an OpenSSH `ControlMaster` can multiplex concurrent sessions;
-- a PTY shell, resize, and Ctrl+C work sufficiently to validate the approach;
-- `direct-tcpip` supports local forwarding;
-- disconnect cleanup is feasible without leaving a cdenv agent daemon.
+- a PTY shell, resize, Ctrl+C, and `direct-tcpip` work sufficiently to validate the approach;
+- disconnect cleanup is feasible without leaving a permanent container SSH daemon.
 
 ### 5.4 Spike outputs
 
 Spike code is disposable. Retain:
 
-- an ADR recording exact Bollard/Russh/Dev Container versions and APIs;
-- verified command lines and JSON fixtures;
-- Compose-label and isolation findings;
-- packet-flow, cancellation, and multiplexing findings;
+- an ADR recording the pinned specification commit and exact Docker/Compose, Bollard, and Russh versions/APIs;
+- the V1 property support matrix and deliberate interpretations;
+- verified command lines, effective-plan snapshots, and JSON fixtures;
+- Feature, Compose-label, lifecycle, drift, and isolation findings;
+- packet-flow, cancellation, forwarding-supervisor, and multiplexing findings;
 - reusable fixture definitions;
 - black-box tests that can be migrated without carrying spike abstractions forward.
 
@@ -204,6 +220,7 @@ cdenv/
 ├── LICENSE
 ├── crates/
 │   ├── cdenv-core/
+│   ├── cdenv-devcontainer/
 │   ├── cdenv-cli/
 │   └── cdenv-agent/
 ├── xtask/
@@ -231,14 +248,28 @@ Platform-neutral domain types and serialization:
 
 It must not depend on Bollard, Russh, Tokio CLI presentation, or host filesystem orchestration.
 
+#### `cdenv-devcontainer`
+
+Pure, independently testable Dev Container profile logic:
+
+- pinned raw and effective configuration models;
+- discovery, JSONC parsing, validation, and variable substitution;
+- image/Feature metadata merge rules;
+- mount, port, Feature, lockfile, and lifecycle models;
+- deterministic Feature dependency ordering;
+- immutable build, create, runtime, and lifecycle plans;
+- profile identifiers, capability reporting, and typed errors.
+
+It must not invoke Docker, Compose, HTTP, credential helpers, or host subprocesses. Keep I/O adapters in `cdenv-cli`; introduce narrow native-async traits only at proven test boundaries.
+
 #### `cdenv-cli`
 
 Host application library and `cdenv` binary:
 
 - CLI parsing and exit rendering;
 - local state, locking, Git, and paths;
-- Dev Container and Docker adapters;
-- lifecycle orchestration;
+- Docker CLI, Compose V2, Bollard, Feature-source, and forwarding-supervisor adapters;
+- lifecycle and Dev Container plan orchestration;
 - agent installation;
 - SSH identity/configuration;
 - proxy transport and system-SSH wrappers;
@@ -250,7 +281,8 @@ Host application library and `cdenv` binary:
 
 Agent library and Linux-targeted binary:
 
-- `version`, `identity`, `provision`, environment capture, and `ssh-server` commands;
+- `version`, `identity`, `provision`, environment probe/capture, lifecycle runner, forwarding bridge, and `ssh-server` commands;
+- restricted container-side lifecycle checkpoint/log management;
 - Russh server behavior;
 - process, PTY, signal, and forwarding support;
 - strict stdout discipline.
@@ -329,6 +361,8 @@ Unsafe code is allowed only when required for Linux PTY/session setup:
 - use compatible requirements for stable dependencies;
 - enable only required features; do not use Tokio’s `full` feature by default;
 - use standard-library file locking rather than `fs2`;
+- use an audited JSONC parser rather than ad-hoc comment stripping;
+- use a maintained HTTP/TLS client for public Feature downloads with default certificate verification;
 - use `thiserror` for library/module errors;
 - reserve `anyhow` for binary boundaries and test helpers;
 - run `cargo-deny` for advisories, licenses, sources, and explicit bans.
@@ -354,12 +388,14 @@ Required cdenv, executable, checkout, selected config, and local-source paths mu
 ```text
 ~/.cdenv/
 ├── installation.json
+├── fingerprint.key
 ├── workspaces/
 │   └── project/
 │       ├── checkout/
-│       │   └── project/       # Git checkout / --workspace-folder
+│       │   └── project/       # Git checkout / local workspace folder
 │       ├── state.json
 │       ├── .lock
+│       ├── runtime/            # private supervisor control socket/state
 │       └── logs/
 ├── ssh/
 │   ├── config
@@ -368,11 +404,13 @@ Required cdenv, executable, checkout, selected config, and local-source paths mu
 │   ├── id_ed25519.pub
 │   └── host_keys/
 ├── cache/devcontainer/
+│   ├── blobs/                  # content-addressed Feature artifacts
+│   └── generated/              # bounded generated build material
 ├── logs/
 └── tmp/
 ```
 
-The checkout basename intentionally equals the workspace name. This soft-guides the Dev Container CLI toward `/workspaces/<name>`, but the CLI-returned `remoteWorkspaceFolder` is always authoritative.
+The checkout basename intentionally equals the workspace name. The effective Dev Container plan computes the authoritative container workspace folder from the pinned profile’s defaulting, metadata, substitution, and scenario rules.
 
 Do not create `config.toml` until a real global setting exists.
 
@@ -384,17 +422,18 @@ Do not create `config.toml` until a real global setting exists.
 - stable random installation ID;
 - SSH Include consent: `unknown`, `accepted`, or `declined`.
 
-The installation ID namespaces Docker resources shared by multiple users or roots.
+The installation ID namespaces Docker resources shared by multiple users or roots. `fingerprint.key` is a separate random `0600` secret used only to compute keyed build/create/runtime plan digests. Never persist substituted secret values or unkeyed digests of effective plans. If the key is lost or replaced, mark fingerprints unknown and recalculate them only during a successful mutating flow.
 
 ### 7.4 Permissions and symlinks
 
 For exclusively cdenv-managed paths:
 
 ```text
-root and SSH directories      0700
-private keys                  0600
-state and logs                0600
-public keys                   0644
+root, SSH, runtime directories  0700
+private keys                    0600
+state, fingerprint key, logs    0600
+private runtime files           0600
+public keys                     0644
 ```
 
 Automatically tighten these managed permissions. Refuse symlinks and ownership mismatches rather than following or rewriting them. Do not change permissions inside the Git checkout. For a symlinked user-owned `~/.ssh/config`, refuse automatic editing and show manual instructions.
@@ -454,7 +493,13 @@ Suggested shape:
   "installationId": "...",
   "name": "project",
   "repositorySource": "https://github.com/example/project.git",
+  "devcontainerProfile": "cdenv-devcontainer-v1",
   "desiredDevcontainerConfig": ".devcontainer/devcontainer.json",
+  "desiredFingerprints": {
+    "build": "keyed:...",
+    "create": "keyed:...",
+    "runtime": "keyed:..."
+  },
   "createdAt": "...",
   "lastUpAt": "...",
   "operation": {
@@ -463,30 +508,54 @@ Suggested shape:
     "startedAt": null
   },
   "lastError": null,
-  "provisioned": {
+  "active": {
+    "generation": 3,
+    "scenario": "compose",
     "containerId": "...",
-    "remoteUser": "vscode",
-    "remoteWorkspaceFolder": "/workspaces/project",
-    "containerArchitecture": "aarch64",
-    "agentPath": "/usr/local/libexec/cdenv/cdenv-agent",
-    "agentBuildId": "...",
-    "protocolVersion": 1,
-    "environmentPath": "..."
+    "imageId": "...",
+    "composeProject": "...",
+    "managedServices": ["app", "db"],
+    "buildFingerprint": "keyed:...",
+    "createFingerprint": "keyed:...",
+    "runtimeFingerprint": "keyed:...",
+    "featureDigests": {},
+    "lifecycle": {
+      "completedThrough": "updateContentCommand",
+      "running": "postCreateCommand",
+      "indeterminate": false
+    },
+    "forwarding": {
+      "supervisorBuildId": "...",
+      "requested": [],
+      "assigned": []
+    },
+    "provisioned": {
+      "remoteUser": "vscode",
+      "remoteWorkspaceFolder": "/workspaces/project",
+      "containerArchitecture": "aarch64",
+      "agentPath": "/usr/local/libexec/cdenv/cdenv-agent",
+      "agentBuildId": "...",
+      "protocolVersion": 1,
+      "environmentPath": "..."
+    }
   }
 }
 ```
 
-The exact serde representation may change during Chunk 1, but it must preserve these distinctions.
+The exact serde representation may change during Chunks 1–2, but it must preserve these distinctions.
 
 ### 9.2 Status dimensions
 
 Model independently:
 
-- **container:** running, stopped, missing, ambiguous, Docker unavailable;
-- **operation:** idle, creating, starting, rebuilding, stopping;
+- **environment:** running, stopped, partially running, missing, ambiguous, Docker unavailable;
+- **operation:** idle, creating, starting, rebuilding, stopping, locking;
+- **configuration:** valid/current, runtime drift applied, build/create drift, invalid, profile unsupported;
+- **lifecycle:** complete, running in background, failed, indeterminate;
+- **forwarding:** active, degraded, missing supervisor, target unavailable, not configured;
 - **local health:** valid, interrupted, last operation failed, corrupt, provision drift.
 
-Human output derives a concise display; JSON retains all dimensions. A running container and failed rebuild can both be true.
+Human output derives a concise display; JSON retains all dimensions and requested-versus-assigned forwarding endpoints. A running environment, build drift, background lifecycle stage, and forwarding failure can all be true.
 
 ### 9.3 Schema compatibility
 
@@ -511,14 +580,14 @@ For managed state/config updates:
 Use `std::fs::File` shared/exclusive locking behind a small lock module.
 
 - reserve workspace names atomically under a brief global namespace lock;
-- use `workspaces/<name>/.lock` for create/up/down/rebuild;
+- use `workspaces/<name>/.lock` for create/up/down/rebuild/lock;
 - mutating commands hold the exclusive lock for the full operation;
 - read-only commands do not rewrite stale state;
 - proxy takes a shared lock only through resolve/inspect/Exec attach, then releases it;
 - proxy fails quickly when a lifecycle operation holds the exclusive lock;
 - existing SSH sessions never hold lifecycle locks.
 
-A persisted operation is active only while the lock is unavailable. If state records an operation but the lock is available, report an interrupted previous operation. The next mutating command may recover it.
+A persisted foreground operation is active only while the lock is unavailable. A background lifecycle runner records separate container-side checkpoints and does not retain the host workspace lock after `up` readiness. If state records a foreground operation but the lock is available, report an interrupted previous operation. Recover only transitions whose outcome is known; an indeterminate one-time lifecycle command requires rebuild.
 
 ---
 
@@ -539,6 +608,7 @@ rebuild
 status
 ssh
 forward
+lock
 proxy
 doctor
 ```
@@ -567,7 +637,7 @@ Providing a repository source is sufficient trust consent; do not add a reposito
 Failure transaction:
 
 - clone failure: remove the incomplete workspace, retain a sanitized operation log under the global logs directory;
-- failure after clone: retain checkout and state, record the error, and allow plain `up` to retry;
+- failure after clone: retain checkout and state, record the error, and allow plain `up` to retry only when the recorded stage is safe; failed/indeterminate one-time lifecycle work requires rebuild;
 - cancellation during clone acts like clone failure;
 - cancellation after clone retains the workspace.
 
@@ -584,7 +654,13 @@ cdenv rebuild project --config .devcontainer/alternate/devcontainer.json
 
 An explicit selection is persisted as desired intent before lifecycle execution. The last successfully provisioned container record is updated only after complete success. A plain retry uses the desired config.
 
-Without `--config`, use the official CLI’s normal default lookup.
+Without `--config`, use pinned specification precedence:
+
+1. `.devcontainer/devcontainer.json`;
+2. `.devcontainer.json`;
+3. `.devcontainer/<folder>/devcontainer.json`.
+
+The first existing higher-precedence path wins. If only the third form exists and multiple folders qualify, fail with `--config` guidance. Do not prompt or select arbitrarily.
 
 ### 10.3 `list`
 
@@ -605,9 +681,17 @@ cdenv list [--json]
 cdenv up <name> [--config <path>]
 ```
 
-Always delegate lifecycle decisions to `devcontainer up`; never directly start a stopped container through Bollard. Then verify labels/identity, reinstall and provision the agent, recapture the effective remote environment, update state atomically, and regenerate SSH material.
+Parse and validate desired configuration, compute category fingerprints, and reconcile without implicit rebuild:
 
-`up` is idempotent but always reprovisions the expected agent and assets.
+- create a missing environment from the effective plan;
+- start an unchanged stopped image-based container through Bollard;
+- start recorded existing Compose containers without Compose reconciliation when build/create drift exists;
+- apply independently valid runtime drift, including declared forwarding, `remoteEnv`, and attach behavior;
+- warn and continue using the active generation when build/create drift is detected;
+- fail before mutation when desired configuration is invalid or unsupported;
+- verify an existing background lifecycle runner instead of starting duplicate commands.
+
+After the selected `waitFor` stage, reinstall/provision the expected agent, capture the effective environment, transactionally establish declared forwards, update state atomically, and regenerate SSH material. Later lifecycle stages may continue in the background. `up` is idempotent but always reverifies/reprovisions cdenv-owned assets. A prior failed or indeterminate one-time lifecycle stage requires rebuild.
 
 ### 10.5 `down`
 
@@ -615,7 +699,14 @@ Always delegate lifecycle decisions to `devcontainer up`; never directly start a
 cdenv down <name>
 ```
 
-Stop only the labeled primary development container through Bollard. Do not delete the checkout, container, or volumes. In Compose workspaces, sibling services may remain running; document this explicitly.
+Stop the complete cdenv-managed environment without deleting the checkout or named volumes:
+
+1. stop and remove the declared forwarding supervisor;
+2. cancel active background lifecycle work with bounded graceful/forced cleanup;
+3. for image/Dockerfile scenarios, stop the primary container through Bollard;
+4. for Compose, stop the persisted managed service set—configured `runServices` or all services by default, plus dependencies cdenv started—through Compose V2.
+
+Do not stop unrelated services manually started later in the isolated Compose project. `shutdownAction` does not disable an explicit `cdenv down`; V1 has no editor-close event that triggers automatic shutdown.
 
 ### 10.6 `rebuild`
 
@@ -623,15 +714,13 @@ Stop only the labeled primary development container through Bollard. Do not dele
 cdenv rebuild <name> [--config <path>] [--no-cache]
 ```
 
-The current Dev Container CLI has no separate rebuild command. Implement:
+Recompute the complete desired plan, require a valid/fresh Feature lockfile when one exists, and build replacement images before stopping the active environment. `--no-cache` maps to Docker/Compose no-cache build behavior; cached rebuild is the default.
 
-```text
-devcontainer up --remove-existing-container
-```
+For image/Dockerfile scenarios, rename the old container to a private temporary backup, create/start/verify the replacement, and restore the old container on failure where feasible. Remove the backup only after success. Compose rebuild uses build-first then Compose force-recreate/reconciliation; document that project-wide replacement is not atomic. Preserve named volumes, remove orphaned project containers only after desired services are healthy, and classify partial replacement as interrupted/drifted.
 
-Map `--no-cache` to `--build-no-cache`. Cached rebuild is the default.
+Before rebuilding, use `git status --porcelain` only to print whether uncommitted changes exist. Do not block or expose filenames. Require a replacement primary container ID when a prior one existed, increment the generation, and reprovision all agent/SSH/environment/forwarding assets.
 
-Before rebuilding, use `git status --porcelain` only to print whether uncommitted changes exist. Do not block or expose filenames. After lifecycle success, require a replacement container ID when a prior container existed, then reprovision all agent/SSH/environment assets.
+After successful replacement, remove operation-owned backup/orphan containers and only unreferenced images explicitly labeled as cdenv-generated for this workspace, retaining a small bounded history window. Never prune base images, repository-tagged images, named volumes, or unrelated BuildKit cache. Cleanup failure is a warning after an otherwise successful rebuild.
 
 ### 10.7 `status`
 
@@ -639,9 +728,9 @@ Before rebuilding, use `git status --porcelain` only to print whether uncommitte
 cdenv status <name> [--json]
 ```
 
-Show local source/path, selected config, current Git branch when available, all status dimensions, container ID/architecture, remote user/folder, and provisioned agent build/protocol.
+Show local source/path, selected config, pinned profile, current Git branch when available, all status dimensions, desired-versus-active build/create/runtime fingerprints, scenario and managed Compose services, lifecycle stage, requested/assigned ports, forwarding-supervisor health, container ID/architecture, remote user/folder, Feature digests, and provisioned agent build/protocol.
 
-Exit nonzero when the requested workspace is missing, corrupt, ambiguous, or cannot be queried as requested. Under `--json`, still emit a valid error envelope.
+Exit nonzero when the requested workspace is missing, corrupt, ambiguous, lifecycle-failed/indeterminate, required-forwarding degraded, or cannot be queried as requested. Build/create drift alone is a warning. Under `--json`, still emit a valid error envelope.
 
 ### 10.8 `ssh`
 
@@ -667,6 +756,8 @@ cdenv forward <name> <local-port:container-port>... [--bind <address>]
 - default bind address to `127.0.0.1`;
 - default remote target host to container `localhost`;
 - warn clearly for non-loopback binds;
+- preflight every requested listener and start none if any conflicts with declared or ad-hoc mappings;
+- fail with the existing requested/assigned declared mapping when a supervisor owns an endpoint;
 - run foreground until interrupted;
 - delegate to:
 
@@ -675,9 +766,19 @@ ssh -F <config> -N -o ExitOnForwardFailure=yes \
     -L <bind>:<local-port>:localhost:<container-port> ... <name>.cdenv
 ```
 
-Use process arguments, never a shell command. Propagate the OpenSSH exit status.
+Use process arguments, never a shell command. Propagate the OpenSSH exit status. A forwarding-only SSH transport executes `postAttachCommand` once, just like another new SSH transport.
 
-### 10.10 `proxy`
+### 10.10 `lock`
+
+```bash
+cdenv lock <name> [--config <repo-relative-devcontainer.json>]
+```
+
+Resolve public OCI, unauthenticated HTTPS, and local Feature dependencies; compute deterministic ordering; and atomically create or update the selected configuration’s adjacent `devcontainer-lock.json`. This explicit command is the sole cdenv-owned exception to post-clone checkout immutability. It never stages or commits the file.
+
+`--config` selects only the lockfile target and does not alter desired workspace intent. Without it, use desired selection or normal discovery. Canonicalize the adjacent target inside the checkout, refuse an existing symlink/non-regular file, preserve a reasonable existing mode, and atomically replace it through a same-directory temporary file. Lifecycle commands never generate or rewrite lockfiles.
+
+### 10.11 `proxy`
 
 ```bash
 cdenv --root <absolute-root> proxy <workspace-name-or-host>
@@ -696,108 +797,275 @@ Internal requirements:
 9. propagate EOF/cancellation and inspect final Exec status;
 10. emit only SSH protocol bytes on stdout.
 
-After an external container replacement or host-agent upgrade, fail with a concise instruction to run `cdenv up <name>`. Proxy never provisions or mutates lifecycle state.
+Before starting the SSH server, serialize and execute `postAttachCommand` once for this transport. Closed/background stdin rules apply, output goes only to restricted logs/stderr, and failure rejects this transport. A later transport may retry; successful execution clears attach-specific degraded status. After an external container replacement or host-agent upgrade, fail with a concise instruction to run `cdenv up <name>`. Proxy never provisions or repairs lifecycle/container state beyond the specification-required attach hook.
 
-### 10.11 `doctor`
+### 10.12 `doctor`
 
 Read-only checks:
 
 - cdenv root ownership/permissions and schema;
 - installation ID and SSH consent;
-- Git, OpenSSH, Docker CLI, and Dev Container CLI versions;
+- pinned Dev Container profile and vendored schema identity;
+- Git, OpenSSH, Docker Engine/CLI, and Compose V2 versions;
 - local Docker socket and Bollard connectivity;
 - generated SSH config syntax and Include visibility;
 - client/host key validity and permissions;
 - embedded agent artifacts/build IDs for both architectures;
-- duplicate/stale labeled containers;
-- provision drift and stale operation state.
+- duplicate/stale labeled containers and Compose projects;
+- generated image/cache retention and Feature-lock integrity;
+- lifecycle runner, forwarding supervisor, assigned listener, configuration drift, and provision drift;
+- stale operation state.
+
+`doctor`, `status`, `list`, and proxy report but never repair a missing supervisor. Only `up` repairs cdenv-managed runtime services.
 
 Exit nonzero when a required invariant fails. V1 `doctor` diagnoses but does not repair.
 
 ---
 
-## 11. Dev Container CLI Adapter
+## 11. Dev Container Compatibility Profile
 
-### 11.1 One lifecycle authority
+### 11.1 Versioned contract and lifecycle authority
 
-Use the official CLI for every `up` and rebuild decision. Encapsulate invocation and JSON parsing in one adapter. Command modules must never parse raw output.
+`cdenv-devcontainer-v1` is a documented compatibility profile pinned to the exact upstream specification commit recorded in the Chunk 0 ADR. The vendored schema, profile support matrix, merge rules, and cdenv tests—not an installed CLI or a dynamically downloaded schema—define runtime behavior.
 
-The adapter returns at least:
+cdenv is the sole Dev Container lifecycle authority. The official `@devcontainers/cli` is not a runtime, build, or release dependency. Captured fixtures and optional differential tests may identify incompatibilities, but undocumented reference-CLI behavior does not silently redefine the profile.
 
-- primary container ID;
-- remote user specification;
-- authoritative remote workspace folder;
-- Compose project information when present;
-- structured failure details.
-
-Use typed serde response structures that tolerate unknown fields but require fields cdenv needs. Bound captured JSON size and stream human logs to bounded operation files.
-
-### 11.2 Stable identity labels
-
-Generate a stable installation ID and pass both labels on every applicable Dev Container invocation:
+The profile implementation follows a deterministic pipeline:
 
 ```text
---id-label cdenv.installation=<installation-id>
---id-label cdenv.workspace=<workspace-name>
+discover configuration
+  → parse bounded JSONC
+  → validate scenario/profile
+  → perform host/workspace-stage substitutions
+  → resolve/build base image
+  → inspect and merge image metadata
+  → resolve Features and lockfile
+  → perform container/runtime-stage substitutions
+  → produce immutable build/create/runtime/lifecycle plans
+  → execute through Docker/Compose/Bollard adapters
 ```
 
-Verify both labels on the returned container before provisioning.
+Keep parsing, merging, validation, dependency ordering, and plan generation pure in `cdenv-devcontainer`. I/O adapters consume typed plans; command modules never interpret raw Docker/Compose output directly.
 
-Discovery policy:
+### 11.2 V1 support matrix
 
-- connection/status may accept exactly one running match and report stopped stale matches;
-- multiple running matches are ambiguous and fail;
-- every mutating lifecycle command fails if more than one total matching container exists, including stopped containers, because the Dev Container CLI could select an arbitrary match;
-- diagnostics list all conflicting IDs and provide explicit manual Docker cleanup instructions.
+V1 supports:
 
-### 11.3 Compose behavior
+- standard discovery and explicit config selection;
+- comments in JSONC, with trailing commas rejected by the pinned schema;
+- image, Dockerfile, and Docker Compose V2 scenarios;
+- image `devcontainer.metadata` and Feature metadata merge rules;
+- specified local/container/workspace/`${devcontainerId}` substitutions and defaults;
+- workspace mounts/folders, additional mounts, container/remote users, UID/GID update, and user environment probing;
+- `containerEnv`, `remoteEnv`, `overrideCommand`, `init`, `privileged`, capabilities, security options, `runArgs`, and supported build properties/options;
+- `appPort`, `forwardPorts`, `portsAttributes`, and `otherPortsAttributes` as qualified below;
+- public OCI, unauthenticated HTTPS, and contained local Features;
+- Feature options, recursive `dependsOn`, `installsAfter`, overrides, lifecycle contributions, and lockfiles;
+- all lifecycle command forms, ordering, `waitFor`, and attach behavior;
+- Compose `service`, `runServices`, workspace folder, and managed environment stop/resume;
+- measurable host CPU, memory, storage, and GPU requirements.
 
-V1 supports only the primary development service selected by the repository’s Dev Container configuration. Sibling services are neither inspected nor stopped directly by cdenv.
+Profile interpretations and limits:
 
-Set a stable Docker-safe `COMPOSE_PROJECT_NAME` derived from installation ID and workspace name for Dev Container CLI subprocesses. Truncate with a stable hash when necessary. This intentionally overrides repository-default Compose project naming to isolate multiple cdenv checkouts.
+- arbitrary process-based listening-port discovery is deferred;
+- `otherPortsAttributes` and regex/range attributes that require discovery are validated and reported but have no automatic V1 trigger;
+- `openBrowser`/`openBrowserOnce` print the resolved URL; `openPreview` explains that cdenv has no embedded preview; all produce structured warnings rather than launching UI;
+- `shutdownAction` is merged/displayed, but V1 has no editor-close event; explicit `down` always stops the managed environment;
+- `customizations.<tool>` and advisory `secrets` metadata are accepted but not interpreted for tools cdenv does not implement;
+- deprecated Feature distribution forms, private Feature sources, insecure HTTP registries, custom TLS bypasses, legacy Compose V1, and non-Docker orchestrators are rejected.
 
-### 11.4 Lockfile preservation
+Reject unknown top-level behavioral properties and known unsupported behavioral values with exact property paths and profile revision. Accept `$schema` and tool-namespaced customization objects. Never silently ignore configuration that could change the resulting environment.
 
-The Dev Container CLI may generate `devcontainer-lock.json`, which would modify the checkout. Preserve repository files by using:
+### 11.3 Parsing, paths, metadata, and substitutions
 
-- `--frozen-lockfile` when the applicable lockfile already exists;
-- `--no-lockfile` when no lockfile exists.
+Use an audited JSONC parser with bounded file size, depth, strings, arrays, lifecycle command groups, and diagnostics that retain source spans. Follow specification discovery precedence from Section 10.2. Explicit and discovered paths must remain symlink-contained in the canonical checkout.
 
-If a checked-in lockfile is stale, fail rather than rewriting it.
+Implement the specification’s property-specific image-metadata merge table; do not use generic recursive JSON merging. Inspect the base/final image labels at the required planning stages. When order matters, repository configuration is last. Validate merged output before executing it.
 
-### 11.5 Repository mutation boundary
+Substitute values only in properties allowed by the pinned specification and at the stage when required inputs exist. `${containerEnv:...}` uses the actual active container environment for runtime-only reconciliation. Compute `${devcontainerId}` from stable cdenv identity labels using the specification’s canonical sorted-label hash so it is unique on the daemon and stable across rebuilds.
 
-`cdenv` itself never runs Git mutation commands and never writes its own files into the checkout after clone. Repository-defined Dev Container lifecycle commands may modify the mounted checkout exactly as they would when run through the official CLI; this is outside cdenv’s preservation guarantee.
+Configuration produces separate keyed build, create, runtime, and lifecycle plans. Never persist resolved `localEnv`, build-argument, container-environment, remote-environment, or secret values.
 
-### 11.6 Effective remote environment
+### 11.4 Docker and build options
 
-A plain Docker Exec can miss `remoteEnv` and user-environment probe results. After agent installation, run the agent once through `devcontainer exec` as the selected remote user so it captures its effective environment into a restricted file inside the container.
+The Docker CLI executes specification-facing pull/build/create plans so Docker owns registry image authentication, BuildKit, Dockerfile parsing, build context semantics, and supported Docker-shaped options. Invoke arguments directly without a shell and stream bounded/redacted logs.
 
-- do not print captured values;
-- do not persist them in host state or logs;
-- store them in a binary-safe format supporting non-UTF-8 Unix environment values;
-- remove transient entries such as stale `PWD`, `OLDPWD`, `SHLVL`, `_`, and SSH session variables;
-- load the snapshot for Bollard-launched SSH sessions;
-- recapture on every `up`/rebuild.
+Parse `runArgs` and `build.options` only enough to reject options that conflict with cdenv invariants, including:
+
+- cdenv identity labels, required container names, and automatic removal;
+- workspace mount targets and cdenv-owned asset locations;
+- selected Dockerfile/context and cdenv-owned result image tags/outputs;
+- attach/detach/stdin/TTY modes owned by orchestration;
+- user overrides that would invalidate the effective container/remote user.
+
+Pass other arguments unchanged. Report the exact conflicting argument; do not silently reorder or override it. Supplying a repository remains consent to valid privileged mode, capabilities, devices, host mounts, and other Docker access requested by its configuration.
+
+Generate Feature, UID/GID, metadata, and temporary Compose build material only under cdenv cache/tmp paths, never in the checkout. Respect `.dockerignore`, path containment, symlink behavior, cancellation, and bounded build-context generation.
+
+Implement `updateRemoteUserUID` only where required by the pinned Linux-container rules. Resolve the effective named user from image/Compose metadata, derive host UID/GID without persisting identity-sensitive environment, and create a derived image layer before container creation. Prefer the architecture-matched static helper and safe filesystem APIs over assumptions about `usermod`, `groupmod`, or distro utilities; preserve root and conflicting-account invariants and fail precisely when a safe update is impossible.
+
+Evaluate `hostRequirements` before destructive mutation. Hard-fail CPU, memory, or required GPU constraints only when reliable evidence proves they are unmet; warn when local Docker/Desktop cannot measure a requirement reliably. Honor optional GPU without failure and never grant GPU access unless configuration requests it.
+
+### 11.5 Features and lockfiles
+
+Supported Feature sources are:
+
+- public OCI registries over verified HTTPS, including anonymous bearer-token challenges;
+- unauthenticated HTTPS tarballs;
+- specification-contained local Feature directories.
+
+V1 does not read Docker credentials for Features, accept credentials in URLs, or support private registries. Implement the minimum OCI Distribution pull surface in Rust: reference normalization, manifest/media-type negotiation, anonymous token exchange, blob download, size/digest verification, and content-addressed caching. Bound redirects, response sizes, decompression, file counts, and extracted sizes. Reject archive traversal, escaping symlinks, devices, and other unsafe entries.
+
+Validate Feature metadata/options, apply defaults, normalize identifiers, recursively resolve `dependsOn`, and apply `installsAfter` and `overrideFeatureInstallOrder` using the specification’s deterministic round algorithm. Detect cycles and conflicting dependency options with an actionable graph error. Install each ordered Feature as root in its own generated image layer; merge its environment, mounts, capabilities, entrypoints, lifecycle hooks, and metadata exactly once.
+
+Lockfile policy:
+
+- create/rebuild/lock resolve Features; ordinary existing-container `up` does not contact registries merely to detect drift;
+- a present lockfile is frozen during create/rebuild and must match configuration, resolved dependencies, versions, digests, and integrity;
+- stale/inconsistent locks fail create/rebuild with `cdenv lock` guidance;
+- existing-container `up` warns and continues on lock drift;
+- a missing lockfile permits resolution without writing one and warns that the build is not fully reproducible;
+- verified digest-addressed cache entries may satisfy a frozen lock offline; unlocked tags require online resolution;
+- `cdenv lock` is the only command that creates/updates the lockfile.
+
+Digest and TLS checks provide integrity, not publisher identity. V1 has no signature/Sigstore requirement; lock generation is trust on first use.
+
+### 11.6 Lifecycle execution and recovery
+
+Execute lifecycle stages in specification order, with Feature-contributed commands before repository commands:
+
+- `initializeCommand` runs on the host checkout for create/up/rebuild before container mutation and may run more than once;
+- `onCreateCommand`, `updateContentCommand`, and `postCreateCommand` run for a new container generation;
+- `postStartCommand` runs after an actual successful start, not an idempotent `up` of an already-running environment;
+- `postAttachCommand` runs once for each new SSH transport, including forwarding-only transports, but not once per multiplexed channel.
+
+String commands run through the applicable `/bin/sh`; array commands execute directly; object entries execute concurrently and all must succeed. Synchronous string/array forms may inherit interactive stdin. Parallel object forms and background stages receive closed stdin. Prefix multiplexed logs by stable command key without changing the command’s own byte stream.
+
+Honor `waitFor`. Once its selected stage succeeds, cdenv may provision its agent, capture environment, and establish forwarding while later lifecycle stages continue under `cdenv-agent lifecycle-runner`. The runner stores the generation’s immutable effective lifecycle/runtime plan, restricted before/after checkpoints, and bounded logs inside the container and exits when work completes; an intentionally long-running later command remains healthy/running. Later stages never run after failure.
+
+Successful `up` means the selected stage, cdenv provisioning, environment capture, and forwarding listener startup have completed. A later lifecycle failure:
+
+- never terminates existing SSH sessions;
+- skips subsequent stages;
+- rejects new transports for failed one-time stages;
+- appears in list/status/doctor;
+- requires rebuild in V1.
+
+A definite `postAttachCommand` failure rejects only that transport; a later transport invokes it again and can clear attach degradation. Serialize attach hooks per container. If cancellation/crash leaves a one-time command indeterminate, plain `up` refuses and rebuild is required.
+
+`down` or rebuild requests graceful lifecycle-runner cancellation, waits a bounded period, then terminates it. A later `up` verifies an existing runner/checkpoints and never duplicates background commands. The command list is immutable for a generation even if `devcontainer.json` changes; files referenced from the live checkout remain live.
+
+### 11.7 Effective remote environment
+
+A plain Docker Exec does not automatically include profile-probed or `remoteEnv` values. After container start, upload the staging agent and:
+
+1. inspect the actual container environment;
+2. resolve the effective remote user;
+3. run the configured `userEnvProbe` as that user;
+4. apply supported `${containerEnv:...}` substitutions and merge `remoteEnv`;
+5. use the result for lifecycle and cdenv-injected user processes;
+6. recapture after the readiness lifecycle stage for SSH sessions.
+
+Do not print captured values or persist them on the host. Store the snapshot inside the container in a restricted binary-safe format supporting non-UTF-8 Unix values. Remove transient `PWD`, `OLDPWD`, `SHLVL`, `_`, and SSH session entries before SSH reuse.
+
+### 11.8 Desired and active plans
+
+Persist desired selection separately from the active generation. Compare keyed category fingerprints:
+
+- **build:** base image/Dockerfile, build args/options, Features, metadata build, UID/GID update;
+- **create:** mounts, container environment/user, published ports, capabilities, security, command, and run arguments;
+- **runtime:** remote environment/probe, forwarding, port attributes, and attach behavior.
+
+`up` warns but does not rebuild for build/create drift. It applies independently valid runtime drift to the active container using its actual environment/user/folder. Changed create-time hooks do not run on the old generation. Invalid desired configuration blocks up/rebuild/lock but never blocks proxy, existing SSH, status/list/doctor, or down from persisted active data.
+
+Forwarding-plan updates are transactional: prebind new/changed listeners, retain unchanged assignments, switch only when the new plan is viable, then release obsolete listeners. On required-listener failure, retain the previous complete plan and report desired runtime drift. Rebuild consumes the complete desired plan.
+
+### 11.9 Declared ports and forwarding supervisor
+
+`appPort` uses Docker publication at container creation:
+
+- numeric values bind `127.0.0.1` on the same port;
+- string values retain their explicit Docker publication syntax;
+- non-loopback string bindings produce a security warning;
+- changes are create drift and require user-chosen rebuild to take effect.
+
+`forwardPorts` uses a detached host supervisor scoped to one workspace. It starts during `up`, owns loopback TCP listeners through explicit `down`, and forwards through cdenv agent/Bollard transport from the primary container to `localhost` or the declared Compose service host. Explicit `forwardPorts` wins over `onAutoForward: ignore` because the latter applies to deferred automatic discovery.
+
+For each requested local port:
+
+- `requireLocalPort=false` selects an available loopback port when the same port is occupied;
+- `requireLocalPort=true` leaves the environment running but makes `up` nonzero and forwarding degraded;
+- `label` and `protocol` affect human/JSON endpoint and URL rendering;
+- privileged local ports fail with guidance; `elevateIfNeeded` never causes silent elevation in V1;
+- requested and assigned endpoints are exposed separately and assignments are reused for the active generation where available.
+
+The supervisor uses a private control socket/lifetime lock under the workspace runtime directory, validates installation/workspace/generation/build identity, avoids PID-reuse signaling, uses bounded logs/backoff, and retains listeners when the active container is temporarily unavailable. It exits on authenticated `down`; `up` replaces stale/incompatible supervisors. Read-only commands and proxy diagnose but never repair it. After host reboot, the user runs `up` to restore forwarding. There is no launchd/systemd integration or global supervisor.
+
+An ad-hoc `cdenv forward` preflights all mappings and starts none on any conflict. It never silently reuses a declarative listener. No configuration-declared or ad-hoc forward publishes to non-loopback without explicit user input.
+
+### 11.10 Compose V2 behavior
+
+Use only `docker compose` V2, with a minimum version chosen in Chunk 0. Generate deterministic JSON-compatible Compose overrides under cdenv tmp/cache for labels, final Feature image, workspace settings, environment, entrypoints/commands, and other profile enrichment. Always pass explicit files, project name, and Docker endpoint without a shell.
+
+For a Feature/UID-enriched primary service, first ask Compose to pull/build the declared base service image, inspect/tag that exact result, build the generated derived image, then override the primary service to that image and start with build disabled for the final step. Verify that Compose did not substitute a different image.
+
+Derive a stable Docker-safe project name from installation ID and workspace name; truncate with a stable hash. V1 connects/provisions only the configured primary service but manages the environment service set:
+
+- explicit `runServices`, or all configured services by default;
+- dependencies Compose starts for those services;
+- services cdenv records as part of environment creation.
+
+Do not stop unrelated services manually started later. `down` stops the persisted managed set and preserves containers, project networks, and named volumes. Initial create/rebuild may use Compose reconciliation. With detected build/create drift, ordinary `up` starts recorded existing containers directly rather than allowing Compose to recreate or add services unexpectedly.
+
+Compose rebuild resolves/builds first, then force-recreates/reconciles the isolated project. It is not transactionally atomic. Remove orphaned project containers only after desired services are healthy; never remove named volumes. Record partial replacement precisely.
+
+### 11.11 Stable identity and discovery
+
+Apply stable labels directly through Docker creation plans and Compose overrides:
+
+```text
+cdenv.installation=<installation-id>
+cdenv.workspace=<workspace-name>
+cdenv.generation=<generation>
+cdenv.profile=cdenv-devcontainer-v1
+```
+
+Verify labels, primary service, project, image, and generation before provisioning. Discovery policy:
+
+- connection/status may accept exactly the recorded running generation and report stale matches;
+- unrecorded external replacement is provision drift and never silently adopted;
+- multiple current-generation matches are ambiguous and fail;
+- mutating flows clean up only operation-owned candidates/backups and otherwise fail with explicit manual Docker cleanup guidance.
+
+### 11.12 Mutation and trust boundaries
+
+Outside initial clone, cdenv never runs Git mutation commands and never writes its own material into the checkout except the exact lockfile targeted by explicit `cdenv lock`. Repository/Feature lifecycle commands and `initializeCommand` may modify the checkout as repository-defined code; this is outside cdenv’s preservation guarantee.
+
+Supplying a repository source is sufficient consent. Do not add per-property prompts for host initialization, Features, privileged containers, host mounts, devices, capabilities, or Docker options. Document that these operations can execute arbitrary code with Docker-daemon-level access.
 
 ---
 
-## 12. Docker/Bollard Adapter
+## 12. Docker CLI, Compose, and Bollard Adapters
 
-Bollard is the only direct Docker Engine integration used by cdenv.
+Keep three explicit adapter boundaries:
 
-Required capabilities:
+- **Docker CLI:** specification-facing image pull, BuildKit build, context/options, and image/container creation;
+- **Compose V2:** configuration resolution, build, create/reconcile, managed service start/stop, and primary-service lookup;
+- **Bollard:** cdenv-owned daemon ping, bulk discovery, inspect/verify, direct restart/stop of recorded image containers, archive upload, and attached Exec.
+
+Subprocess adapters use argument arrays, one resolved working directory/environment, bounded stdout/stderr capture, streamed restricted operation logs, process-group cancellation, and typed parsed output. They must pass the resolved Unix `DOCKER_HOST`, stable project/name/labels, and reject a CLI result that Bollard verification does not confirm. Never log an interpolated Compose model because it may contain secrets.
+
+Bollard capabilities:
 
 - local Unix-socket connection and ping;
-- one-call list/filter by installation and workspace labels;
-- container inspect and architecture detection;
-- stop primary container;
+- one-call list/filter by installation/workspace/generation labels;
+- container and image inspect, architecture detection, rename, stop/start, and operation-owned cleanup;
 - archive upload;
-- attached Exec creation/start/inspect;
+- attached and detached Exec create/start/inspect;
 - binary-clean stdin/stdout/stderr streaming;
-- cancellation and bounded API timeouts.
+- cancellation and bounded control/API timeouts.
 
-The adapter must decode Docker multiplexed frames internally:
+The Bollard adapter must decode Docker multiplexed frames internally:
 
 ```text
 local stdin       → Docker Exec stdin
@@ -807,7 +1075,9 @@ Docker stderr     → local stderr/log exactly
 
 No framing bytes may escape. Do not allocate a Docker TTY; SSH handles channel PTYs.
 
-Lifecycle commands have no overall fixed timeout. Individual Docker control/discovery calls do. Ctrl+C terminates owned subprocess groups and records interruption. SSH/proxy sessions have no cdenv idle timeout.
+Lifecycle and build commands have no guessed overall fixed timeout. Individual Docker control/discovery and network calls do. Ctrl+C terminates owned subprocess groups/runners where safe and records definite versus indeterminate interruption. SSH/proxy sessions and intentional background lifecycle commands have no cdenv idle timeout.
+
+Docker/Compose output is advisory until cdenv verifies IDs, labels, image, project, service, state, mounts, users, and generation through Bollard. A Docker restart policy may revive an environment after explicit `down`; cdenv does not install a global policy-enforcement daemon and reports resulting live truth.
 
 Container architecture—not host architecture—selects the agent:
 
@@ -867,8 +1137,9 @@ Do not require `sh`, `cp`, `install`, `chmod`, `id`, or similar tools in the con
 4. execute staging `cdenv-agent provision` as UID 0;
 5. use Linux syscalls/Rust filesystem APIs to create directories, atomically install the agent, set ownership/modes, and place assets;
 6. execute final `cdenv-agent version` as the remote user;
-7. capture effective environment through `devcontainer exec`;
-8. persist the successfully provisioned record only after every step succeeds.
+7. run the staging/final agent’s environment probe/capture path with the effective profile plan;
+8. start or verify the scoped lifecycle runner/forwarding bridge when required;
+9. persist the successfully provisioned record only after every readiness step succeeds.
 
 Normal SSH server processes always run as the remote user. Root is used only for the short provisioning command.
 
@@ -994,7 +1265,7 @@ Network endpoint values are synthetic because the SSH transport has no TCP socke
 
 ### 15.5 Working directory and shell
 
-Start sessions in the authoritative `remoteWorkspaceFolder` returned by the Dev Container CLI.
+Start sessions in the authoritative `remoteWorkspaceFolder` recorded from the active effective Dev Container plan.
 
 Resolve shell in order:
 
@@ -1072,8 +1343,9 @@ Support protocol behavior required by:
 Do not define one global cross-crate catch-all error.
 
 - core: domain/state validation errors;
-- host adapters: Git, Docker, Dev Container, storage, and SSH setup `thiserror` types;
-- agent: protocol/process/provision errors;
+- Dev Container profile: syntax, validation, substitution, metadata, Feature, lock, and plan `thiserror` types;
+- host adapters: Git, Docker CLI, Compose, Bollard, public Feature transport, storage, supervisor, and SSH setup `thiserror` types;
+- agent: protocol/process/provision/lifecycle errors;
 - binary boundary: user context and exit-code mapping, optionally with `anyhow`.
 
 Error values crossing async task boundaries must satisfy required `Send + Sync + 'static` bounds. Test meaningful error variants/messages.
@@ -1116,8 +1388,9 @@ cdenv: workspace "project" is stopped; run `cdenv up project`
 - use unique operation/connection IDs and per-operation files;
 - fixed bounded retention in V1; no unbounded append-only proxy log;
 - permissions `0600`;
-- redact known sensitive inputs;
-- never store the raw clone source argument;
+- redact values cdenv explicitly supplies or recognizes, including Docker/Compose environment and registry headers;
+- never store the raw clone source argument, interpolated Compose model, effective environment, or substituted build arguments;
+- document that arbitrary repository/Feature command output cannot be guaranteed secret-free;
 - keep detailed external errors in logs and concise sanitized summaries in state;
 - never route host or agent tracing into proxy stdout.
 
@@ -1134,9 +1407,9 @@ The cloned repository’s own Git config may retain the source as normal Git beh
 
 ### 16.6 Trust model
 
-This is a local development tool. Access to the cdenv root, Docker daemon, or cdenv executable is highly privileged. SSH keys provide stable identity and prevent accidental cross-workspace connections; they are not a sandbox against a repository’s Dev Container code.
+This is a local development tool. Access to the cdenv root, Docker daemon, or cdenv executable is highly privileged. SSH keys and private supervisor control paths provide stable identity and prevent accidental cross-workspace connections; they are not a sandbox against repository, Feature, Dockerfile, Compose, lifecycle, or host-initialization code.
 
-Non-loopback `forward` exposes the target service to interfaces selected by the user and does not add service-level authentication.
+Providing a repository source is trust consent for configuration-requested host execution and Docker privileges. Public Feature digest/lock verification provides integrity and trust on first use, not publisher authentication. Non-loopback `appPort` or ad-hoc `forward` exposes the target service to selected host interfaces and does not add service-level authentication.
 
 ---
 
@@ -1163,11 +1436,18 @@ Tests are living documentation:
 - SSH config escaping and explicit host generation;
 - user Include insertion before `Host`/`Match` and consent behavior;
 - architecture/build-ID mapping;
-- Dev Container JSON parsing and error schemas;
-- Compose project-name generation;
-- lockfile argument selection;
+- JSONC comments/trailing-comma rejection, bounds, source-span diagnostics, and config discovery ambiguity;
+- raw/effective profile validation and unknown/unsupported property errors;
+- specification metadata merge rules and staged variable substitution;
+- build/create/runtime/lifecycle keyed plan fingerprints without persisted secret values;
+- mount/appPort/forwardPorts/port-attribute parsing and requested/assigned endpoint rendering;
+- Feature reference normalization, option validation, dependency cycles/equality, and deterministic round ordering;
+- lockfile parse/generate/staleness/integrity and atomic explicit mutation;
+- reserved Docker argument detection and command generation;
+- Compose project-name, override, and managed-service-set generation;
+- lifecycle command forms/order/checkpoint transitions and drift classification;
 - environment snapshot filtering/encoding;
-- command argument generation for Git/OpenSSH/Dev Container.
+- command argument generation for Git/OpenSSH/Docker/Compose.
 
 ### 17.2 Component tests
 
@@ -1177,8 +1457,14 @@ Use statically dispatched fakes for orchestration:
 - replacement container after rebuild;
 - unsupported architecture;
 - archive/provision/version/environment failures;
-- Dev Container lifecycle/config/lockfile failures;
-- cancellation and stale operation recovery;
+- Dev Container syntax/metadata/Feature/lock/build/create/runtime/lifecycle failures;
+- public OCI anonymous-token and HTTP tarball success, digest/media-type/redirect/archive attacks, and cache behavior against mock servers;
+- Docker/Compose output verification and reserved option failures;
+- desired/active drift, stale lock, invalid desired config with healthy active state, and replacement rollback;
+- complete Compose managed-service stop and non-atomic partial replacement;
+- forwarding supervisor startup, alternate assignment, required-port degradation, transactional update, crash, build mismatch, and target loss;
+- background lifecycle success/failure/indeterminate/cancellation and repeated-up behavior;
+- cancellation and stale foreground-operation recovery;
 - one Docker list call for many workspaces;
 - Docker multiplexing and bounded stream behavior.
 
@@ -1192,7 +1478,9 @@ Run the server over an in-memory duplex stream or socket harness:
 - PTY shell, resize, and signal behavior on Linux;
 - multiple channels;
 - direct TCP forwarding and cancellation;
-- environment allowlist and conventional SSH variables;
+- environment probe/snapshot allowlist and conventional SSH variables;
+- lifecycle runner checkpoints, closed stdin, bounded logs, and long-running commands;
+- forwarding bridge and cancellation;
 - disconnect cleanup and detached-process survival.
 
 ### 17.4 Integration-test package
@@ -1203,7 +1491,7 @@ Root tests are a non-published workspace package. Ordinary `cargo test --workspa
 cargo xtask test-integration
 ```
 
-When CI declares integration support, missing Docker/OpenSSH/Dev Container dependencies are failures, never silent skips.
+When CI declares integration support, missing Docker Engine/CLI, Compose V2, or OpenSSH dependencies are failures, never silent skips.
 
 Fixtures include:
 
@@ -1212,14 +1500,36 @@ basic-debian
 basic-alpine
 custom-remote-user
 compose-primary-and-service
+image-metadata-merge
+public-oci-features
+https-and-local-features
+lockfile-stale
 forwarding-server
-failing-lifecycle
+failing-and-background-lifecycle
+build-create-runtime-drift
 read-only-best-effort
 ```
 
 Use a small static test helper preinstalled in fixtures to simulate an editor remote server independently of any editor or container utility.
 
-### 17.5 Automated OpenSSH release gate
+### 17.5 Automated Dev Container profile release gate
+
+The in-repository black-box suite must verify:
+
+1. pinned-schema discovery, parsing, validation, metadata merge, and substitutions;
+2. image, Dockerfile, and Compose V2 creation/resume/down/rebuild;
+3. public OCI, HTTPS, and local Features with dependencies/options/order and frozen/generated locks;
+4. workspace mounts, users, UID/GID update, environment probe, Docker options, and host requirements;
+5. lifecycle ordering, parallel groups, `waitFor`, background failure, cancellation, and immutable generation plans;
+6. app-port publication, declared forwarding lifetime/attributes, alternate ports, and external stop/reconnect;
+7. desired/active category drift without implicit rebuild;
+8. Compose project isolation, managed sibling stop, volume preservation, and orphan cleanup;
+9. unsupported/private/insecure inputs fail closed with profile-aware errors;
+10. no lifecycle operation mutates the checkout except explicit `cdenv lock` and repository-defined code.
+
+Optional differential tests may compare selected fixtures with the captured behavior of the official CLI version recorded in the ADR. They are diagnostic and must not make Node.js a normal CI/release dependency.
+
+### 17.6 Automated OpenSSH release gate
 
 The in-repository black-box suite must verify:
 
@@ -1230,11 +1540,13 @@ The in-repository black-box suite must verify:
 5. interactive PTY, resize, and Ctrl+C;
 6. detached helper survival and reconnect;
 7. local forwarding with multiple simultaneous connections;
-8. foreground `cdenv forward`, including explicit non-loopback binding;
-9. disconnect and process-group cleanup;
-10. applicable behavior on Debian and Alpine.
+8. declarative forwarding lifetime, alternate assignment, Compose service targets, and supervisor recovery;
+9. foreground `cdenv forward`, including explicit non-loopback binding and declared-listener conflicts;
+10. serialized `postAttachCommand` per new transport, including forwarding-only transports;
+11. disconnect and process-group cleanup;
+12. applicable behavior on Debian and Alpine.
 
-### 17.6 Platform matrix
+### 17.7 Platform matrix
 
 Release artifacts:
 
@@ -1259,41 +1571,40 @@ Named editor observations are compatibility notes, not release gates.
 
 ## 18. Implementation Sequence
 
-Each chunk ends with focused tests and a coherent commit. Do not begin broad production implementation until Chunk 0 records feasibility findings.
+Each chunk ends with focused tests and a coherent commit. Do not begin broad production implementation until Chunk 0 records feasibility and profile findings. Internal previews may exist, but no release may silently accept a configuration whose profile behavior is unfinished.
 
-### Chunk 0: Disposable end-to-end feasibility spike
+### Chunk 0: Disposable feasibility and profile spike
 
-- prove image and Compose fixtures;
-- pin/test candidate Russh and Bollard APIs;
-- prove custom id labels and JSON output;
-- prove Docker Exec stdio, OpenSSH handshake, ControlMaster, PTY, and forwarding;
-- write the spike ADR;
+- select/pin the upstream specification commit and vendor candidate schemas/fixtures;
+- make the repository’s own Dev Container configuration schema-valid, including removal of its current trailing comma;
+- prove image, Dockerfile+Feature, metadata, lifecycle, declared-forward, and Compose V2 fixtures;
+- select minimum Docker Engine/CLI/Compose versions and pin/test candidate Russh/Bollard/JSONC/HTTP APIs;
+- prove public OCI anonymous pull, digest/lock generation, generated Feature/UID layers, and safe archive handling;
+- prove Docker/Compose identity labels, project/service discovery, managed stop, and drift-safe resume;
+- prove lifecycle checkpoints/`waitFor`, forwarding supervisor, Docker Exec stdio, OpenSSH handshake, ControlMaster, PTY, and forwarding;
+- write the profile/spike ADR and V1 support matrix;
 - discard or quarantine spike implementation code.
 
-**Gate:** all Section 5 spike criteria pass.
+**Gate:** all Section 5 criteria pass and no unresolved profile behavior remains.
 
 ### Chunk 1: Cargo workspace, standards, and core domain
 
-- create crates and thin binary/library targets;
-- pin toolchain and workspace lints;
-- configure formatting, Clippy, docs, tests, and cargo-deny;
-- implement validated newtypes, naming, status dimensions, schema types, and layered core errors;
-- define CLI parser/help including `forward`, config selection, and rebuild `--no-cache`.
+- create `cdenv-core`, `cdenv-devcontainer`, host, agent, and xtask targets;
+- pin toolchain, dependencies, workspace lints, formatting, docs, tests, and cargo-deny;
+- implement validated newtypes, naming, multidimensional status, profile/generation IDs, and layered core errors;
+- define CLI parser/help including `lock`, `forward`, config selection, and rebuild `--no-cache`.
 
-**Gate:** all baseline quality commands pass and help lists every V1 command.
+**Gate:** baseline quality commands pass and help lists every V1 command.
 
-### Chunk 2: Root, installation state, workspace store, and locks
+### Chunk 2: Root, installation/workspace state, fingerprints, and locks
 
 - root precedence and UTF-8/path validation;
-- managed layout and permissions;
-- installation ID and SSH consent state;
-- atomic state/config writer;
-- schema migration framework;
-- workspace enumeration;
-- global reservation and per-workspace standard-library locks;
-- stale-operation interpretation.
+- managed layout/permissions, installation identity, and fingerprint key;
+- desired/active schema, category fingerprints, lifecycle/forwarding dimensions, and migration framework;
+- atomic writer, workspace enumeration, global reservation, and per-workspace standard-library locks;
+- private runtime control paths and stale foreground-operation interpretation.
 
-**Gate:** no managed host file escapes the configured root except an explicitly consented SSH Include edit.
+**Gate:** managed files remain under root except consented SSH Include and later explicit repository lockfile writes; no effective secret is persisted.
 
 ### Chunk 3: Git and durable create transaction
 
@@ -1304,137 +1615,162 @@ Each chunk ends with focused tests and a coherent commit. Do not begin broad pro
 - create state retained after post-clone failure;
 - local bare-repository tests.
 
-At this stage create may finish as `missing`; container startup is added after lifecycle orchestration exists.
+At this stage create may finish as `missing`; environment startup is added after orchestration exists.
 
-### Chunk 4: Dev Container and local Docker adapters
+### Chunk 4: Dev Container syntax, metadata, and immutable planner
 
-- exact versions chosen from spike findings;
-- one resolved Unix Docker endpoint;
-- typed Dev Container invocation/JSON parser;
-- stable dual labels;
-- stable Compose project naming;
-- lockfile preservation flags;
-- Bollard list/inspect/stop/upload/attached-exec;
-- bounded logging and API timeouts;
+- deterministic discovery and strict bounded JSONC parsing;
+- pinned raw/effective models and semantic validation;
+- image metadata merge logic and staged substitutions;
+- mount, port, user/environment, host requirement, and lifecycle command models;
+- build/create/runtime/lifecycle plan generation and keyed fingerprints;
+- explicit unknown/unsupported property diagnostics and profile capability output;
+- upstream and security fixture unit tests.
+
+**Gate:** pure fixture inputs produce stable reviewed plans with no Docker/network access.
+
+### Chunk 5: Docker CLI and Bollard image-scenario adapters
+
+- one resolved Unix Docker endpoint and external capability/version checks;
+- typed Docker CLI pull/build/create adapter with reserved-option validation and bounded/redacted logs;
+- deterministic context/generated-material handling outside checkout;
+- stable labels/names/generations;
+- Bollard list/inspect/verify/rename/start/stop/upload/attached+detached Exec;
 - fake adapters and opt-in real component tests.
 
-**Gate:** attached `cat`-style round trip is byte-exact and Compose primary discovery is unambiguous.
+**Gate:** image and Dockerfile plans create verifiable labeled containers; attached byte round trip is exact.
 
-### Chunk 5: Lifecycle without SSH agent
+### Chunk 6: Features, cache, lockfile, and generated images
 
-- `up` always through Dev Container CLI;
-- `down` primary-only through Bollard;
-- duplicate-container safety;
-- live status correlation and drift dimensions;
-- `list` and `status` human/versioned JSON output;
-- create calls shared up orchestration;
-- cancellation and operation recovery.
+- public OCI anonymous token/manifest/blob client and unauthenticated HTTPS/local sources;
+- bounded content-address cache and hardened extraction;
+- metadata/options/defaults, dependency graph/equality/order, and cycle errors;
+- frozen lock validation and atomic explicit `cdenv lock` generation;
+- generated Feature/UID/metadata Dockerfile layers and cleanup labels;
+- offline frozen-cache and hostile-source tests.
 
-**Gate:** fixture checkout survives create/up/down/up and status requires one Docker list query.
+**Gate:** public OCI, HTTPS, and local Feature fixtures build deterministically and lock operations are the only cdenv checkout writes.
 
-### Chunk 6: Agent build pipeline and secure provisioning
+### Chunk 7: Compose V2 orchestration
 
-- agent `version`, `identity`, `provision`, and environment-capture commands;
-- shared build ID/protocol;
-- musl artifacts and xtask staging/embedding;
-- staging archive upload;
-- root ownership/mode provisioning with no container tools;
-- always-reinstall behavior;
-- effective Dev Container environment capture;
-- Debian/Alpine and custom-user tests.
+- exact Compose V2 version/capability checks;
+- stable project naming and deterministic JSON override generation;
+- secret-safe config parsing and primary/managed service discovery;
+- create/start/stop/resume behavior with `runServices` and dependencies;
+- volume preservation, project isolation, drift-safe direct resume, and partial-state reporting;
+- two-workspace/multi-service integration tests.
 
-**Gate:** up securely provisions and verifies the agent on supported architectures/images.
+**Gate:** complete managed environments stop/resume without deleting named volumes or touching unrelated services.
 
-### Chunk 7: SSH identity and generated configuration
+### Chunk 8: Agent build, provisioning, environment, and lifecycle runner
+
+- agent `version`, `identity`, `provision`, environment probe/capture, lifecycle runner, and forwarding bridge commands;
+- shared build ID/protocol and musl xtask staging/embedding;
+- tool-free staging/root provisioning and always-reinstall behavior;
+- binary-safe effective environment merge/storage;
+- restricted lifecycle checkpoints, closed-stdin/background execution, bounded logs, cancellation, and long-running commands;
+- Debian/Alpine, architecture, and custom-user tests.
+
+**Gate:** cdenv securely provisions the agent and can resume/reconcile lifecycle state without container utilities.
+
+### Chunk 9: Lifecycle orchestration and core CLI environment flows
+
+- create/up/down through immutable plans with specification lifecycle ordering and `waitFor`;
+- desired/active build/create/runtime drift and invalid-desired behavior;
+- no duplicate background runners and rebuild-only one-time failure recovery;
+- full Compose managed stop and image direct restart;
+- live status correlation, duplicate/drift dimensions, and list/status human/versioned JSON;
+- create calls shared up orchestration; cancellation and operation recovery.
+
+**Gate:** fixture checkouts survive create/up/down/up, lifecycle gates are correct, and status uses one Docker list query where practical.
+
+### Chunk 10: Declarative port publication and forwarding supervisor
+
+- `appPort` Docker publication and non-loopback warnings;
+- private per-workspace supervisor control/lifetime protocol;
+- `forwardPorts` primary/Compose targets, requested/assigned endpoints, alternate/required behavior;
+- transactional runtime plan updates, stable assignments, target-loss retry, crash/build mismatch, reboot/up recovery, and down cleanup;
+- port attribute URL/warning rendering and deferred-discovery diagnostics.
+
+**Gate:** declared ports remain reachable after `up` exits, survive transient target loss, and release on `down`.
+
+### Chunk 11: SSH identity and generated configuration
 
 - client and per-workspace host Ed25519 keys;
 - strict permissions and stable known-host entries;
-- explicit per-workspace SSH blocks;
-- safe executable/root path rendering;
-- consented, idempotent global Include insertion;
-- `cdenv ssh` explicit-config wrapper;
-- `ssh -G` tests.
+- explicit per-workspace SSH blocks and safe executable/root rendering;
+- consented idempotent Include insertion;
+- `cdenv ssh` explicit-config wrapper and `ssh -G` tests.
 
-**Gate:** generated OpenSSH resolution is correct without wildcard ProxyCommand substitution.
+**Gate:** OpenSSH resolution is correct without wildcard ProxyCommand substitution.
 
-### Chunk 8: Agent SSH handshake, authentication, and exec
+### Chunk 12: Agent SSH handshake, authentication, and exec
 
-- generic stdio async stream;
-- Russh server and host key loading;
+- generic stdio async stream, Russh server, and host key loading;
 - exact user/public-key authentication;
-- environment snapshot/allowlist;
-- session state and non-PTY shell `-c` execution;
-- stdout/stderr/exit reporting;
-- bounded channel I/O and strict stderr logging.
+- effective environment/allowlist, session state, and non-PTY shell `-c` execution;
+- stdout/stderr/exit reporting, bounded channel I/O, and strict stderr logging.
 
 **Gate:** protocol harness observes exact output separation and exit status.
 
-### Chunk 9: Host proxy through Bollard
+### Chunk 13: Host proxy and attach lifecycle through Bollard
 
-- brief shared lifecycle coordination;
-- strict container/provision/build drift checks;
-- attached agent Exec as remote user/workspace;
-- binary-clean forwarding and cancellation;
-- concise proxy diagnostics and bounded connection logs.
+- brief shared lifecycle coordination and strict active generation/provision checks;
+- serialized `postAttachCommand` per transport with retryable attach degradation;
+- attached agent Exec as active remote user/workspace;
+- binary-clean forwarding/cancellation and concise bounded diagnostics.
 
-**Gate:** system OpenSSH runs a remote command with no exposed port or persistent cdenv process.
+**Gate:** system OpenSSH runs a remote command with one attach hook and no exposed SSH port or permanent SSH daemon.
 
-### Chunk 10: PTY, multiplexing, signals, and cleanup
+### Chunk 14: PTY, multiplexing, signals, and cleanup
 
 - isolated minimal-unsafe Linux PTY module;
-- login shell/session/process groups;
-- terminal modes and resizing;
-- signal mapping;
-- HUP/TERM/KILL cleanup;
-- detached helper behavior;
-- ControlMaster concurrent channels.
+- login shell/session/process groups, terminal modes/resizing, and signal mapping;
+- HUP/TERM/KILL cleanup and detached helper behavior;
+- ControlMaster concurrent channels/transports and attach serialization.
 
 **Gate:** automated PTY/multiplexing suite passes on Debian and Alpine.
 
-### Chunk 11: Direct forwarding and `cdenv forward`
+### Chunk 15: Direct forwarding and ad-hoc `cdenv forward`
 
-- unrestricted `direct-tcpip`;
-- concurrent bidirectional TCP bridges;
+- unrestricted `direct-tcpip` and concurrent bounded TCP bridges;
 - system OpenSSH foreground wrapper;
-- multiple mappings, loopback default, non-loopback warnings;
-- service and network-bind integration tests.
+- all-or-none mapping preflight, declared-listener conflict, loopback default, and explicit non-loopback warning;
+- service/network bind and forwarding-only attach-hook tests.
 
-**Gate:** host and explicitly selected host-network interfaces reach container services without Docker port publication or rebuild.
+**Gate:** ad-hoc host mappings reach container services without config changes or rebuild.
 
-### Chunk 12: Rebuild and replacement recovery
+### Chunk 16: Rebuild, rollback, and cleanup
 
-- cached rebuild through `up --remove-existing-container`;
-- V1 `--no-cache` plumbing;
-- desired config behavior;
-- uncommitted-change notice;
-- replacement ID validation;
-- complete reprovision and stable host identity;
+- cached/no-cache desired-plan rebuild;
+- build-first image backup/rename/best-effort rollback;
+- Compose force-recreate partial-state handling;
+- uncommitted-change notice, replacement/generation validation, and complete reprovision;
+- forwarding handoff, orphan cleanup, bounded generated-image retention, and stable host identity;
 - interrupted rebuild/drift recovery tests.
 
-**Gate:** tracked/untracked changes survive, container ID changes, and SSH reconnects without host-key warnings.
+**Gate:** tracked/untracked changes and named volumes survive; generation changes; SSH reconnects without host-key warnings.
 
-### Chunk 13: OpenSSH compatibility hardening
+### Chunk 17: Compatibility and profile hardening
 
-- complete independent release-gate helper/suite;
-- long-lived binary channels;
-- keepalive/global request behavior;
-- concurrent exec/PTY/forward channels;
-- reconnect and cancellation edge cases;
+- complete independent Dev Container and OpenSSH release-gate suites;
+- long-lived lifecycle/SSH/binary/forwarding behavior;
+- malformed config/OCI/archive/Docker/Compose and cancellation edge cases;
+- concurrent exec/PTY/forward/attach channels;
 - bounded buffering/throughput checks measured in release mode.
 
-**Gate:** Section 17.5 passes without an editor dependency.
+**Gate:** Sections 17.5 and 17.6 pass without Node.js or an editor dependency.
 
-### Chunk 14: Doctor, packaging, CI, and release
+### Chunk 18: Doctor, packaging, CI, and release
 
-- read-only `doctor` and JSON envelope;
+- read-only profile-aware `doctor` and JSON envelope;
 - all four host artifacts with both embedded agents;
-- Linux architecture integration matrix;
+- minimum/pinned Docker Engine/CLI/Compose jobs and Linux architecture integration matrix;
 - macOS Docker Desktop smoke checklist;
-- minimum and pinned Dev Container CLI jobs;
-- checksums, installation docs, upgrade/state migration docs;
-- troubleshooting and compatibility notes.
+- checksums, installation/profile/lock/upgrade/state-migration documentation;
+- forwarding/lifecycle/trust troubleshooting and compatibility notes.
 
-**Gate:** one installed host binary can create, provision, connect, forward, stop, restart, and rebuild a workspace.
+**Gate:** one installed host binary satisfies the complete V1 profile and all Section 19 workflows.
 
 ---
 
@@ -1449,6 +1785,7 @@ cdenv create /path/to/local/repository.git --name local-project
 cdenv list
 cdenv list --json
 cdenv status project
+cdenv lock project
 cdenv down project
 cdenv up project
 cdenv rebuild project
@@ -1462,18 +1799,24 @@ cdenv forward project 8080:3000 --bind 0.0.0.0
 
 And:
 
-- source changes survive stop/start/rebuild except changes intentionally made by repository lifecycle code;
-- cdenv itself never mutates Git state after clone;
+- the pinned `cdenv-devcontainer-v1` support matrix and profile release gate pass for image, Dockerfile, and Compose V2 scenarios;
+- strict JSONC discovery/validation, image metadata, substitutions, users, mounts, Docker options, host requirements, and lifecycle semantics are deterministic;
+- public OCI, unauthenticated HTTPS, and local Features honor options/dependencies/order, frozen locks, digest integrity, and hardened caching/extraction;
+- `cdenv lock` is the only cdenv operation that writes into the checkout after clone; cdenv never mutates Git state;
+- source changes survive stop/start/rebuild except changes intentionally made by repository/Feature lifecycle or initialization code;
+- desired/active build/create drift warns without implicit rebuild, safe runtime drift applies, and invalid desired config never destroys a healthy active environment;
+- app ports publish with documented binding rules and declared forwards persist from `up` to `down` with requested/assigned status;
+- ad-hoc forwarding remains foreground, all-or-none, and requires explicit non-loopback binding;
 - no `sshd` or SSH container port is required;
-- no cdenv daemon persists after connection/forward commands end;
+- no installation-wide daemon or permanent container SSH daemon exists; scoped forwarding supervisors and active lifecycle runners are owned, diagnosed, and cleaned up;
 - the agent runs in Debian and Alpine on x86_64 and arm64;
-- effective remote-user environment is available to SSH sessions;
-- live status derives from one Docker query where practical;
-- duplicate/drift conditions fail safely instead of selecting arbitrary containers;
-- Compose workspaces isolate projects and access only their primary development service;
-- host and agent upgrades cannot silently mix incompatible protocols;
-- all cdenv-managed host state remains under the configured root except the explicitly consented SSH Include line;
-- proxy stdout is proven binary-clean;
-- the automated editor-independent OpenSSH compatibility suite passes;
+- effective remote-user environment is available to lifecycle and SSH sessions without host persistence;
+- live status derives from one Docker query where practical and retains independent config/lifecycle/forwarding dimensions;
+- duplicate/external replacement/drift conditions fail safely instead of selecting arbitrary containers;
+- Compose projects isolate workspaces, manage the configured service set and dependencies, stop them completely, and preserve named volumes;
+- host, supervisor, runner, and agent upgrades cannot silently mix incompatible builds/protocols/generations;
+- all cdenv-managed host state remains under the configured root except the consented SSH Include and explicit lockfile target;
+- proxy stdout is proven binary-clean and attach hooks cannot contaminate it;
+- automated Dev Container and editor-independent OpenSSH compatibility suites pass;
 - release binaries contain both verified static agent artifacts;
 - strict Rust lint, documentation, security, test, and unsafe-code policies pass.

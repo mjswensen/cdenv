@@ -1,0 +1,38 @@
+{
+  "capAdd": [
+    "NET_ADMIN",
+    "SYS_PTRACE",
+    "SYS_CHROOT"
+  ],
+  "containerEnv": {
+    "FROM_FEATURE": "yes",
+    "FROM_IMAGE": "yes",
+    "ORDER": "repository"
+  },
+  "entrypoints": [
+    "/usr/local/share/cdenv-spike/entrypoint"
+  ],
+  "forwardPorts": [
+    7000,
+    7001,
+    "dependency:80"
+  ],
+  "hostRequirements": {
+    "cpus": 2,
+    "memoryBytes": 2147483648
+  },
+  "init": true,
+  "mounts": [
+    {
+      "source": "repository-source",
+      "target": "/merged",
+      "type": "volume"
+    }
+  ],
+  "onCreateCommand": [
+    "printf image-metadata"
+  ],
+  "remoteEnv": {
+    "IMAGE_REMOTE": "yes"
+  }
+}

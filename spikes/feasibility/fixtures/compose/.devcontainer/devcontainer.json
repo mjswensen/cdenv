@@ -1,0 +1,16 @@
+{
+  "name": "compose-spike",
+  "dockerComposeFile": "../compose.yaml",
+  "service": "workspace",
+  "runServices": ["workspace", "dependency"],
+  "workspaceFolder": "/workspaces/compose",
+  "forwardPorts": ["dependency:80"],
+  "portsAttributes": {
+    "dependency:80": {
+      "label": "dependency web",
+      "protocol": "http",
+      "requireLocalPort": false
+    }
+  },
+  "postStartCommand": "printf compose-started"
+}

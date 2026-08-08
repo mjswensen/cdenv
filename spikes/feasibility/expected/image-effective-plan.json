@@ -1,0 +1,64 @@
+{
+  "devcontainerId": "0tqjrvlu6q8lt6v0m1v6jklpgmomu54pasrghqa8h2hl3o4t4k8b",
+  "hostStage": {
+    "appPort": [
+      6500
+    ],
+    "containerEnv": {
+      "SPIKE_CONTAINER": "image-0tqjrvlu6q8lt6v0m1v6jklpgmomu54pasrghqa8h2hl3o4t4k8b"
+    },
+    "forwardPorts": [
+      6501
+    ],
+    "image": "debian:13-slim",
+    "name": "image-fallback",
+    "portsAttributes": {
+      "6501": {
+        "label": "image fixture",
+        "protocol": "http",
+        "requireLocalPort": true
+      }
+    },
+    "postCreateCommand": [
+      "/bin/sh",
+      "-c",
+      "printf image-ready"
+    ],
+    "remoteEnv": {
+      "SPIKE_PATH": "${containerEnv:PATH}:/cdenv-spike"
+    },
+    "workspaceFolder": "/workspaces/image"
+  },
+  "profile": "cdenv-devcontainer-v1",
+  "runtimeStage": {
+    "appPort": [
+      6500
+    ],
+    "containerEnv": {
+      "SPIKE_CONTAINER": "image-0tqjrvlu6q8lt6v0m1v6jklpgmomu54pasrghqa8h2hl3o4t4k8b"
+    },
+    "forwardPorts": [
+      6501
+    ],
+    "image": "debian:13-slim",
+    "name": "image-fallback",
+    "portsAttributes": {
+      "6501": {
+        "label": "image fixture",
+        "protocol": "http",
+        "requireLocalPort": true
+      }
+    },
+    "postCreateCommand": [
+      "/bin/sh",
+      "-c",
+      "printf image-ready"
+    ],
+    "remoteEnv": {
+      "SPIKE_PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/cdenv-spike"
+    },
+    "workspaceFolder": "/workspaces/image"
+  },
+  "scenario": "image",
+  "workspaceFolder": "/workspaces/image"
+}

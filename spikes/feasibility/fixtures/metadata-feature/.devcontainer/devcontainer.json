@@ -1,0 +1,26 @@
+{
+  "name": "metadata-${devcontainerId}",
+  "image": "cdenv-spike-metadata:latest",
+  "features": {
+    "./features/metadata-marker": {
+      "enabled": true
+    }
+  },
+  "init": false,
+  "capAdd": ["SYS_PTRACE"],
+  "containerEnv": {
+    "ORDER": "repository"
+  },
+  "mounts": [
+    {
+      "source": "repository-source",
+      "target": "/merged",
+      "type": "volume"
+    }
+  ],
+  "forwardPorts": [7000, "dependency:80"],
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "1gb"
+  }
+}

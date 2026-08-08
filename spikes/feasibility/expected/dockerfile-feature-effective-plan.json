@@ -1,0 +1,90 @@
+{
+  "devcontainerId": "0q83d4tosd79slma2bovn4a39j8c36vmqfr2oh4or0uoqk7a8veh",
+  "hostStage": {
+    "build": {
+      "args": {
+        "SPIKE_BUILD_ARG": "bounded-default"
+      },
+      "context": "..",
+      "dockerfile": "Dockerfile",
+      "options": [
+        "--add-host=host.docker.internal:host-gateway"
+      ],
+      "target": "development"
+    },
+    "features": {
+      "./features/top-marker": {
+        "message": "top"
+      },
+      "ghcr.io/devcontainers/features/common-utils:2": {
+        "installOhMyZsh": false,
+        "installZsh": false
+      }
+    },
+    "name": "dockerfile-feature-spike",
+    "onCreateCommand": "printf on-create",
+    "overrideFeatureInstallOrder": [
+      "top-marker",
+      "base-marker"
+    ],
+    "postCreateCommand": [
+      "/bin/sh",
+      "-c",
+      "printf post-create"
+    ],
+    "updateContentCommand": {
+      "alpha": [
+        "/bin/sh",
+        "-c",
+        "printf alpha"
+      ],
+      "beta": "printf beta"
+    },
+    "waitFor": "updateContentCommand"
+  },
+  "profile": "cdenv-devcontainer-v1",
+  "runtimeStage": {
+    "build": {
+      "args": {
+        "SPIKE_BUILD_ARG": "bounded-default"
+      },
+      "context": "..",
+      "dockerfile": "Dockerfile",
+      "options": [
+        "--add-host=host.docker.internal:host-gateway"
+      ],
+      "target": "development"
+    },
+    "features": {
+      "./features/top-marker": {
+        "message": "top"
+      },
+      "ghcr.io/devcontainers/features/common-utils:2": {
+        "installOhMyZsh": false,
+        "installZsh": false
+      }
+    },
+    "name": "dockerfile-feature-spike",
+    "onCreateCommand": "printf on-create",
+    "overrideFeatureInstallOrder": [
+      "top-marker",
+      "base-marker"
+    ],
+    "postCreateCommand": [
+      "/bin/sh",
+      "-c",
+      "printf post-create"
+    ],
+    "updateContentCommand": {
+      "alpha": [
+        "/bin/sh",
+        "-c",
+        "printf alpha"
+      ],
+      "beta": "printf beta"
+    },
+    "waitFor": "updateContentCommand"
+  },
+  "scenario": "dockerfile",
+  "workspaceFolder": "/workspaces/dockerfile-feature"
+}

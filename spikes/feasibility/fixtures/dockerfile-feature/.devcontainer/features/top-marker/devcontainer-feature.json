@@ -1,0 +1,25 @@
+{
+  "id": "top-marker",
+  "version": "1.0.0",
+  "name": "Top marker",
+  "dependsOn": {
+    "./features/base-marker": {
+      "message": "dependency"
+    }
+  },
+  "installsAfter": ["base-marker"],
+  "options": {
+    "message": {
+      "type": "string",
+      "default": "top"
+    }
+  },
+  "mounts": [
+    {
+      "source": "top-${devcontainerId}",
+      "target": "/var/lib/top-marker",
+      "type": "volume"
+    }
+  ],
+  "postCreateCommand": "test -f /usr/local/share/cdenv-spike/top-marker"
+}

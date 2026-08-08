@@ -1,0 +1,34 @@
+{
+  "services": {
+    "dependency": {
+      "labels": {
+        "cdenv.generation": "1",
+        "cdenv.installation": "spike-installation",
+        "cdenv.profile": "cdenv-devcontainer-v1",
+        "cdenv.workspace": "${WORKSPACE}"
+      }
+    },
+    "workspace": {
+      "labels": {
+        "cdenv.generation": "1",
+        "cdenv.installation": "spike-installation",
+        "cdenv.profile": "cdenv-devcontainer-v1",
+        "cdenv.workspace": "${WORKSPACE}"
+      },
+      "volumes": [
+        {
+          "source": "${WORKSPACE_SOURCE}",
+          "target": "/workspaces/repository",
+          "type": "bind"
+        },
+        {
+          "read_only": true,
+          "source": "${AGENT_BINARY}",
+          "target": "/opt/cdenv-spike/agent",
+          "type": "bind"
+        }
+      ],
+      "working_dir": "/workspaces/repository"
+    }
+  }
+}

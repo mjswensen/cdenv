@@ -1,0 +1,15 @@
+{
+  "containerCount": 2,
+  "labels": {
+    "cdenv.generation": "1",
+    "cdenv.installation": "spike-installation",
+    "cdenv.profile": "cdenv-devcontainer-v1",
+    "cdenv.workspace": "compose-b"
+  },
+  "runningCount": 2,
+  "services": [
+    "dependency",
+    "workspace"
+  ],
+  "workspace": "compose-b"
+}

@@ -1,0 +1,21 @@
+{
+  "digest": "sha256:1351f33b2316c0baa7bf508f6db67077d55fb0b7811f85b0908a35fba3bbef3f",
+  "features": [
+    {
+      "id": "base-marker",
+      "options": {
+        "message": "dependency"
+      },
+      "source": "./features/base-marker",
+      "version": "1.0.0"
+    },
+    {
+      "id": "top-marker",
+      "options": {
+        "message": "top"
+      },
+      "source": "./features/top-marker",
+      "version": "1.0.0"
+    }
+  ]
+}

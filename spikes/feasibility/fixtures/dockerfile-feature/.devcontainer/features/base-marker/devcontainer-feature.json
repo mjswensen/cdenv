@@ -1,0 +1,15 @@
+{
+  "id": "base-marker",
+  "version": "1.0.0",
+  "name": "Base marker",
+  "options": {
+    "message": {
+      "type": "string",
+      "default": "base"
+    }
+  },
+  "containerEnv": {
+    "BASE_MARKER": "installed"
+  },
+  "onCreateCommand": "test -f /usr/local/share/cdenv-spike/base-marker"
+}

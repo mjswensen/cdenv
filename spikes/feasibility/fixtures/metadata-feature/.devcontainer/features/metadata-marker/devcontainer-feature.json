@@ -1,0 +1,17 @@
+{
+  "id": "metadata-marker",
+  "version": "1.0.0",
+  "name": "Metadata marker",
+  "options": {
+    "enabled": {
+      "type": "boolean",
+      "default": true
+    }
+  },
+  "init": true,
+  "capAdd": ["SYS_CHROOT"],
+  "containerEnv": {
+    "FROM_FEATURE": "yes"
+  },
+  "entrypoint": "/usr/local/share/cdenv-spike/entrypoint"
+}

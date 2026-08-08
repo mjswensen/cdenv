@@ -1,0 +1,4 @@
+OpenSSH: ssh -F <generated-config> [-S <control-socket>] <workspace>.cdenv <command>
+ProxyCommand: feasibility-spike proxy <container-id> /opt/cdenv-spike/agent /run/cdenv-keys/host /run/cdenv-keys/allowed.pub /workspace
+Docker Exec argv: /opt/cdenv-spike/agent ssh-server /run/cdenv-keys/host /run/cdenv-keys/allowed.pub /workspace
+Direct forwarding: ssh -F <generated-config> -S <control-socket> -O forward -L 127.0.0.1:<assigned>:127.0.0.1:<target> <workspace>.cdenv

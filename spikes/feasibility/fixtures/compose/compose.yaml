@@ -1,0 +1,12 @@
+services:
+  workspace:
+    image: debian:13-slim
+    command: ["/bin/sh", "-c", "while sleep 3600; do :; done"]
+    depends_on:
+      - dependency
+  dependency:
+    image: nginx:1.29-alpine
+    volumes:
+      - dependency-data:/var/cache/nginx
+volumes:
+  dependency-data:

@@ -1,0 +1,3 @@
+DOCKER_HOST=unix:///var/run/docker.sock docker compose --project-directory <fixture> --project-name cdenv-feasibility-a --file compose.yaml --file override-a.json up --detach workspace dependency
+DOCKER_HOST=unix:///var/run/docker.sock docker start <persisted-container-id-set>
+DOCKER_HOST=unix:///var/run/docker.sock docker stop <persisted-container-id-set>

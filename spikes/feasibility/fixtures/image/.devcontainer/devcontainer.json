@@ -1,0 +1,22 @@
+{
+  // Image scenario: comments are supported; trailing commas are not.
+  "name": "${localWorkspaceFolderBasename}-${localEnv:CDENV_SPIKE_SUFFIX:fallback}",
+  "image": "debian:13-slim",
+  "containerEnv": {
+    "SPIKE_CONTAINER": "image-${devcontainerId}"
+  },
+  "remoteEnv": {
+    "SPIKE_PATH": "${containerEnv:PATH}:/cdenv-spike"
+  },
+  "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}",
+  "appPort": [6500],
+  "forwardPorts": [6501],
+  "portsAttributes": {
+    "6501": {
+      "label": "image fixture",
+      "protocol": "http",
+      "requireLocalPort": true
+    }
+  },
+  "postCreateCommand": ["/bin/sh", "-c", "printf image-ready"]
+}

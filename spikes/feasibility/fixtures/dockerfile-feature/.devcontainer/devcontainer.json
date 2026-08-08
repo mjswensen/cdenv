@@ -1,0 +1,29 @@
+{
+  "name": "dockerfile-feature-spike",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "target": "development",
+    "args": {
+      "SPIKE_BUILD_ARG": "${localEnv:CDENV_SPIKE_BUILD_ARG:bounded-default}"
+    },
+    "options": ["--add-host=host.docker.internal:host-gateway"]
+  },
+  "features": {
+    "./features/top-marker": {
+      "message": "top"
+    },
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": false,
+      "installOhMyZsh": false
+    }
+  },
+  "overrideFeatureInstallOrder": ["top-marker", "base-marker"],
+  "onCreateCommand": "printf on-create",
+  "updateContentCommand": {
+    "alpha": ["/bin/sh", "-c", "printf alpha"],
+    "beta": "printf beta"
+  },
+  "postCreateCommand": ["/bin/sh", "-c", "printf post-create"],
+  "waitFor": "updateContentCommand"
+}

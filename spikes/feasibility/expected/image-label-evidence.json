@@ -1,0 +1,12 @@
+{
+  "containerCount": 1,
+  "labels": {
+    "cdenv.generation": "1",
+    "cdenv.installation": "spike-installation",
+    "cdenv.profile": "cdenv-devcontainer-v1",
+    "cdenv.workspace": "image-fixture"
+  },
+  "runningCount": 1,
+  "services": [],
+  "workspace": "image-fixture"
+}

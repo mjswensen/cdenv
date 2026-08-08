@@ -1,0 +1,8 @@
+onCreateCommand
+updateContentCommand.alpha.start
+updateContentCommand.beta.start
+updateContentCommand.alpha.done
+updateContentCommand.beta.done
+postCreateCommand
+postCreate:start
+postCreate:succeeded

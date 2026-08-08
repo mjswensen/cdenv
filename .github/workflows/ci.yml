@@ -17,20 +17,12 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Select pinned Rust toolchain
-        run: rustup show active-toolchain
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --version 0.20.2 --locked
-      - name: Check formatting
-        run: cargo fmt --check
-      - name: Run Clippy
-        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Run workspace tests
-        run: cargo test --workspace --locked
-      - name: Build documentation
-        run: cargo doc --workspace --no-deps
-      - name: Check dependency policy
-        run: cargo deny check
+      - name: Run checks in the development container
+        uses: devcontainers/ci@v0.3
+        with:
+          push: never
+          env: CARGO_TERM_COLOR
+          runCmd: cargo xtask check
 
   macos-agent-stub:
     name: Agent unsupported-host stub

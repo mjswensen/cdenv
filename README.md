@@ -8,7 +8,7 @@ The Rust workspace contains platform-neutral core types, pure Dev Container prof
 
 ## Development
 
-The repository pins Rust 1.97.1 in `rust-toolchain.toml`. Install [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 before running the complete local gate:
+The repository pins Rust 1.97.1 in `rust-toolchain.toml`, and the development container includes [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2. Outside the development container, install that version before running the complete local gate:
 
 ```bash
 cargo install cargo-deny --version 0.20.2 --locked

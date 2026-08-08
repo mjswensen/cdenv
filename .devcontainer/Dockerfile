@@ -13,3 +13,5 @@ ENV PATH="/mise/shims:$PATH"
 
 RUN curl https://mise.run | sh
 RUN mise install --system node@24 rust@1.97.1
+RUN mise exec rust@1.97.1 -- \
+    cargo install cargo-deny --version 0.20.2 --locked --root /usr/local

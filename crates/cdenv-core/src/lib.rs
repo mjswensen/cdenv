@@ -6,6 +6,7 @@
 //! protocol boundaries.
 
 mod identity;
+mod status;
 mod workspace;
 
 pub use identity::{
@@ -13,6 +14,13 @@ pub use identity::{
     GenerationId, GenerationIdError, IdentityTokenError, InstallationId, InstallationIdError,
     ProfileId, ProfileIdError, ProtocolVersion, ProtocolVersionError,
     UnsupportedContainerArchitecture,
+};
+pub use status::{
+    ConfigurationDrift, ConfigurationStatus, ConfigurationValidity, EnvironmentStatus,
+    ForegroundOperation, ForwardingEndpoint, ForwardingEndpointAssignment, ForwardingEndpointError,
+    ForwardingStatus, LifecycleStatus, LocalHealthStatus, RuntimeConfigurationDrift,
+    StatusDimensions, StatusFact, StatusFactCode, StatusFactSeverity, TcpPort, TcpPortError,
+    WorkspaceStatus,
 };
 pub use workspace::{
     MAX_WORKSPACE_NAME_LENGTH, WORKSPACE_HOST_SUFFIX, WorkspaceHost, WorkspaceHostError,

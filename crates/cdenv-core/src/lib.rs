@@ -1,4 +1,21 @@
 //! Platform-neutral domain types and serialization for cdenv.
 //!
 //! This crate deliberately has no host orchestration or asynchronous runtime
-//! dependencies.
+//! dependencies. Its private newtype representations ensure strings and
+//! integers are validated before they cross persistence, Docker, or agent
+//! protocol boundaries.
+
+mod identity;
+mod workspace;
+
+pub use identity::{
+    AgentBuildId, AgentBuildIdError, ContainerArchitecture, ContainerId, ContainerIdError,
+    GenerationId, GenerationIdError, IdentityTokenError, InstallationId, InstallationIdError,
+    ProfileId, ProfileIdError, ProtocolVersion, ProtocolVersionError,
+    UnsupportedContainerArchitecture,
+};
+pub use workspace::{
+    MAX_WORKSPACE_NAME_LENGTH, WORKSPACE_HOST_SUFFIX, WorkspaceHost, WorkspaceHostError,
+    WorkspaceName, WorkspaceNameError, WorkspaceNameSelectionError, derive_workspace_name,
+    derive_workspace_name_from_path,
+};

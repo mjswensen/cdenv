@@ -1,0 +1,16 @@
+[package]
+name = "cdenv-cli"
+description = "Host application library and cdenv command-line executable."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "cdenv"
+path = "src/main.rs"
+
+[lints]
+workspace = true

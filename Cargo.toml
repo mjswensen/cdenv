@@ -1,0 +1,75 @@
+[workspace]
+members = [
+    "crates/cdenv-core",
+    "crates/cdenv-devcontainer",
+    "crates/cdenv-cli",
+    "crates/cdenv-agent",
+    "xtask",
+    "tests/integration",
+]
+exclude = ["spikes/feasibility"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97.1"
+authors = ["cdenv contributors"]
+repository = "https://github.com/mjswensen/cdenv"
+publish = false
+
+[workspace.dependencies]
+bollard = { version = "=0.21.0", default-features = false, features = ["pipe"] }
+flate2 = "1.1.9"
+futures-util = "0.3.33"
+hex = "0.4.3"
+jsonc-parser = { version = "0.33.1", features = ["serde"] }
+jsonschema = { version = "0.49.7", default-features = false }
+nix = { version = "0.30.1", features = ["process", "signal"] }
+pty-process = { version = "0.5.3", features = ["async"] }
+reqwest = { version = "0.13.4", default-features = false, features = [
+    "json",
+    "query",
+    "rustls",
+    "stream",
+] }
+russh = { version = "=0.62.5", default-features = false, features = ["ring"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha2 = "0.10.9"
+tar = "0.4.46"
+tempfile = "3.27.0"
+thiserror = "2.0.19"
+tokio = { version = "1.53.1", default-features = false, features = [
+    "io-std",
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "sync",
+    "time",
+] }
+url = "2.5.8"
+
+[workspace.lints.rust]
+future_incompatible = { level = "deny", priority = -1 }
+missing_docs = "deny"
+nonstandard_style = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+rust_2024_compatibility = { level = "deny", priority = -1 }
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+dbg_macro = "deny"
+needless_collect = "deny"
+redundant_clone = "deny"
+todo = "deny"
+unimplemented = "deny"
+
+[workspace.lints.rustdoc]
+bare_urls = "deny"
+broken_intra_doc_links = "deny"

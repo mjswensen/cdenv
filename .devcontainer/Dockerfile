@@ -12,4 +12,4 @@ ENV MISE_INSTALL_PATH="/usr/local/bin/mise"
 ENV PATH="/mise/shims:$PATH"
 
 RUN curl https://mise.run | sh
-RUN mise install --system node@24 rust@1
+RUN mise install --system node@24 rust@1.97.1

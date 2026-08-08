@@ -1,0 +1,44 @@
+[graph]
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
+]
+all-features = true
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = ["Apache-2.0", "MIT", "Unicode-3.0"]
+confidence-threshold = 0.93
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+deny = [
+    { crate = "async-trait", reason = "Use native async trait methods and static dispatch at test seams." },
+    { crate = "fs2", reason = "Use standard-library file locking for managed state." },
+]
+skip = []
+skip-tree = []
+
+[[bans.features]]
+crate = "tokio"
+deny = ["full"]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

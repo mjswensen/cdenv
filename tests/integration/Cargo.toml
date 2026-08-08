@@ -1,0 +1,16 @@
+[package]
+name = "cdenv-integration-tests"
+description = "Non-published integration-test harness for cdenv."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+integration = []
+
+[lints]
+workspace = true

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use cdenv_core::InstallationId;
 use hmac::{Hmac, Mac};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
@@ -108,11 +108,30 @@ impl FingerprintKey {
     /// neither the input nor key is retained by the result.
     #[must_use]
     pub fn digest(&self, canonical_plan: &[u8]) -> KeyedDigest {
+        self.digest_plan(PlanFingerprintCategory::Uncategorized, [canonical_plan])
+    }
+
+    /// Computes a domain-separated fingerprint from ordered planner inputs.
+    ///
+    /// Each input is length-prefixed before hashing, so different input
+    /// boundaries cannot produce the same canonical message. Callers pass
+    /// borrowed canonical bytes; no unkeyed intermediate digest is exposed.
+    #[must_use]
+    pub fn digest_plan<'a>(
+        &self,
+        category: PlanFingerprintCategory,
+        inputs: impl IntoIterator<Item = &'a [u8]>,
+    ) -> KeyedDigest {
         type HmacSha256 = Hmac<Sha256>;
         let Ok(mut mac) = HmacSha256::new_from_slice(&self.0) else {
             unreachable!("HMAC-SHA256 accepts a fixed 32-byte key");
         };
-        mac.update(canonical_plan);
+        mac.update(b"cdenv-plan-fingerprint-v1\0");
+        mac.update(category.domain().as_bytes());
+        for input in inputs {
+            mac.update(&(input.len() as u64).to_be_bytes());
+            mac.update(input);
+        }
         KeyedDigest(format!(
             "keyed:{}",
             hex::encode(mac.finalize().into_bytes())
@@ -120,16 +139,75 @@ impl FingerprintKey {
     }
 }
 
+/// A domain separating one immutable effective-plan category.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanFingerprintCategory {
+    /// Compatibility mode for hashing one already-canonical byte sequence.
+    Uncategorized,
+    /// Image, Features, metadata, and build options.
+    Build,
+    /// Container creation options, mounts, user, and environment.
+    Create,
+    /// Remote environment, forwarding, and attach behavior.
+    Runtime,
+}
+
+impl PlanFingerprintCategory {
+    const fn domain(self) -> &'static str {
+        match self {
+            Self::Uncategorized => "uncategorized\0",
+            Self::Build => "build\0",
+            Self::Create => "create\0",
+            Self::Runtime => "runtime\0",
+        }
+    }
+}
+
+/// A malformed persisted keyed digest.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("a keyed digest must be `keyed:` followed by 64 lowercase hexadecimal characters")]
+pub struct KeyedDigestError;
+
 /// A keyed digest safe to serialize in persisted state.
-#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
 pub struct KeyedDigest(String);
 
 impl KeyedDigest {
+    /// Parses an opaque keyed digest without exposing digest bytes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`KeyedDigestError`] unless the value has the exact persisted
+    /// keyed-fingerprint spelling.
+    pub fn parse(value: &str) -> Result<Self, KeyedDigestError> {
+        let Some(hex) = value.strip_prefix("keyed:") else {
+            return Err(KeyedDigestError);
+        };
+        if hex.len() != 64
+            || !hex
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(KeyedDigestError);
+        }
+        Ok(Self(value.to_owned()))
+    }
+
     /// Returns the `keyed:<hex>` representation.
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl<'de> Deserialize<'de> for KeyedDigest {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
     }
 }
 
@@ -463,5 +541,16 @@ mod tests {
     fn debug_output_never_contains_key_bytes() {
         let key = FingerprintKey([0xab; FINGERPRINT_KEY_LENGTH]);
         assert_eq!(format!("{key:?}"), "FingerprintKey([REDACTED])");
+    }
+
+    #[test]
+    fn keyed_digest_deserialization_rejects_unkeyed_or_malformed_values() {
+        for value in [
+            r#""sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa""#,
+            r#""keyed:short""#,
+            r#""keyed:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA""#,
+        ] {
+            assert!(serde_json::from_str::<KeyedDigest>(value).is_err());
+        }
     }
 }

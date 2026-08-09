@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "installationId": "0123456789abcdef0123456789abcdef",
+  "name": "project",
+  "repositorySource": "ssh://git@example.test/project.git",
+  "devcontainerProfile": "cdenv-devcontainer-v1",
+  "desiredDevcontainerConfig": ".devcontainer/devcontainer.json",
+  "desiredFingerprints": {
+    "build": "keyed:1111111111111111111111111111111111111111111111111111111111111111",
+    "create": "keyed:2222222222222222222222222222222222222222222222222222222222222222",
+    "runtime": "keyed:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "createdAt": "2025-01-02T03:04:05Z",
+  "lastUpAt": "2025-01-02T03:05:06Z",
+  "operation": {
+    "kind": "idle",
+    "id": null,
+    "startedAt": null
+  },
+  "lastError": "forward 127.0.0.1:8080 is unavailable",
+  "active": {
+    "generation": 3,
+    "scenario": {
+      "kind": "compose",
+      "project": "cdenv-012345-project",
+      "managedServices": ["app", "db"]
+    },
+    "containerId": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "imageId": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "fingerprints": {
+      "build": "keyed:1111111111111111111111111111111111111111111111111111111111111111",
+      "create": "keyed:2222222222222222222222222222222222222222222222222222222222222222",
+      "runtime": "keyed:4444444444444444444444444444444444444444444444444444444444444444"
+    },
+    "featureDigests": {
+      "ghcr.io/devcontainers/features/git:1": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "lifecycle": {
+      "completedThrough": "updateContentCommand",
+      "running": "postCreateCommand",
+      "indeterminate": false
+    },
+    "forwarding": {
+      "supervisorBuildId": "release-1",
+      "requested": [
+        {
+          "requested": {"address": "127.0.0.1", "port": 8080},
+          "targetHost": "localhost",
+          "targetPort": 8080,
+          "requireLocalPort": true,
+          "label": "Web",
+          "protocol": "http"
+        }
+      ],
+      "assigned": [
+        {
+          "requested": {"address": "127.0.0.1", "port": 8080},
+          "assigned": null
+        }
+      ]
+    },
+    "provisioned": {
+      "remoteUser": "vscode",
+      "remoteWorkspaceFolder": "/workspaces/project",
+      "containerArchitecture": "aarch64",
+      "agentPath": "/usr/local/libexec/cdenv/cdenv-agent",
+      "agentBuildId": "release-1",
+      "protocolVersion": 1,
+      "environmentPath": "/run/cdenv/environment.bin"
+    }
+  }
+}

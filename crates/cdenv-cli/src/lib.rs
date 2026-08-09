@@ -9,6 +9,7 @@ mod error;
 mod installation;
 mod output;
 mod paths;
+mod state;
 mod storage;
 
 pub use command_line::{
@@ -20,7 +21,8 @@ pub use command_line::{
 pub use error::ApplicationError;
 pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
-    Installation, InstallationError, InstallationRecord, KeyedDigest, SshIncludeConsent,
+    Installation, InstallationError, InstallationRecord, KeyedDigest, KeyedDigestError,
+    PlanFingerprintCategory, SshIncludeConsent,
 };
 pub use output::{
     ErrorDetail, ErrorEnvelope, JSON_SCHEMA_VERSION, OutputRenderError, OutputWarning,
@@ -30,6 +32,14 @@ pub use paths::{
     CDENV_HOME, CachePaths, CdenvRoot, ManagedPathError, ManagedPathKind, ManagedPathState,
     ProcessEnvironment, RequiredPathError, RootEnvironment, RootResolutionError, RootSource,
     SshPaths, WorkspacePaths, inspect_managed_path, validate_openssh_path, validate_required_path,
+};
+pub use state::{
+    ActiveForwarding, ActiveGeneration, ActiveScenario, DeclaredForward, DesiredConfigPath,
+    DesiredConfigPathError, ForwardProtocol, LifecycleCheckpoint, LifecycleStage,
+    LoadedWorkspaceState, MigrationStatus, OperationState, OperationStateError, PlanFingerprints,
+    ProvisionedState, SanitizedRepositorySource, SanitizedSummary, StateTimestamp,
+    StateTimestampError, WORKSPACE_STATE_SCHEMA_VERSION, WorkspaceState, WorkspaceStateError,
+    decode_workspace_state, load_workspace_state, persist_workspace_state,
 };
 pub use storage::{
     AtomicWriteStage, ManagedMode, StorageError, atomic_write, ensure_private_directory,

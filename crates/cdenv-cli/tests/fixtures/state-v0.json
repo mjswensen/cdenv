@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 0,
+  "installationId": "0123456789abcdef0123456789abcdef",
+  "name": "legacy-project",
+  "repositorySource": "https://example.test/legacy-project.git",
+  "devcontainerConfig": ".devcontainer/devcontainer.json",
+  "desiredFingerprints": {
+    "build": "keyed:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "create": "keyed:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "runtime": "keyed:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  },
+  "createdAt": "2024-12-01T01:02:03Z",
+  "operation": {
+    "kind": "idle",
+    "id": null,
+    "startedAt": null
+  },
+  "lastError": null,
+  "active": null
+}

@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "installationId": "0123456789abcdef0123456789abcdef",
+  "name": "project",
+  "repositorySource": "https://example.test/project.git",
+  "devcontainerProfile": "cdenv-devcontainer-v1",
+  "desiredDevcontainerConfig": ".devcontainer/devcontainer.json",
+  "desiredFingerprints": {
+    "build": "keyed:1111111111111111111111111111111111111111111111111111111111111111",
+    "create": "keyed:2222222222222222222222222222222222222222222222222222222222222222",
+    "runtime": "keyed:3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "createdAt": "2025-01-02T03:04:05Z",
+  "lastUpAt": null,
+  "operation": {
+    "kind": "idle",
+    "id": null,
+    "startedAt": null
+  },
+  "lastError": null,
+  "active": null
+}

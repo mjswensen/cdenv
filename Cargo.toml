@@ -20,6 +20,14 @@ publish = false
 
 [workspace.dependencies]
 bollard = { version = "=0.21.0", default-features = false, features = ["pipe"] }
+cdenv-core = { version = "0.1.0", path = "crates/cdenv-core" }
+clap = { version = "4.6.6", default-features = false, features = [
+    "derive",
+    "error-context",
+    "help",
+    "std",
+    "usage",
+] }
 flate2 = "1.1.9"
 futures-util = "0.3.33"
 hex = "0.4.3"

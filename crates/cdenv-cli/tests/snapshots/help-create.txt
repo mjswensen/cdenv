@@ -1,0 +1,14 @@
+Clone a Git repository and create its environment
+
+Usage: cdenv create [OPTIONS] <GIT_SOURCE>
+
+Arguments:
+  <GIT_SOURCE>  The Git URL, SCP-like source, or local repository path to clone
+
+Options:
+      --name <NAME>           An explicit validated workspace name instead of source-derived naming
+      --root <PATH>           Use a specific cdenv root instead of environment or home-directory defaults
+      --config <PATH>         An explicit repository-relative Dev Container configuration path
+      --modify-ssh-config     Allow cdenv to add its Include directive to the user SSH config
+      --no-modify-ssh-config  Record that cdenv must not modify the user SSH config
+  -h, --help                  Print help

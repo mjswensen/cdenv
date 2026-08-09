@@ -1,0 +1,12 @@
+Bridge an OpenSSH stdio transport to a workspace agent
+
+Usage: cdenv proxy [OPTIONS] <WORKSPACE_NAME_OR_HOST>
+
+Arguments:
+  <WORKSPACE_NAME_OR_HOST>  A workspace name or its exact `<name>.cdenv` SSH host
+
+Options:
+      --root <PATH>           Use a specific cdenv root instead of environment or home-directory defaults
+      --modify-ssh-config     Allow cdenv to add its Include directive to the user SSH config
+      --no-modify-ssh-config  Record that cdenv must not modify the user SSH config
+  -h, --help                  Print help

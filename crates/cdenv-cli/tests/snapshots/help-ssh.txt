@@ -1,0 +1,13 @@
+Connect to a workspace with system OpenSSH
+
+Usage: cdenv ssh [OPTIONS] <NAME> [-- [REMOTE_ARG]...]
+
+Arguments:
+  <NAME>           The workspace to connect to
+  [REMOTE_ARG]...  Remote command arguments preserved exactly after the `--` delimiter
+
+Options:
+      --root <PATH>           Use a specific cdenv root instead of environment or home-directory defaults
+      --modify-ssh-config     Allow cdenv to add its Include directive to the user SSH config
+      --no-modify-ssh-config  Record that cdenv must not modify the user SSH config
+  -h, --help                  Print help

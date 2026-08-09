@@ -1,0 +1,14 @@
+Forward local TCP ports to a workspace
+
+Usage: cdenv forward [OPTIONS] <NAME> <LOCAL_PORT:CONTAINER_PORT>...
+
+Arguments:
+  <NAME>                          The workspace whose container network receives the connections
+  <LOCAL_PORT:CONTAINER_PORT>...  One or more local-to-container TCP port mappings
+
+Options:
+      --bind <ADDRESS>        The local IP address on which OpenSSH listens [default: 127.0.0.1]
+      --root <PATH>           Use a specific cdenv root instead of environment or home-directory defaults
+      --modify-ssh-config     Allow cdenv to add its Include directive to the user SSH config
+      --no-modify-ssh-config  Record that cdenv must not modify the user SSH config
+  -h, --help                  Print help

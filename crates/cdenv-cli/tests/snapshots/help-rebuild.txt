@@ -1,0 +1,14 @@
+Replace a workspace environment from its current configuration
+
+Usage: cdenv rebuild [OPTIONS] <NAME>
+
+Arguments:
+  <NAME>  The workspace whose environment will be replaced
+
+Options:
+      --config <PATH>         A desired repository-relative Dev Container configuration path
+      --root <PATH>           Use a specific cdenv root instead of environment or home-directory defaults
+      --modify-ssh-config     Allow cdenv to add its Include directive to the user SSH config
+      --no-cache              Disable Docker and Compose build caches for this rebuild
+      --no-modify-ssh-config  Record that cdenv must not modify the user SSH config
+  -h, --help                  Print help

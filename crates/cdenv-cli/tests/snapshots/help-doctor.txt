@@ -1,0 +1,10 @@
+Diagnose cdenv without making repairs
+
+Usage: cdenv doctor [OPTIONS]
+
+Options:
+      --json                  Emit one versioned JSON document
+      --root <PATH>           Use a specific cdenv root instead of environment or home-directory defaults
+      --modify-ssh-config     Allow cdenv to add its Include directive to the user SSH config
+      --no-modify-ssh-config  Record that cdenv must not modify the user SSH config
+  -h, --help                  Print help

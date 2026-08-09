@@ -1,0 +1,23 @@
+Manage isolated Docker-backed development environments
+
+Usage: cdenv [OPTIONS] <COMMAND>
+
+Commands:
+  create   Clone a Git repository and create its environment
+  list     List managed workspaces
+  up       Create or start a workspace environment
+  down     Stop a workspace environment
+  rebuild  Replace a workspace environment from its current configuration
+  status   Show detailed workspace status
+  ssh      Connect to a workspace with system OpenSSH
+  forward  Forward local TCP ports to a workspace
+  lock     Create or update a workspace Feature lockfile
+  proxy    Bridge an OpenSSH stdio transport to a workspace agent
+  doctor   Diagnose cdenv without making repairs
+
+Options:
+      --root <PATH>           Use a specific cdenv root instead of environment or home-directory defaults
+      --modify-ssh-config     Allow cdenv to add its Include directive to the user SSH config
+      --no-modify-ssh-config  Record that cdenv must not modify the user SSH config
+  -h, --help                  Print help
+  -V, --version               Print version

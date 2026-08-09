@@ -1,0 +1,1 @@
+{"schemaVersion":1,"error":{"code":"command_unavailable","message":"command `status` is not implemented in this build"},"warnings":[]}

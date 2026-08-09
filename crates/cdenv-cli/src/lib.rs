@@ -6,8 +6,10 @@
 
 mod command_line;
 mod error;
+mod installation;
 mod output;
 mod paths;
+mod storage;
 
 pub use command_line::{
     CliCommand, CommandKind, CommandLine, CreateArgs, DoctorArgs, DownArgs, ForwardArgs,
@@ -16,6 +18,10 @@ pub use command_line::{
     UpArgs, WorkspaceSelector, WorkspaceSelectorError,
 };
 pub use error::ApplicationError;
+pub use installation::{
+    FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
+    Installation, InstallationError, InstallationRecord, KeyedDigest, SshIncludeConsent,
+};
 pub use output::{
     ErrorDetail, ErrorEnvelope, JSON_SCHEMA_VERSION, OutputRenderError, OutputWarning,
     SuccessEnvelope, render_application_result, render_json_error, render_json_success,
@@ -24,6 +30,10 @@ pub use paths::{
     CDENV_HOME, CachePaths, CdenvRoot, ManagedPathError, ManagedPathKind, ManagedPathState,
     ProcessEnvironment, RequiredPathError, RootEnvironment, RootResolutionError, RootSource,
     SshPaths, WorkspacePaths, inspect_managed_path, validate_openssh_path, validate_required_path,
+};
+pub use storage::{
+    AtomicWriteStage, ManagedMode, StorageError, atomic_write, ensure_private_directory,
+    tighten_managed_file,
 };
 
 /// Resolves the process root once and invokes the selected command.

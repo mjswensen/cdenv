@@ -17,6 +17,12 @@ pub enum ApplicationError {
     /// The process could not select a valid cdenv root.
     #[error(transparent)]
     RootResolution(#[from] RootResolutionError),
+    /// Checkout creation failed with a credential-safe typed summary.
+    #[error("create failed: {message}")]
+    CreateFailed {
+        /// Sanitized create-transaction message.
+        message: String,
+    },
     /// Parsing exists, but this implementation stage has no command workflow.
     #[error("command `{command}` is not implemented in this build")]
     CommandUnavailable {
@@ -31,6 +37,7 @@ impl ApplicationError {
     pub const fn machine_code(&self) -> &'static str {
         match self {
             Self::RootResolution(_) => "root_resolution_failed",
+            Self::CreateFailed { .. } => "create_failed",
             Self::CommandUnavailable { .. } => "command_unavailable",
         }
     }
@@ -39,7 +46,9 @@ impl ApplicationError {
     #[must_use]
     pub const fn exit_code(&self) -> ExitCode {
         match self {
-            Self::RootResolution(_) | Self::CommandUnavailable { .. } => ExitCode::FAILURE,
+            Self::RootResolution(_)
+            | Self::CreateFailed { .. }
+            | Self::CommandUnavailable { .. } => ExitCode::FAILURE,
         }
     }
 }

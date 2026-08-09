@@ -658,6 +658,24 @@ impl WorkspaceState {
         &self.desired_fingerprints
     }
 
+    /// Returns the persisted credential-safe repository description.
+    #[must_use]
+    pub const fn repository_source(&self) -> &SanitizedRepositorySource {
+        &self.repository_source
+    }
+
+    /// Returns the desired repository-relative configuration selection.
+    #[must_use]
+    pub const fn desired_devcontainer_config(&self) -> &DesiredConfigPath {
+        &self.desired_devcontainer_config
+    }
+
+    /// Returns the latest concise failure summary, if any.
+    #[must_use]
+    pub const fn last_error(&self) -> Option<&SanitizedSummary> {
+        self.last_error.as_ref()
+    }
+
     /// Returns persisted foreground-operation recovery intent.
     #[must_use]
     pub const fn operation(&self) -> &OperationState {

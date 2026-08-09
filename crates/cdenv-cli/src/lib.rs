@@ -5,7 +5,9 @@
 //! this boundary without moving parsing or rendering into the executable.
 
 mod command_line;
+mod create;
 mod error;
+mod git;
 mod installation;
 mod locking;
 mod output;
@@ -20,7 +22,12 @@ pub use command_line::{
     RepoRelativeConfigPath, RepoRelativeConfigPathError, SshArgs, SshConfigConsent, StatusArgs,
     UpArgs, WorkspaceSelector, WorkspaceSelectorError,
 };
+pub use create::{
+    ConfigContainmentError, CreateWorkspaceError, CreateWorkspaceRequest, CreatedWorkspace,
+    create_workspace, validate_explicit_config,
+};
 pub use error::ApplicationError;
+pub use git::{CancellationToken, GitAdapter, GitError, GitVersion, OperationLogError};
 pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
     Installation, InstallationError, InstallationRecord, KeyedDigest, KeyedDigestError,
@@ -89,15 +96,31 @@ pub fn invoke_with_environment(
 ///
 /// # Errors
 ///
-/// Returns [`ApplicationError::CommandUnavailable`] until the selected command
-/// workflow is implemented by its corresponding implementation chunk.
+/// Runs checkout creation for `create`. Other parsed commands return
+/// [`ApplicationError::CommandUnavailable`] until their workflow chunk lands.
 pub fn invoke_with_root(
     command_line: &CommandLine,
-    _root: &CdenvRoot,
+    root: &CdenvRoot,
 ) -> Result<(), ApplicationError> {
-    Err(ApplicationError::CommandUnavailable {
-        command: command_line.command().kind(),
-    })
+    match command_line.command() {
+        CliCommand::Create(arguments) => create_workspace(
+            root,
+            CreateWorkspaceRequest {
+                source: &arguments.git_source,
+                name: arguments.name.as_ref(),
+                config: arguments.config.as_ref(),
+            },
+            &GitAdapter::system(),
+            &CancellationToken::default(),
+        )
+        .map(|_| ())
+        .map_err(|error| ApplicationError::CreateFailed {
+            message: error.to_string(),
+        }),
+        command => Err(ApplicationError::CommandUnavailable {
+            command: command.kind(),
+        }),
+    }
 }
 
 #[cfg(test)]

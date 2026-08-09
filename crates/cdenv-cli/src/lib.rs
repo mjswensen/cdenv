@@ -7,10 +7,12 @@
 mod command_line;
 mod error;
 mod installation;
+mod locking;
 mod output;
 mod paths;
 mod state;
 mod storage;
+mod workspace_registry;
 
 pub use command_line::{
     CliCommand, CommandKind, CommandLine, CreateArgs, DoctorArgs, DownArgs, ForwardArgs,
@@ -23,6 +25,10 @@ pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
     Installation, InstallationError, InstallationRecord, KeyedDigest, KeyedDigestError,
     PlanFingerprintCategory, SshIncludeConsent,
+};
+pub use locking::{
+    AttachSetupError, LockBehavior, LockError, LockGuard, LockMode, ensure_lock_file,
+    with_shared_lock_for_attach,
 };
 pub use output::{
     ErrorDetail, ErrorEnvelope, JSON_SCHEMA_VERSION, OutputRenderError, OutputWarning,
@@ -44,6 +50,12 @@ pub use state::{
 pub use storage::{
     AtomicWriteStage, ManagedMode, StorageError, atomic_write, ensure_private_directory,
     tighten_managed_file,
+};
+pub use workspace_registry::{
+    EnumeratedWorkspace, EnumerationError, PersistedOperationStatus, ReservationError,
+    SupervisorRuntimeInspection, WorkspaceEntryStatus, WorkspaceReservation,
+    classify_persisted_operation, enumerate_workspaces, inspect_supervisor_runtime,
+    reserve_workspace,
 };
 
 /// Resolves the process root once and invokes the selected command.

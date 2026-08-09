@@ -180,6 +180,12 @@ impl CdenvRoot {
         self.0.join("workspaces")
     }
 
+    /// Returns the brief global workspace-name reservation lock.
+    #[must_use]
+    pub fn workspace_namespace_lock(&self) -> PathBuf {
+        self.workspaces_dir().join(".namespace.lock")
+    }
+
     /// Derives all paths belonging to one validated workspace name.
     #[must_use]
     pub const fn workspace<'a>(&'a self, name: &'a WorkspaceName) -> WorkspacePaths<'a> {
@@ -265,6 +271,24 @@ impl WorkspacePaths<'_> {
     #[must_use]
     pub fn runtime_dir(&self) -> PathBuf {
         self.root().join("runtime")
+    }
+
+    /// Returns the private forwarding-supervisor control socket path.
+    #[must_use]
+    pub fn supervisor_socket(&self) -> PathBuf {
+        self.runtime_dir().join("supervisor.sock")
+    }
+
+    /// Returns the private forwarding-supervisor identity/state path.
+    #[must_use]
+    pub fn supervisor_state_file(&self) -> PathBuf {
+        self.runtime_dir().join("supervisor.json")
+    }
+
+    /// Returns the forwarding-supervisor lifetime lock path.
+    #[must_use]
+    pub fn supervisor_lifetime_lock(&self) -> PathBuf {
+        self.runtime_dir().join(".supervisor.lock")
     }
 
     /// Returns the workspace log directory.
@@ -406,6 +430,8 @@ pub enum ManagedPathKind {
     Directory,
     /// A regular file is required.
     File,
+    /// A Unix-domain socket is required.
+    Socket,
 }
 
 /// The non-mutating result of inspecting a managed path.
@@ -493,6 +519,7 @@ pub fn inspect_managed_path(
     let kind_matches = match expected_kind {
         ManagedPathKind::Directory => file_type.is_dir(),
         ManagedPathKind::File => file_type.is_file(),
+        ManagedPathKind::Socket => is_socket(file_type),
     };
     if !kind_matches {
         return Err(ManagedPathError::WrongKind {
@@ -503,6 +530,18 @@ pub fn inspect_managed_path(
 
     inspect_owner(path, &metadata, expected_owner)?;
     Ok(ManagedPathState::Valid)
+}
+
+#[cfg(unix)]
+fn is_socket(file_type: fs::FileType) -> bool {
+    use std::os::unix::fs::FileTypeExt;
+
+    file_type.is_socket()
+}
+
+#[cfg(not(unix))]
+const fn is_socket(_file_type: fs::FileType) -> bool {
+    false
 }
 
 #[cfg(unix)]
@@ -614,11 +653,15 @@ mod tests {
             [
                 root.installation_file(),
                 root.fingerprint_key(),
+                root.workspace_namespace_lock(),
                 workspace.root(),
                 workspace.checkout(),
                 workspace.state_file(),
                 workspace.lock_file(),
                 workspace.runtime_dir(),
+                workspace.supervisor_socket(),
+                workspace.supervisor_state_file(),
+                workspace.supervisor_lifetime_lock(),
                 workspace.logs_dir(),
                 root.ssh().config(),
                 root.ssh().known_hosts(),
@@ -633,11 +676,15 @@ mod tests {
             [
                 PathBuf::from("/root/.cdenv/installation.json"),
                 PathBuf::from("/root/.cdenv/fingerprint.key"),
+                PathBuf::from("/root/.cdenv/workspaces/.namespace.lock"),
                 PathBuf::from("/root/.cdenv/workspaces/project"),
                 PathBuf::from("/root/.cdenv/workspaces/project/checkout/project"),
                 PathBuf::from("/root/.cdenv/workspaces/project/state.json"),
                 PathBuf::from("/root/.cdenv/workspaces/project/.lock"),
                 PathBuf::from("/root/.cdenv/workspaces/project/runtime"),
+                PathBuf::from("/root/.cdenv/workspaces/project/runtime/supervisor.sock"),
+                PathBuf::from("/root/.cdenv/workspaces/project/runtime/supervisor.json"),
+                PathBuf::from("/root/.cdenv/workspaces/project/runtime/.supervisor.lock"),
                 PathBuf::from("/root/.cdenv/workspaces/project/logs"),
                 PathBuf::from("/root/.cdenv/ssh/config"),
                 PathBuf::from("/root/.cdenv/ssh/known_hosts"),

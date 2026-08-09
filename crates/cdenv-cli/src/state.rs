@@ -658,6 +658,18 @@ impl WorkspaceState {
         &self.desired_fingerprints
     }
 
+    /// Returns persisted foreground-operation recovery intent.
+    #[must_use]
+    pub const fn operation(&self) -> &OperationState {
+        &self.operation
+    }
+
+    /// Returns the validated workspace name.
+    #[must_use]
+    pub const fn name(&self) -> &WorkspaceName {
+        &self.name
+    }
+
     /// Returns the last completely provisioned generation, if any.
     #[must_use]
     pub const fn active(&self) -> Option<&ActiveGeneration> {

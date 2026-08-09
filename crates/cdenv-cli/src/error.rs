@@ -4,16 +4,19 @@ use std::process::ExitCode;
 
 use thiserror::Error;
 
-use crate::CommandKind;
+use crate::{CommandKind, RootResolutionError};
 
 /// A typed failure returned by the host application boundary.
 ///
 /// Adapter and domain crates retain their focused error types. This boundary
 /// maps only user-visible application failures to machine codes and process
 /// status.
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ApplicationError {
+    /// The process could not select a valid cdenv root.
+    #[error(transparent)]
+    RootResolution(#[from] RootResolutionError),
     /// Parsing exists, but this implementation stage has no command workflow.
     #[error("command `{command}` is not implemented in this build")]
     CommandUnavailable {
@@ -27,6 +30,7 @@ impl ApplicationError {
     #[must_use]
     pub const fn machine_code(&self) -> &'static str {
         match self {
+            Self::RootResolution(_) => "root_resolution_failed",
             Self::CommandUnavailable { .. } => "command_unavailable",
         }
     }
@@ -35,7 +39,7 @@ impl ApplicationError {
     #[must_use]
     pub const fn exit_code(&self) -> ExitCode {
         match self {
-            Self::CommandUnavailable { .. } => ExitCode::FAILURE,
+            Self::RootResolution(_) | Self::CommandUnavailable { .. } => ExitCode::FAILURE,
         }
     }
 }

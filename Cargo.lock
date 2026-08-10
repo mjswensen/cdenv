@@ -35,6 +35,7 @@ name = "cdenv-cli"
 version = "0.1.0"
 dependencies = [
  "cdenv-core",
+ "cdenv-devcontainer",
  "clap",
  "getrandom",
  "hex",
@@ -60,6 +61,13 @@ dependencies = [
 [[package]]
 name = "cdenv-devcontainer"
 version = "0.1.0"
+dependencies = [
+ "hex",
+ "jsonc-parser",
+ "serde_json",
+ "sha2",
+ "thiserror",
+]
 
 [[package]]
 name = "cdenv-integration-tests"
@@ -331,6 +339,16 @@ name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+
+[[package]]
+name = "jsonc-parser"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a0560e3f9a9a03ea6b6e90b41138c5db9e21526c99eb192c1a26c68176593285"
+dependencies = [
+ "serde",
+ "serde_json",
+]
 
 [[package]]
 name = "libc"

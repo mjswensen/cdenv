@@ -5,6 +5,7 @@
 //! this boundary without moving parsing or rendering into the executable.
 
 mod command_line;
+mod config;
 mod create;
 mod error;
 mod git;
@@ -22,6 +23,7 @@ pub use command_line::{
     RepoRelativeConfigPath, RepoRelativeConfigPathError, SshArgs, SshConfigConsent, StatusArgs,
     UpArgs, WorkspaceSelector, WorkspaceSelectorError,
 };
+pub use config::{ConfigLoadError, ConfigSource, discover_and_read_config};
 pub use create::{
     ConfigContainmentError, CreateWorkspaceError, CreateWorkspaceRequest, CreatedWorkspace,
     create_workspace, validate_explicit_config,

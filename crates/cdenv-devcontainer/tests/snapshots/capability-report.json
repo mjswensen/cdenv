@@ -1,0 +1,89 @@
+{
+  "families": [
+    {
+      "family": "authoring",
+      "properties": [
+        "$schema",
+        "name",
+        "customizations",
+        "secrets"
+      ]
+    },
+    {
+      "family": "scenarios",
+      "properties": [
+        "image",
+        "build",
+        "dockerComposeFile",
+        "service",
+        "runServices"
+      ]
+    },
+    {
+      "family": "workspace",
+      "properties": [
+        "workspaceFolder",
+        "workspaceMount",
+        "mounts"
+      ]
+    },
+    {
+      "family": "features",
+      "properties": [
+        "features",
+        "overrideFeatureInstallOrder"
+      ]
+    },
+    {
+      "family": "environment-and-users",
+      "properties": [
+        "containerEnv",
+        "remoteEnv",
+        "containerUser",
+        "remoteUser",
+        "updateRemoteUserUID",
+        "userEnvProbe"
+      ]
+    },
+    {
+      "family": "container-runtime",
+      "properties": [
+        "overrideCommand",
+        "init",
+        "privileged",
+        "capAdd",
+        "securityOpt",
+        "runArgs"
+      ]
+    },
+    {
+      "family": "ports",
+      "properties": [
+        "appPort",
+        "forwardPorts",
+        "portsAttributes",
+        "otherPortsAttributes"
+      ]
+    },
+    {
+      "family": "lifecycle",
+      "properties": [
+        "initializeCommand",
+        "onCreateCommand",
+        "updateContentCommand",
+        "postCreateCommand",
+        "postStartCommand",
+        "postAttachCommand",
+        "waitFor",
+        "shutdownAction"
+      ]
+    },
+    {
+      "family": "host-requirements",
+      "properties": [
+        "hostRequirements"
+      ]
+    }
+  ],
+  "profileRevision": "cdenv-devcontainer-v1"
+}

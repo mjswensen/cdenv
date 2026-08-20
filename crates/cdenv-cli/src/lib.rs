@@ -11,6 +11,7 @@ mod create;
 mod docker;
 mod docker_cli;
 mod error;
+mod feature_sources;
 mod git;
 mod image_orchestration;
 mod installation;
@@ -55,6 +56,12 @@ pub use docker_cli::{
     build_arguments, create_arguments, pull_arguments,
 };
 pub use error::ApplicationError;
+pub use feature_sources::{
+    FeatureSourceError, FeatureSourceLimits, FeatureSourceResolver, MAX_FEATURE_BLOB_BYTES,
+    MAX_FEATURE_EXPANSION_RATIO, MAX_FEATURE_EXTRACTED_BYTES, MAX_FEATURE_FILES,
+    MAX_FEATURE_METADATA_BYTES, MAX_FEATURE_PATH_BYTES, MAX_FEATURE_REDIRECTS, VerifiedFeature,
+    extract_archive,
+};
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
 pub use image_orchestration::{
     ImageCleanupFailure, ImageContainerCreateRequest, ImageContainerError, ImageContainerFacts,

@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use serde::Serialize;
 use serde_json::{Map, Value};
 
 use crate::{Diagnostic, RawDocument, SourceSpan};
@@ -308,7 +309,8 @@ pub enum ShutdownAction {
     /// Validated profile choice.
     StopCompose,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 /// Typed value from the validated raw profile.
 pub enum UserEnvProbe {
     /// Validated profile choice.

@@ -5,14 +5,21 @@
 //! subprocess adapters belong to the host application rather than this crate.
 
 mod discovery;
+mod host_requirements;
 mod jsonc;
 mod metadata;
+mod planning;
 mod profile;
 mod schema;
 mod substitution;
 
 pub use discovery::{
     ConfigInventory, ConfigPath, ConfigPathError, DiscoveryError, discover_config,
+};
+pub use host_requirements::{
+    GpuAccessIntent, GpuCapabilities, HostCapabilities, HostRequirementError,
+    HostRequirementEvaluation, HostRequirementWarning, HostRequirementWarningKind, HostResource,
+    Measured, UnknownMeasurement, evaluate_host_requirements,
 };
 pub use jsonc::{
     BoundKind, Diagnostic, JsoncError, MAX_ARRAY_ITEMS, MAX_CONFIG_BYTES,
@@ -21,6 +28,13 @@ pub use jsonc::{
 };
 pub use metadata::{
     EffectiveLifecycle, EffectiveMetadata, ImageMetadata, MetadataError, merge_image_metadata,
+};
+pub use planning::{
+    ContainerPath, ContainerUser, EnvironmentPlan, EnvironmentSummary, HostMountSource,
+    HostUserIdentity, MountOption, PathValidationError, PlannedMount, PlanningError,
+    PlanningErrorKind, RuntimePlan, RuntimePlanSummary, RuntimePlanningInputs, ScenarioMetadata,
+    UidUpdateIntent, UidUpdateSkipReason, UidUpdateSummary, UserValidationError, WorkspacePlan,
+    plan_runtime,
 };
 pub use profile::{
     AppPort, AutoForwardAction, Capability, CommandValue, ComposeScenario, DockerfileScenario,

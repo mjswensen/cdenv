@@ -298,7 +298,9 @@ fn build_reserved_split_equal_and_short_forms_report_the_exact_token() {
         (vec!["-o", "type=local,dest=out"], "-o"),
         (vec!["--iidfile=id"], "--iidfile=id"),
         (vec!["--metadata-file", "metadata.json"], "--metadata-file"),
+        (vec!["--push"], "--push"),
         (vec!["--label", "cdenv.workspace=other"], "--label"),
+        (vec!["--label-file=labels.txt"], "--label-file=labels.txt"),
     ];
     for (options, expected) in cases {
         let options = serde_json::to_string(&options).expect("options JSON");
@@ -330,6 +332,11 @@ fn run_reserved_options_and_owned_mounts_report_exact_tokens() {
         (vec!["--rm"], DockerOptionErrorKind::AutoRemove),
         (vec!["-u1000"], DockerOptionErrorKind::ContainerUser),
         (vec!["-it"], DockerOptionErrorKind::AttachmentMode),
+        (vec!["--"], DockerOptionErrorKind::AttachmentMode),
+        (
+            vec!["--label-file=labels.txt"],
+            DockerOptionErrorKind::IdentityLabel,
+        ),
         (
             vec!["--label", "cdenv.generation=9"],
             DockerOptionErrorKind::IdentityLabel,

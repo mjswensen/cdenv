@@ -240,6 +240,19 @@ fn substitute_run_arguments(
         .collect()
 }
 
+/// Revalidates ordered build passthrough options at an adapter boundary.
+///
+/// Typed plans are expected to have passed this validation already. Host adapters call this
+/// defensively immediately before spawning Docker so a future or alternate planner cannot bypass
+/// cdenv-owned Dockerfile, context, output, tag, or identity settings.
+///
+/// # Errors
+///
+/// Returns the exact offending argument for every reserved or positional context form.
+pub fn validate_build_options_at_boundary(arguments: &[String]) -> Result<(), DockerOptionError> {
+    validate_build_options(arguments)
+}
+
 fn validate_build_options(arguments: &[String]) -> Result<(), DockerOptionError> {
     let mut index = 0;
     while index < arguments.len() {
@@ -254,6 +267,7 @@ fn validate_build_options(arguments: &[String]) -> Result<(), DockerOptionError>
                 "--output",
                 "--iidfile",
                 "--metadata-file",
+                "--push",
             ],
         ) || reserved_short(argument, &['f', 't', 'o'])
         {
@@ -264,8 +278,8 @@ fn validate_build_options(arguments: &[String]) -> Result<(), DockerOptionError>
                 "option conflicts with cdenv-owned Dockerfile, target, tag, or build output",
             ));
         }
-        if let Some(label) = option_value(arguments, index, "--label", None)
-            && cdenv_label(label)
+        if reserved_long(argument, &["--label-file"])
+            || option_value(arguments, index, "--label", None).is_some_and(cdenv_label)
         {
             return Err(DockerOptionError::new(
                 property,
@@ -321,6 +335,20 @@ fn build_option_takes_value(argument: &str) -> bool {
     )
 }
 
+/// Revalidates ordered create passthrough options at an adapter boundary.
+///
+/// # Errors
+///
+/// Returns the exact offending argument when it conflicts with cdenv-owned container identity,
+/// attachment, user, entrypoint, workspace, or asset settings.
+pub fn validate_create_options_at_boundary(
+    arguments: &[String],
+    runtime: &RuntimePlan,
+    cdenv_owned_targets: &[ContainerPath],
+) -> Result<(), DockerOptionError> {
+    validate_run_arguments(arguments, arguments, runtime, cdenv_owned_targets)
+}
+
 fn validate_run_arguments(
     raw_arguments: &[String],
     arguments: &[String],
@@ -348,16 +376,18 @@ fn validate_run_arguments(
                 "option conflicts with a cdenv-owned create setting",
             ));
         }
-        if reserved_long(
-            argument,
-            &[
-                "--attach",
-                "--detach",
-                "--interactive",
-                "--tty",
-                "--sig-proxy",
-            ],
-        ) || reserved_attach_short(argument)
+        if argument == "--"
+            || reserved_long(
+                argument,
+                &[
+                    "--attach",
+                    "--detach",
+                    "--interactive",
+                    "--tty",
+                    "--sig-proxy",
+                ],
+            )
+            || reserved_attach_short(argument)
         {
             return Err(DockerOptionError::new(
                 property,
@@ -366,8 +396,8 @@ fn validate_run_arguments(
                 "option conflicts with cdenv-owned attach, stdin, or TTY mode",
             ));
         }
-        if let Some(label) = option_value(arguments, index, "--label", Some('l'))
-            && cdenv_label(label)
+        if reserved_long(argument, &["--label-file"])
+            || option_value(arguments, index, "--label", Some('l')).is_some_and(cdenv_label)
         {
             return Err(DockerOptionError::new(
                 property,

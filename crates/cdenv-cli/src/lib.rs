@@ -8,6 +8,7 @@ mod command_line;
 mod config;
 mod create;
 mod docker;
+mod docker_cli;
 mod error;
 mod git;
 mod installation;
@@ -35,6 +36,13 @@ pub use docker::{
     DockerCommandProbe, DockerEndpoint, DockerEndpointError, DockerEnvironment, DockerProbeError,
     DockerSocketProbe, FileSystemDockerSocketProbe, MINIMUM_COMPOSE, MINIMUM_DOCKER_API,
     MINIMUM_DOCKER_CLI, MINIMUM_DOCKER_ENGINE, ProcessDockerEnvironment, Version,
+};
+pub use docker_cli::{
+    DEFAULT_MAXIMUM_CONTEXT_BYTES, DEFAULT_MAXIMUM_CONTEXT_ENTRIES,
+    DEFAULT_MAXIMUM_GENERATED_BYTES, DockerBuildClaim, DockerBuildContext, DockerBuildRequest,
+    DockerCliAdapter, DockerCliError, DockerContextLimits, DockerCreateClaim, DockerCreateRequest,
+    DockerPullClaim, DockerResourceIdentity, DockerfileInput, GeneratedContextFile, ImageId,
+    build_arguments, create_arguments, pull_arguments,
 };
 pub use error::ApplicationError;
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};

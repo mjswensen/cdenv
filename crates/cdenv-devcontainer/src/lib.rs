@@ -24,7 +24,8 @@ pub use discovery::{
 pub use docker_options::{
     BuildPlan, CreateOptionsPlan, DockerOptionError, DockerOptionErrorKind,
     DockerOptionPlanningInputs, DockerOptionsPlan, DockerfileBuildPlan, RepositoryPath,
-    RepositoryPathError, plan_docker_options,
+    RepositoryPathError, plan_docker_options, validate_build_options_at_boundary,
+    validate_create_options_at_boundary,
 };
 pub use feature::{
     FeatureContributions, FeatureError, FeatureInstallIdentity, FeatureLock, FeatureMetadata,

@@ -7,12 +7,14 @@
 mod command_line;
 mod config;
 mod create;
+mod docker;
 mod error;
 mod git;
 mod installation;
 mod locking;
 mod output;
 mod paths;
+mod process;
 mod state;
 mod storage;
 mod workspace_registry;
@@ -28,8 +30,14 @@ pub use create::{
     ConfigContainmentError, CreateWorkspaceError, CreateWorkspaceRequest, CreatedWorkspace,
     create_workspace, validate_explicit_config,
 };
+pub use docker::{
+    ApiVersion, BollardConnector, BollardConnectorError, DOCKER_PROBE_TIMEOUT, DockerCapabilities,
+    DockerCommandProbe, DockerEndpoint, DockerEndpointError, DockerEnvironment, DockerProbeError,
+    DockerSocketProbe, FileSystemDockerSocketProbe, MINIMUM_COMPOSE, MINIMUM_DOCKER_API,
+    MINIMUM_DOCKER_CLI, MINIMUM_DOCKER_ENGINE, ProcessDockerEnvironment, Version,
+};
 pub use error::ApplicationError;
-pub use git::{CancellationToken, GitAdapter, GitError, GitVersion, OperationLogError};
+pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
 pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
     Installation, InstallationError, InstallationRecord, KeyedDigest, KeyedDigestError,
@@ -47,6 +55,10 @@ pub use paths::{
     CDENV_HOME, CachePaths, CdenvRoot, ManagedPathError, ManagedPathKind, ManagedPathState,
     ProcessEnvironment, RequiredPathError, RootEnvironment, RootResolutionError, RootSource,
     SshPaths, WorkspacePaths, inspect_managed_path, validate_openssh_path, validate_required_path,
+};
+pub use process::{
+    CancellationToken, CapturedOutput, OperationId, ProcessDeadline, ProcessEnvironmentVariable,
+    ProcessError, ProcessRequest, ProcessResult, ProcessRunner,
 };
 pub use state::{
     ActiveForwarding, ActiveGeneration, ActiveScenario, DeclaredForward, DesiredConfigPath,

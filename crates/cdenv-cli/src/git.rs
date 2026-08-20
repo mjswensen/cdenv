@@ -5,7 +5,6 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,27 +12,12 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use url::Url;
 
+use crate::process::CancellationToken;
+
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 const TERMINATION_GRACE: Duration = Duration::from_secs(2);
 const MAX_SOURCE_BYTES: usize = 16 * 1024;
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
-
-/// Cooperative cancellation shared with a running subprocess adapter.
-#[derive(Clone, Debug, Default)]
-pub struct CancellationToken(Arc<AtomicBool>);
-
-impl CancellationToken {
-    /// Requests cancellation of the current command and its process group.
-    pub fn cancel(&self) {
-        self.0.store(true, Ordering::Release);
-    }
-
-    /// Reports whether cancellation has been requested.
-    #[must_use]
-    pub fn is_cancelled(&self) -> bool {
-        self.0.load(Ordering::Acquire)
-    }
-}
 
 /// A detected system-Git semantic version.
 #[derive(Clone, Debug, PartialEq, Eq)]

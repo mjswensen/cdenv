@@ -554,8 +554,10 @@ mod tests {
             atomic_write(&link, b"replacement", ManagedMode::PrivateFile),
             Err(StorageError::ManagedPath(ManagedPathError::Symlink { .. }))
         ));
+        let directory = temporary.path().join("directory");
+        fs::create_dir(&directory).expect("directory target should exist");
         assert!(matches!(
-            atomic_write(temporary.path(), b"replacement", ManagedMode::PrivateFile),
+            atomic_write(&directory, b"replacement", ManagedMode::PrivateFile),
             Err(StorageError::ManagedPath(
                 ManagedPathError::WrongKind { .. }
             ))

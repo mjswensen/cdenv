@@ -5,16 +5,23 @@
 //! subprocess adapters belong to the host application rather than this crate.
 
 mod discovery;
+mod docker_options;
 mod host_requirements;
 mod jsonc;
 mod metadata;
 mod planning;
+mod ports;
 mod profile;
 mod schema;
 mod substitution;
 
 pub use discovery::{
     ConfigInventory, ConfigPath, ConfigPathError, DiscoveryError, discover_config,
+};
+pub use docker_options::{
+    BuildPlan, CreateOptionsPlan, DockerOptionError, DockerOptionErrorKind,
+    DockerOptionPlanningInputs, DockerOptionsPlan, DockerfileBuildPlan, RepositoryPath,
+    RepositoryPathError, plan_docker_options,
 };
 pub use host_requirements::{
     GpuAccessIntent, GpuCapabilities, HostCapabilities, HostRequirementError,
@@ -35,6 +42,12 @@ pub use planning::{
     PlanningErrorKind, RuntimePlan, RuntimePlanSummary, RuntimePlanningInputs, ScenarioMetadata,
     UidUpdateIntent, UidUpdateSkipReason, UidUpdateSummary, UserValidationError, WorkspacePlan,
     plan_runtime,
+};
+pub use ports::{
+    EffectivePortAttributes, ForwardRequest, ForwardTargetHost, ForwardingRenderInput, PortNumber,
+    PortNumberError, PortPlan, PortPlanningError, PortPlanningErrorKind, PortPlanningWarning,
+    PortPlanningWarningKind, PortRange, PublicationBinding, PublicationProtocol,
+    PublicationRequest, plan_ports,
 };
 pub use profile::{
     AppPort, AutoForwardAction, Capability, CommandValue, ComposeScenario, DockerfileScenario,

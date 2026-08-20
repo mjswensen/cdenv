@@ -336,7 +336,8 @@ pub enum WaitFor {
     /// Validated profile choice.
     PostStart,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 /// Typed value from the validated raw profile.
 pub enum AutoForwardAction {
     /// Validated profile choice.
@@ -352,7 +353,8 @@ pub enum AutoForwardAction {
     /// Validated profile choice.
     Ignore,
 }
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 /// Typed value from the validated raw profile.
 pub enum PortProtocol {
     /// Validated profile choice.
@@ -996,38 +998,46 @@ impl Validator<'_> {
         let Some(value) = value else {
             return Ok(Vec::new());
         };
-        self.array(value, "$.forwardPorts")?
-            .iter()
-            .enumerate()
-            .map(|(i, value)| {
-                let p = index_path("$.forwardPorts", i);
-                if let Value::String(text) = value {
-                    let (service, port) = text.rsplit_once(':').ok_or_else(|| {
-                        self.invalid(&p, value, "forward port must use `service:port`")
-                    })?;
-                    if service.is_empty()
-                        || !service
-                            .chars()
-                            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-                    {
-                        return Err(self.invalid(
-                            &p,
-                            value,
-                            "invalid Compose service port reference",
-                        ));
-                    }
-                    let port = port
-                        .parse::<u16>()
-                        .map_err(|_| self.invalid(&p, value, "port must be between 0 and 65535"))?;
-                    Ok(ForwardPort::Service {
-                        service: service.to_owned(),
-                        port,
-                    })
-                } else {
-                    self.port_number(value, &p).map(ForwardPort::Container)
+        let mut result = Vec::new();
+        let mut requested_ports = std::collections::BTreeSet::new();
+        for (i, value) in self.array(value, "$.forwardPorts")?.iter().enumerate() {
+            let p = index_path("$.forwardPorts", i);
+            let forward = if let Value::String(text) = value {
+                let (service, port) = text.rsplit_once(':').ok_or_else(|| {
+                    self.invalid(&p, value, "forward port must use `service:port`")
+                })?;
+                if service.is_empty()
+                    || !service
+                        .chars()
+                        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
+                {
+                    return Err(self.invalid(&p, value, "invalid Compose service port reference"));
                 }
-            })
-            .collect()
+                let port = port
+                    .parse::<u16>()
+                    .ok()
+                    .filter(|port| *port > 0)
+                    .ok_or_else(|| self.invalid(&p, value, "port must be between 1 and 65535"))?;
+                ForwardPort::Service {
+                    service: service.to_owned(),
+                    port,
+                }
+            } else {
+                ForwardPort::Container(self.port_number(value, &p)?)
+            };
+            let port = match &forward {
+                ForwardPort::Container(port) | ForwardPort::Service { port, .. } => *port,
+            };
+            if !requested_ports.insert(port) {
+                return Err(self.invalid(
+                    &p,
+                    value,
+                    "multiple forwards cannot request the same local port",
+                ));
+            }
+            result.push(forward);
+        }
+        Ok(result)
     }
 
     fn port_attributes_map(
@@ -1469,7 +1479,8 @@ impl Validator<'_> {
         value
             .as_u64()
             .and_then(|v| u16::try_from(v).ok())
-            .ok_or_else(|| self.invalid(p, value, "port must be an integer between 0 and 65535"))
+            .filter(|port| *port > 0)
+            .ok_or_else(|| self.invalid(p, value, "port must be an integer between 1 and 65535"))
     }
     fn positive_integer(
         &self,

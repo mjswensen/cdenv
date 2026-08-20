@@ -7,6 +7,12 @@
       "skillPath": "skills/engineering/code-review/SKILL.md",
       "computedHash": "56a409d679605958439d1e9ca6c11c29835a4be95584825967ea4a491803ebd2"
     },
+    "git-issues": {
+      "source": "mjswensen/skills",
+      "sourceType": "github",
+      "skillPath": "git-issues/SKILL.md",
+      "computedHash": "f5eb85a586e7b7eec8d717a1bdc3f43c99d3ba38092f72016e00065d38c893ab"
+    },
     "grill-me": {
       "source": "mattpocock/skills",
       "sourceType": "github",

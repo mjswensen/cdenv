@@ -1,10 +1,13 @@
 //! Typed discovery, verification, and control for cdenv-owned Docker resources.
 
+mod exec;
+
 use std::collections::{BTreeMap, HashMap};
 use std::future::Future;
 use std::time::Duration;
 
 use bollard::Docker;
+use bollard::exec::{CreateExecOptions, StartExecOptions, StartExecResults};
 use bollard::models::{ContainerInspectResponse, ContainerSummary, ImageInspect};
 use bollard::query_parameters::{
     ListContainersOptionsBuilder, RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder,
@@ -14,7 +17,15 @@ use cdenv_core::{
     ContainerArchitecture, ContainerId, GenerationId, InstallationId, ProfileId,
     UnsupportedContainerArchitecture, WorkspaceName,
 };
+use futures_util::StreamExt;
 use thiserror::Error;
+
+pub use exec::{
+    AttachedExec, DetachedExec, ExecCommand, ExecId, ExecInspect, ExecStreamError,
+    MAXIMUM_EXEC_FRAME_BYTES, decode_docker_multiplexed,
+};
+
+use exec::{ExecApiConfiguration, ExecApiIo, ExecOutput};
 
 use crate::{BollardConnector, DockerEndpoint, ImageId};
 
@@ -251,6 +262,17 @@ pub enum BollardApiRequest {
     RemoveContainer { id: String },
     /// Exact image removal.
     RemoveImage { id: String },
+    /// Create an attached or detached Exec configuration.
+    CreateExec {
+        /// Exact container ID.
+        container: String,
+        /// Owned Exec settings.
+        configuration: ExecApiConfiguration,
+    },
+    /// Start an Exec process without attaching streams.
+    StartDetachedExec { id: String },
+    /// Inspect an Exec process.
+    InspectExec { id: String },
 }
 
 /// Internal API response paired with [`BollardApiRequest`].
@@ -265,6 +287,10 @@ pub enum BollardApiResponse {
     Container(Box<ContainerInspectResponse>),
     /// Image inspection.
     Image(Box<ImageInspect>),
+    /// Created Exec ID.
+    ExecCreated(String),
+    /// Exec inspection response.
+    ExecInspect(Box<bollard::models::ExecInspectResponse>),
     /// Successful unit response.
     Unit,
 }
@@ -272,11 +298,24 @@ pub enum BollardApiResponse {
 /// Static-dispatch API seam used by the real Bollard client and deterministic fakes.
 #[doc(hidden)]
 pub trait BollardApi: Clone + Send + Sync + 'static {
-    /// Executes one typed API request.
+    /// Executes one typed control API request.
     fn execute(
         &self,
         request: BollardApiRequest,
     ) -> impl Future<Output = Result<BollardApiResponse, BollardApiError>> + Send;
+
+    /// Starts an attached Exec upgrade and returns its separated API streams.
+    fn start_attached_exec(
+        &self,
+        _id: String,
+        _output_capacity: usize,
+    ) -> impl Future<Output = Result<ExecApiIo, BollardApiError>> + Send {
+        async {
+            Err(BollardApiError {
+                message: "attached Exec is unavailable from this API implementation".to_owned(),
+            })
+        }
+    }
 }
 
 /// A bounded, safe rendering of a lower-level API failure.
@@ -306,6 +345,10 @@ pub struct BollardClientApi {
 }
 
 impl BollardApi for BollardClientApi {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the one-request dispatch keeps the exact API mapping auditable in one match"
+    )]
     async fn execute(
         &self,
         request: BollardApiRequest,
@@ -395,7 +438,89 @@ impl BollardApi for BollardClientApi {
                     .map(|_| BollardApiResponse::Unit)
                     .map_err(BollardApiError::from_bollard)
             }
+            BollardApiRequest::CreateExec {
+                container,
+                configuration,
+            } => self
+                .client
+                .create_exec(&container, CreateExecOptions::<String>::from(configuration))
+                .await
+                .map(|created| BollardApiResponse::ExecCreated(created.id))
+                .map_err(BollardApiError::from_bollard),
+            BollardApiRequest::StartDetachedExec { id } => self
+                .client
+                .start_exec(
+                    &id,
+                    Some(StartExecOptions {
+                        detach: true,
+                        tty: false,
+                        output_capacity: None,
+                    }),
+                )
+                .await
+                .and_then(|result| match result {
+                    StartExecResults::Detached => Ok(BollardApiResponse::Unit),
+                    StartExecResults::Attached { .. } => {
+                        Err(bollard::errors::Error::DockerResponseServerError {
+                            status_code: 500,
+                            message: "Docker attached a detached Exec start".to_owned(),
+                        })
+                    }
+                })
+                .map_err(BollardApiError::from_bollard),
+            BollardApiRequest::InspectExec { id } => self
+                .client
+                .inspect_exec(&id)
+                .await
+                .map(Box::new)
+                .map(BollardApiResponse::ExecInspect)
+                .map_err(BollardApiError::from_bollard),
         }
+    }
+
+    async fn start_attached_exec(
+        &self,
+        id: String,
+        output_capacity: usize,
+    ) -> Result<ExecApiIo, BollardApiError> {
+        let result = self
+            .client
+            .start_exec(
+                &id,
+                Some(StartExecOptions {
+                    detach: false,
+                    tty: false,
+                    output_capacity: Some(output_capacity),
+                }),
+            )
+            .await
+            .map_err(BollardApiError::from_bollard)?;
+        let StartExecResults::Attached { output, input } = result else {
+            return Err(BollardApiError {
+                message: "Docker detached an attached Exec start".to_owned(),
+            });
+        };
+        let output = output.map(|item| {
+            item.map(|frame| match frame {
+                bollard::container::LogOutput::StdOut { message } => {
+                    ExecOutput::Stdout(message.to_vec())
+                }
+                bollard::container::LogOutput::StdErr { message } => {
+                    ExecOutput::Stderr(message.to_vec())
+                }
+                bollard::container::LogOutput::StdIn { message } => {
+                    ExecOutput::UnexpectedStdin(message.to_vec())
+                }
+                bollard::container::LogOutput::Console { message } => {
+                    ExecOutput::UnexpectedConsole(message.to_vec())
+                }
+            })
+            .map_err(BollardApiError::from_bollard)
+        });
+        Ok(ExecApiIo {
+            output: Box::pin(output),
+            input,
+        })
     }
 }
 

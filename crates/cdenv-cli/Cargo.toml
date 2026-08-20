@@ -17,6 +17,7 @@ bollard.workspace = true
 cdenv-core.workspace = true
 cdenv-devcontainer.workspace = true
 clap.workspace = true
+futures-util.workspace = true
 getrandom.workspace = true
 hex.workspace = true
 hmac.workspace = true

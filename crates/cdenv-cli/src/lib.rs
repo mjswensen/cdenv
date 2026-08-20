@@ -22,9 +22,11 @@ mod storage;
 mod workspace_registry;
 
 pub use bollard::{
-    BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BollardAdapterError, ContainerDiscoveryScope,
-    ContainerExpectation, ContainerInspection, CorrelatedContainers, DiscoveredContainer,
-    ImageCleanupExpectation, ImageInspection, WorkspaceCorrelation, correlate_containers,
+    AttachedExec, BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BollardAdapterError,
+    ContainerDiscoveryScope, ContainerExpectation, ContainerInspection, CorrelatedContainers,
+    DetachedExec, DiscoveredContainer, ExecCommand, ExecId, ExecInspect, ExecStreamError,
+    ImageCleanupExpectation, ImageInspection, MAXIMUM_EXEC_FRAME_BYTES, WorkspaceCorrelation,
+    correlate_containers, decode_docker_multiplexed,
 };
 pub use command_line::{
     CliCommand, CommandKind, CommandLine, CreateArgs, DoctorArgs, DownArgs, ForwardArgs,

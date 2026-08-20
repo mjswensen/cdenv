@@ -99,6 +99,7 @@ dependencies = [
  "cdenv-core",
  "cdenv-devcontainer",
  "clap",
+ "futures-util",
  "getrandom",
  "hex",
  "hmac",

@@ -4,6 +4,7 @@
 //! and output envelopes. Host adapters and command workflows are added behind
 //! this boundary without moving parsing or rendering into the executable.
 
+mod bollard;
 mod command_line;
 mod config;
 mod create;
@@ -20,6 +21,11 @@ mod state;
 mod storage;
 mod workspace_registry;
 
+pub use bollard::{
+    BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BollardAdapterError, ContainerDiscoveryScope,
+    ContainerExpectation, ContainerInspection, CorrelatedContainers, DiscoveredContainer,
+    ImageCleanupExpectation, ImageInspection, WorkspaceCorrelation, correlate_containers,
+};
 pub use command_line::{
     CliCommand, CommandKind, CommandLine, CreateArgs, DoctorArgs, DownArgs, ForwardArgs,
     ForwardMapping, ForwardMappingError, ListArgs, LockArgs, OutputFormat, ProxyArgs, RebuildArgs,

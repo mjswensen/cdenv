@@ -23,6 +23,12 @@ pub enum ApplicationError {
         /// Sanitized create-transaction message.
         message: String,
     },
+    /// Explicit Feature lock generation failed.
+    #[error("lock failed: {message}")]
+    LockFailed {
+        /// Credential-safe failure summary.
+        message: String,
+    },
     /// Parsing exists, but this implementation stage has no command workflow.
     #[error("command `{command}` is not implemented in this build")]
     CommandUnavailable {
@@ -38,6 +44,7 @@ impl ApplicationError {
         match self {
             Self::RootResolution(_) => "root_resolution_failed",
             Self::CreateFailed { .. } => "create_failed",
+            Self::LockFailed { .. } => "lock_failed",
             Self::CommandUnavailable { .. } => "command_unavailable",
         }
     }
@@ -48,6 +55,7 @@ impl ApplicationError {
         match self {
             Self::RootResolution(_)
             | Self::CreateFailed { .. }
+            | Self::LockFailed { .. }
             | Self::CommandUnavailable { .. } => ExitCode::FAILURE,
         }
     }

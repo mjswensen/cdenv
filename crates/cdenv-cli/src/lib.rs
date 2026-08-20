@@ -11,6 +11,7 @@ mod create;
 mod docker;
 mod docker_cli;
 mod error;
+mod feature_lock;
 mod feature_sources;
 mod git;
 mod image_orchestration;
@@ -56,6 +57,10 @@ pub use docker_cli::{
     build_arguments, create_arguments, pull_arguments,
 };
 pub use error::ApplicationError;
+pub use feature_lock::{
+    ExistingContainerLockStatus, FEATURE_LOCK_FILE, FeatureLockError, generate_feature_lock,
+    inspect_existing_container_lock, lock_workspace, resolve_frozen_features_offline,
+};
 pub use feature_sources::{
     FeatureSourceError, FeatureSourceLimits, FeatureSourceResolver, MAX_FEATURE_BLOB_BYTES,
     MAX_FEATURE_EXPANSION_RATIO, MAX_FEATURE_EXTRACTED_BYTES, MAX_FEATURE_FILES,
@@ -161,6 +166,13 @@ pub fn invoke_with_root(
         .map_err(|error| ApplicationError::CreateFailed {
             message: error.to_string(),
         }),
+        CliCommand::Lock(arguments) => {
+            lock_workspace(root, arguments)
+                .map(|_| ())
+                .map_err(|error| ApplicationError::LockFailed {
+                    message: error.to_string(),
+                })
+        }
         command => Err(ApplicationError::CommandUnavailable {
             command: command.kind(),
         }),

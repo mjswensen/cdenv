@@ -28,9 +28,9 @@ pub use docker_options::{
     validate_create_options_at_boundary,
 };
 pub use feature::{
-    FeatureContributions, FeatureError, FeatureInstallIdentity, FeatureLock, FeatureMetadata,
-    FeatureOption, FeaturePackage, FeatureReference, FeatureRequest, FeatureValue, LockedFeature,
-    ResolvedFeature, ResolvedFeatures, resolve_features,
+    FEATURE_LOCK_VERSION, FeatureContributions, FeatureError, FeatureInstallIdentity, FeatureLock,
+    FeatureMetadata, FeatureOption, FeaturePackage, FeatureReference, FeatureRequest, FeatureValue,
+    LockedFeature, ResolvedFeature, ResolvedFeatures, resolve_features,
 };
 pub use host_requirements::{
     GpuAccessIntent, GpuCapabilities, HostCapabilities, HostRequirementError,

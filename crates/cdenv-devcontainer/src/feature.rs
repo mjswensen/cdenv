@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::net::IpAddr;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use thiserror::Error;
 use url::Url;
@@ -277,7 +278,8 @@ fn oci_resource_name(value: &str) -> &str {
 }
 
 /// A value supplied to a Feature option.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(untagged)]
 pub enum FeatureValue {
     /// A boolean option value.
     Boolean(bool),
@@ -1174,41 +1176,197 @@ fn render_path(path: &[FeatureReference]) -> String {
         .join(" -> ")
 }
 
-/// Lockfile domain value. Parsing and writing belong to later adapters.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// Current deterministic Feature lockfile schema.
+pub const FEATURE_LOCK_VERSION: u32 = 1;
+
+/// Frozen Feature resolution, including roots and recursive dependencies.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FeatureLock {
-    /// Non-local Feature records keyed by normalized request reference.
+    /// Lock schema version.
+    pub version: u32,
+    /// Configured root requests and their explicit options.
+    pub requested: BTreeMap<String, BTreeMap<String, FeatureValue>>,
+    /// All resolved records keyed by normalized request reference.
     pub features: BTreeMap<String, LockedFeature>,
 }
 
-/// One exact non-local Feature lock record.
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl Default for FeatureLock {
+    fn default() -> Self {
+        Self {
+            version: FEATURE_LOCK_VERSION,
+            requested: BTreeMap::new(),
+            features: BTreeMap::new(),
+        }
+    }
+}
+
+impl FeatureLock {
+    /// Builds a complete lock from one pure resolution and its verified package catalog.
+    ///
+    /// # Errors
+    /// Returns [`FeatureError::InvalidLock`] when resolution data is incomplete.
+    pub fn from_resolution(
+        requests: &[FeatureRequest],
+        resolved: &ResolvedFeatures,
+        packages: &BTreeMap<FeatureReference, FeaturePackage>,
+    ) -> Result<Self, FeatureError> {
+        let requested = requests
+            .iter()
+            .map(|request| (request.reference.to_string(), request.options.clone()))
+            .collect();
+        let mut features = BTreeMap::new();
+        for feature in &resolved.installation_order {
+            let package = packages
+                .get(&feature.reference)
+                .ok_or(FeatureError::InvalidLock {
+                    message: "resolved Feature is absent from its package catalog",
+                })?;
+            let integrity = package.integrity.clone().ok_or(FeatureError::InvalidLock {
+                message: "resolved Feature has no content integrity",
+            })?;
+            validate_sha256(&integrity).map_err(|message| FeatureError::InvalidLock { message })?;
+            let resolved_reference = package.digest.as_ref().map_or_else(
+                || package.reference.to_string(),
+                |digest| format!("{}@{digest}", oci_resource_name(package.reference.as_str())),
+            );
+            let depends_on = package
+                .metadata
+                .depends_on
+                .iter()
+                .map(|(reference, options)| (reference.to_string(), options.clone()))
+                .collect();
+            features.insert(
+                feature.reference.to_string(),
+                LockedFeature::new(
+                    feature.metadata.version.clone(),
+                    resolved_reference,
+                    integrity,
+                    feature.options.clone(),
+                    depends_on,
+                )?,
+            );
+        }
+        Ok(Self {
+            version: FEATURE_LOCK_VERSION,
+            requested,
+            features,
+        })
+    }
+
+    /// Parses and structurally validates lockfile JSON.
+    ///
+    /// # Errors
+    /// Returns [`FeatureError::InvalidLock`] for malformed, newer, or inconsistent content.
+    pub fn parse(bytes: &[u8]) -> Result<Self, FeatureError> {
+        let lock: Self = serde_json::from_slice(bytes).map_err(|_| FeatureError::InvalidLock {
+            message: "lockfile is not valid strict JSON",
+        })?;
+        lock.validate_structure()?;
+        Ok(lock)
+    }
+
+    /// Encodes deterministic pretty JSON with one trailing newline.
+    ///
+    /// # Errors
+    /// Returns [`FeatureError::InvalidLock`] if serialization unexpectedly fails.
+    pub fn to_json_bytes(&self) -> Result<Vec<u8>, FeatureError> {
+        self.validate_structure()?;
+        let mut bytes = serde_json::to_vec_pretty(self).map_err(|_| FeatureError::InvalidLock {
+            message: "lockfile cannot be serialized",
+        })?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    /// Compares a frozen lock with a newly verified resolution.
+    ///
+    /// # Errors
+    /// Returns [`FeatureError::StaleLock`] when configuration, dependencies, options, versions,
+    /// digests, or integrity changed.
+    pub fn validate_frozen(
+        &self,
+        requests: &[FeatureRequest],
+        resolved: &ResolvedFeatures,
+        packages: &BTreeMap<FeatureReference, FeaturePackage>,
+    ) -> Result<(), FeatureError> {
+        let current = Self::from_resolution(requests, resolved, packages)?;
+        if *self == current {
+            Ok(())
+        } else {
+            Err(FeatureError::StaleLock)
+        }
+    }
+
+    /// Checks only configured root requests without source access.
+    ///
+    /// This is suitable for existing-container `up`: a mismatch can be warned about without
+    /// contacting a registry, while create/rebuild still use [`Self::validate_frozen`].
+    ///
+    /// # Errors
+    /// Returns [`FeatureError::StaleLock`] when root references or explicit options differ.
+    pub fn validate_requested(&self, requests: &[FeatureRequest]) -> Result<(), FeatureError> {
+        let requested = requests
+            .iter()
+            .map(|request| (request.reference.to_string(), request.options.clone()))
+            .collect::<BTreeMap<_, _>>();
+        if requested == self.requested {
+            Ok(())
+        } else {
+            Err(FeatureError::StaleLock)
+        }
+    }
+
+    fn validate_structure(&self) -> Result<(), FeatureError> {
+        if self.version != FEATURE_LOCK_VERSION {
+            return Err(FeatureError::InvalidLock {
+                message: "unsupported lockfile version",
+            });
+        }
+        for record in self.features.values() {
+            if record.version.is_empty() || record.resolved.is_empty() {
+                return Err(FeatureError::InvalidLock {
+                    message: "lock record has an empty version or resolution",
+                });
+            }
+            validate_sha256(&record.integrity)
+                .map_err(|message| FeatureError::InvalidLock { message })?;
+        }
+        Ok(())
+    }
+}
+
+/// One exact Feature lock record.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LockedFeature {
     /// Exact metadata version.
     pub version: String,
-    /// Digest-qualified OCI reference or original HTTPS URL.
+    /// Digest-qualified OCI reference, HTTPS URL, or contained local reference.
     pub resolved: String,
-    /// SHA-256 of the downloaded Feature archive.
+    /// SHA-256 of the install content.
     pub integrity: String,
-    /// Normalized hard dependency references.
-    pub depends_on: Vec<String>,
+    /// Effective options including defaults.
+    pub options: BTreeMap<String, FeatureValue>,
+    /// Hard dependencies and their requested options.
+    pub depends_on: BTreeMap<String, BTreeMap<String, FeatureValue>>,
 }
 
 impl LockedFeature {
-    /// Validates and creates a lock record without reading or writing a lockfile.
+    /// Validates and creates a lock record without filesystem I/O.
     ///
     /// # Errors
-    ///
-    /// Returns [`FeatureError::InvalidLock`] when the version or integrity is invalid.
+    /// Returns [`FeatureError::InvalidLock`] when required values are invalid.
     pub fn new(
         version: String,
         resolved: String,
         integrity: String,
-        depends_on: Vec<String>,
+        options: BTreeMap<String, FeatureValue>,
+        depends_on: BTreeMap<String, BTreeMap<String, FeatureValue>>,
     ) -> Result<Self, FeatureError> {
-        if version.is_empty() {
+        if version.is_empty() || resolved.is_empty() {
             return Err(FeatureError::InvalidLock {
-                message: "lock version cannot be empty",
+                message: "lock version and resolution cannot be empty",
             });
         }
         validate_sha256(&integrity).map_err(|message| FeatureError::InvalidLock { message })?;
@@ -1216,6 +1374,7 @@ impl LockedFeature {
             version,
             resolved,
             integrity,
+            options,
             depends_on,
         })
     }
@@ -1324,6 +1483,9 @@ pub enum FeatureError {
         /// Validation detail.
         message: &'static str,
     },
+    /// A frozen lock differs from the current configuration or verified resolution.
+    #[error("Feature lockfile is stale or inconsistent; run `cdenv lock`")]
+    StaleLock,
 }
 
 #[cfg(test)]
@@ -1535,6 +1697,27 @@ mod tests {
         )
         .expect("second order resolves");
         assert_eq!(ids(&first), ids(&second));
+    }
+
+    #[test]
+    fn lock_round_trip_is_byte_deterministic_and_preserves_options() {
+        let package = package(
+            "tool",
+            json!({
+                "id":"tool", "version":"1.2.3",
+                "options":{"enabled":{"type":"boolean","default":true}}
+            }),
+        );
+        let mut package = package;
+        package.integrity = Some(format!("sha256:{}", "a".repeat(64)));
+        let packages = catalog(vec![package]);
+        let requests = vec![FeatureRequest::new(reference("tool"))];
+        let resolved = resolve_features(&requests, &packages, &[]).expect("resolution");
+        let lock = FeatureLock::from_resolution(&requests, &resolved, &packages).expect("lock");
+        let first = lock.to_json_bytes().expect("JSON");
+        let parsed = FeatureLock::parse(&first).expect("parse");
+        assert_eq!(first, parsed.to_json_bytes().expect("same JSON"));
+        assert_eq!(parsed, lock);
     }
 
     #[test]

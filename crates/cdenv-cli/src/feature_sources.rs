@@ -3,10 +3,12 @@
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read, Write};
+use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 
 use cdenv_devcontainer::{
     FeatureError, FeatureInstallIdentity, FeatureMetadata, FeaturePackage, FeatureReference,
+    LockedFeature,
 };
 use futures_util::StreamExt;
 use reqwest::header::{
@@ -234,6 +236,81 @@ impl FeatureSourceResolver {
         }
     }
 
+    /// Resolves a frozen record from verified cache content without network access.
+    ///
+    /// Local records are re-read and compared by integrity. OCI and HTTPS records require the
+    /// exact digest-addressed blob to exist and pass a fresh digest check.
+    ///
+    /// # Errors
+    /// Returns a cache, integrity, metadata, or frozen-record mismatch.
+    pub fn resolve_locked(
+        &self,
+        reference: &FeatureReference,
+        record: &LockedFeature,
+        configuration_directory: &Path,
+    ) -> Result<VerifiedFeature, FeatureSourceError> {
+        if matches!(reference, FeatureReference::Local(_)) {
+            let verified =
+                self.resolve_local(reference, reference.as_str(), configuration_directory)?;
+            if verified.package.integrity.as_deref() != Some(&record.integrity)
+                || verified.package.metadata.version != record.version
+            {
+                return Err(FeatureSourceError::Oci(
+                    "local Feature differs from frozen lock".to_owned(),
+                ));
+            }
+            return Ok(verified);
+        }
+        let path = self.cache_path(&record.integrity);
+        if !verify_cached(&path, &record.integrity, None)? {
+            return Err(FeatureSourceError::Cache {
+                path,
+                source: io::Error::new(
+                    io::ErrorKind::NotFound,
+                    "frozen Feature blob is not cached",
+                ),
+            });
+        }
+        let extracted = extraction_directory(&self.blobs, &record.integrity);
+        extract_archive(&path, &extracted, self.limits)?;
+        let metadata = read_feature_metadata(&extracted, self.limits.metadata_bytes)?;
+        if metadata.version != record.version {
+            return Err(FeatureSourceError::Oci(
+                "cached Feature version differs from frozen lock".to_owned(),
+            ));
+        }
+        let (identity, digest) = match reference {
+            FeatureReference::Oci(_) => {
+                let digest = record
+                    .resolved
+                    .rsplit_once('@')
+                    .map(|(_, digest)| digest.to_owned())
+                    .ok_or_else(|| {
+                        FeatureSourceError::Oci("frozen OCI resolution has no digest".to_owned())
+                    })?;
+                (
+                    FeatureInstallIdentity::oci_digest(digest.clone())?,
+                    Some(digest),
+                )
+            }
+            FeatureReference::Https(_) => (
+                FeatureInstallIdentity::https_integrity(record.integrity.clone())?,
+                None,
+            ),
+            FeatureReference::Local(_) => unreachable!("local returned above"),
+        };
+        Ok(VerifiedFeature {
+            package: FeaturePackage {
+                reference: reference.clone(),
+                identity,
+                metadata,
+                digest,
+                integrity: Some(record.integrity.clone()),
+            },
+            artifact: path,
+        })
+    }
+
     fn resolve_local(
         &self,
         reference: &FeatureReference,
@@ -262,13 +339,14 @@ impl FeatureSourceResolver {
         }
         validate_local_tree(&source, &canonical_base, self.limits)?;
         let feature_metadata = read_feature_metadata(&source, self.limits.metadata_bytes)?;
+        let integrity = hash_local_tree(&source)?;
         Ok(VerifiedFeature {
             package: FeaturePackage {
                 reference: reference.clone(),
                 identity: FeatureInstallIdentity::local(reference),
                 metadata: feature_metadata,
                 digest: None,
-                integrity: None,
+                integrity: Some(integrity),
             },
             artifact: source,
         })
@@ -783,10 +861,27 @@ fn checked_https_url(value: &str) -> Result<Url, FeatureSourceError> {
             message: "URL credentials are forbidden",
         });
     }
-    if url.host_str().is_none() {
+    let host = url.host_str().ok_or_else(|| FeatureSourceError::Url {
+        url: value.to_owned(),
+        message: "public host is required",
+    })?;
+    let lowercase = host.to_ascii_lowercase();
+    let private_name = lowercase == "localhost"
+        || lowercase.ends_with(".localhost")
+        || lowercase.strip_suffix(".local").is_some()
+        || !lowercase.contains('.');
+    let private_ip = lowercase
+        .parse::<IpAddr>()
+        .is_ok_and(|address| match address {
+            IpAddr::V4(value) => value.is_private() || value.is_loopback() || value.is_link_local(),
+            IpAddr::V6(value) => {
+                value.is_loopback() || value.is_unique_local() || value.is_unicast_link_local()
+            }
+        });
+    if private_name || private_ip {
         return Err(FeatureSourceError::Url {
             url: value.to_owned(),
-            message: "public host is required",
+            message: "private or local hosts are forbidden",
         });
     }
     Ok(url)
@@ -1144,6 +1239,62 @@ fn validate_local_tree(
     }
     Ok(())
 }
+fn hash_local_tree(root: &Path) -> Result<String, FeatureSourceError> {
+    fn visit(root: &Path, directory: &Path, hash: &mut Sha256) -> Result<(), FeatureSourceError> {
+        let mut entries = fs::read_dir(directory)
+            .map_err(|source| FeatureSourceError::Cache {
+                path: directory.to_path_buf(),
+                source,
+            })?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|source| FeatureSourceError::Cache {
+                path: directory.to_path_buf(),
+                source,
+            })?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| FeatureSourceError::LocalContainment { path: path.clone() })?;
+            let metadata = entry
+                .metadata()
+                .map_err(|source| FeatureSourceError::Cache {
+                    path: path.clone(),
+                    source,
+                })?;
+            hash.update((relative.as_os_str().len() as u64).to_be_bytes());
+            hash.update(relative.as_os_str().as_encoded_bytes());
+            hash.update([u8::from(metadata.is_dir())]);
+            if metadata.is_dir() {
+                visit(root, &path, hash)?;
+            } else {
+                let mut file = File::open(&path).map_err(|source| FeatureSourceError::Cache {
+                    path: path.clone(),
+                    source,
+                })?;
+                let mut buffer = [0_u8; 8192];
+                loop {
+                    let count =
+                        file.read(&mut buffer)
+                            .map_err(|source| FeatureSourceError::Cache {
+                                path: path.clone(),
+                                source,
+                            })?;
+                    if count == 0 {
+                        break;
+                    }
+                    hash.update(&buffer[..count]);
+                }
+            }
+        }
+        Ok(())
+    }
+    let mut hash = Sha256::new();
+    visit(root, root, &mut hash)?;
+    Ok(format!("sha256:{}", hex::encode(hash.finalize())))
+}
+
 fn read_feature_metadata(root: &Path, limit: u64) -> Result<FeatureMetadata, FeatureSourceError> {
     let path = root.join("devcontainer-feature.json");
     let file = File::open(&path).map_err(|source| FeatureSourceError::Metadata {

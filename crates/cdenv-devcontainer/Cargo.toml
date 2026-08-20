@@ -10,7 +10,9 @@ publish.workspace = true
 
 [dependencies]
 jsonc-parser = { workspace = true, features = ["serde_json"] }
+serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 thiserror.workspace = true
 
 [build-dependencies]

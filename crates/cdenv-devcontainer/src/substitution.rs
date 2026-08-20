@@ -66,7 +66,7 @@ impl SubstitutionProperty {
     }
 
     const fn allows_container_env(self) -> bool {
-        matches!(self, Self::RemoteEnv)
+        matches!(self, Self::RemoteEnv | Self::LifecycleCommand)
     }
 }
 
@@ -138,6 +138,20 @@ impl DeferredString {
             property,
             requires_container_environment: self.requires_container_environment(),
         }
+    }
+
+    pub(crate) fn fingerprint_value(&self) -> serde_json::Value {
+        serde_json::Value::Array(
+            self.segments
+                .iter()
+                .map(|segment| match segment {
+                    Segment::Literal(value) => serde_json::json!({"literal": value}),
+                    Segment::ContainerEnv { name, default } => {
+                        serde_json::json!({"containerEnv": name, "default": default})
+                    }
+                })
+                .collect(),
+        )
     }
 }
 

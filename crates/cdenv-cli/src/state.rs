@@ -1122,6 +1122,7 @@ mod tests {
             key.digest_plan(PlanFingerprintCategory::Create, [b"create".as_slice()]),
             key.digest_plan(PlanFingerprintCategory::Runtime, [b"runtime".as_slice()]),
         );
+        let lifecycle = key.digest_plan(PlanFingerprintCategory::Lifecycle, [secret.as_bytes()]);
         let state = WorkspaceState::new(
             installation.record().installation_id().clone(),
             WorkspaceName::parse("project").expect("workspace name should be valid"),
@@ -1135,7 +1136,7 @@ mod tests {
             StateTimestamp::parse("2025-01-02T03:04:05Z").expect("timestamp should be valid"),
         );
         let output = format!(
-            "{}\n{state:?}",
+            "{}\n{state:?}\n{lifecycle}",
             serde_json::to_string(&state).expect("state should encode")
         );
 
@@ -1182,7 +1183,9 @@ mod tests {
         };
         let build = key.digest_plan(PlanFingerprintCategory::Build, [b"ab".as_slice(), b"c"]);
         let create = key.digest_plan(PlanFingerprintCategory::Create, [b"ab".as_slice(), b"c"]);
+        let lifecycle =
+            key.digest_plan(PlanFingerprintCategory::Lifecycle, [b"ab".as_slice(), b"c"]);
         let regrouped = key.digest_plan(PlanFingerprintCategory::Build, [b"a".as_slice(), b"bc"]);
-        assert!(build != create && build != regrouped);
+        assert!(build != create && build != lifecycle && build != regrouped);
     }
 }

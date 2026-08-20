@@ -137,6 +137,23 @@ impl FingerprintKey {
             hex::encode(mac.finalize().into_bytes())
         ))
     }
+
+    /// Fingerprints every canonical category without exposing unkeyed digests or plan bytes.
+    #[must_use]
+    pub fn digest_immutable_plan(
+        &self,
+        plan: &cdenv_devcontainer::ImmutablePlan,
+    ) -> cdenv_devcontainer::CategoryFingerprints<KeyedDigest> {
+        plan.fingerprint_with(|category, bytes| {
+            let category = match category {
+                cdenv_devcontainer::PlanCategory::Build => PlanFingerprintCategory::Build,
+                cdenv_devcontainer::PlanCategory::Create => PlanFingerprintCategory::Create,
+                cdenv_devcontainer::PlanCategory::Runtime => PlanFingerprintCategory::Runtime,
+                cdenv_devcontainer::PlanCategory::Lifecycle => PlanFingerprintCategory::Lifecycle,
+            };
+            self.digest_plan(category, [bytes])
+        })
+    }
 }
 
 /// A domain separating one immutable effective-plan category.
@@ -150,6 +167,8 @@ pub enum PlanFingerprintCategory {
     Create,
     /// Remote environment, forwarding, and attach behavior.
     Runtime,
+    /// Immutable generation-owned lifecycle commands.
+    Lifecycle,
 }
 
 impl PlanFingerprintCategory {
@@ -159,6 +178,7 @@ impl PlanFingerprintCategory {
             Self::Build => "build\0",
             Self::Create => "create\0",
             Self::Runtime => "runtime\0",
+            Self::Lifecycle => "lifecycle\0",
         }
     }
 }

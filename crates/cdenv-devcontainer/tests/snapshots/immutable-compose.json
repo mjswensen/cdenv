@@ -1,0 +1,10 @@
+{
+  "scenario": "compose",
+  "featureLayers": 0,
+  "additionalMounts": 0,
+  "publications": 0,
+  "forwards": 0,
+  "lifecycleGroups": 0,
+  "readiness": "UpdateContent",
+  "runtimeEnvironmentRequired": false
+}

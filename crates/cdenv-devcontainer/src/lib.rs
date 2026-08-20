@@ -8,7 +8,9 @@ mod discovery;
 mod docker_options;
 mod feature;
 mod host_requirements;
+mod immutable_plan;
 mod jsonc;
+mod lifecycle;
 mod metadata;
 mod planning;
 mod ports;
@@ -34,10 +36,19 @@ pub use host_requirements::{
     HostRequirementEvaluation, HostRequirementWarning, HostRequirementWarningKind, HostResource,
     Measured, UnknownMeasurement, evaluate_host_requirements,
 };
+pub use immutable_plan::{
+    CategoryFingerprints, DesiredPlan, DriftClassification, ImmutablePlan, ImmutablePlanInputs,
+    ImmutablePlanSummary, PlanCategory, classify_drift, plan_immutable,
+};
 pub use jsonc::{
     BoundKind, Diagnostic, JsoncError, MAX_ARRAY_ITEMS, MAX_CONFIG_BYTES,
     MAX_LIFECYCLE_GROUP_ITEMS, MAX_NESTING_DEPTH, MAX_OBJECT_ITEMS, MAX_STRING_BYTES, ParseLimits,
     RawDocument, SourceSpan, parse_jsonc,
+};
+pub use lifecycle::{
+    ActiveGenerationLifecycle, LifecycleCheckpoint, LifecycleCommand, LifecyclePlan,
+    LifecyclePlanningError, LifecycleProcess, LifecycleStage, LifecycleStagePlan,
+    LifecycleTransitionError, LifecycleTrigger, plan_lifecycle,
 };
 pub use metadata::{
     EffectiveLifecycle, EffectiveMetadata, ImageMetadata, MetadataError, merge_image_metadata,

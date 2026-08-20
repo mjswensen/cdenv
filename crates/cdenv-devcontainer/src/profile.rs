@@ -868,60 +868,13 @@ impl Validator<'_> {
         property_path: &str,
         value: &Value,
     ) -> Result<FeatureSource, ProfileError> {
-        if ["fish", "maven", "gradle", "homebrew", "jupyterlab"].contains(&reference) {
-            return Err(self.unsupported(
-                property_path,
-                value,
-                "legacy Feature identifiers are unsupported",
-            ));
-        }
-        if reference.starts_with("http://") {
-            return Err(self.unsupported(
-                property_path,
-                value,
-                "insecure HTTP Feature sources are unsupported",
-            ));
-        }
-        if let Some(authority) = reference.strip_prefix("https://") {
-            let host = authority.split('/').next().unwrap_or_default();
-            if host.is_empty() || host.contains('@') {
-                return Err(self.unsupported(
-                    property_path,
-                    value,
-                    "Feature URL credentials and empty hosts are unsupported",
-                ));
-            }
-            return Ok(FeatureSource::Https(reference.to_owned()));
-        }
-        if reference.starts_with("./") {
-            if reference.split('/').any(|part| part == "..") {
-                return Err(self.unsupported(
-                    property_path,
-                    value,
-                    "local Feature traversal is unsupported",
-                ));
-            }
-            return Ok(FeatureSource::Local(reference.to_owned()));
-        }
-        let registry = reference.split('/').next().unwrap_or_default();
-        let digest_is_valid = reference.rsplit_once('@').is_none_or(|(_, digest)| {
-            digest.strip_prefix("sha256:").is_some_and(|hex| {
-                hex.len() == 64
-                    && hex
-                        .bytes()
-                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            })
-        });
-        if reference.contains('/')
-            && (registry.contains('.') || registry.contains(':') || registry == "localhost")
-            && !reference.contains("://")
-            && !registry.contains('@')
-            && !reference.chars().any(char::is_whitespace)
-            && digest_is_valid
-        {
-            return Ok(FeatureSource::Oci(reference.to_owned()));
-        }
-        Err(self.unsupported(property_path, value, "Feature source must be fully qualified OCI, unauthenticated HTTPS, or contained `./` local input"))
+        let normalized = crate::FeatureReference::parse(reference)
+            .map_err(|error| self.unsupported(property_path, value, &error.to_string()))?;
+        Ok(match normalized {
+            crate::FeatureReference::Oci(value) => FeatureSource::Oci(value),
+            crate::FeatureReference::Https(value) => FeatureSource::Https(value),
+            crate::FeatureReference::Local(value) => FeatureSource::Local(value),
+        })
     }
 
     fn mounts(&self, value: Option<&Value>) -> Result<Vec<RawMount>, ProfileError> {

@@ -6,6 +6,7 @@
 
 mod discovery;
 mod docker_options;
+mod feature;
 mod host_requirements;
 mod jsonc;
 mod metadata;
@@ -22,6 +23,11 @@ pub use docker_options::{
     BuildPlan, CreateOptionsPlan, DockerOptionError, DockerOptionErrorKind,
     DockerOptionPlanningInputs, DockerOptionsPlan, DockerfileBuildPlan, RepositoryPath,
     RepositoryPathError, plan_docker_options,
+};
+pub use feature::{
+    FeatureContributions, FeatureError, FeatureInstallIdentity, FeatureLock, FeatureMetadata,
+    FeatureOption, FeaturePackage, FeatureReference, FeatureRequest, FeatureValue, LockedFeature,
+    ResolvedFeature, ResolvedFeatures, resolve_features,
 };
 pub use host_requirements::{
     GpuAccessIntent, GpuCapabilities, HostCapabilities, HostRequirementError,

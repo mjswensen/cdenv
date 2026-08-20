@@ -1,10 +1,11 @@
 {
   "appPort": ["0.0.0.0:6500:6500"],
-  "build": { "dockerfile": "./Dockerfile" },
+  "image": "ghcr.io/mjswensen/devcontainer:latest",
+  "remoteUser": "mjs",
   "name": "cdenv",
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false }
   },
-  "postCreateCommand": "./.devcontainer/post-create.sh",
-  "postStartCommand": "./.devcontainer/post-start.sh"
+  "postCreateCommand": "mise install && mise bootstrap",
+  "postStartCommand": "mise web-agent"
 }

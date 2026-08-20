@@ -8,10 +8,16 @@ The Rust workspace contains platform-neutral core types, pure Dev Container prof
 
 ## Development
 
-The repository pins Rust 1.97.1 in `rust-toolchain.toml`, and the development container includes [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2. Outside the development container, install that version before running the complete local gate:
+The development container uses the shared [`ghcr.io/mjswensen/devcontainer`](https://ghcr.io/mjswensen/devcontainer) image and runs as its `mjs` user. On creation it installs the tools pinned in `mise.toml` (Node 24 and Rust 1.97.1) and bootstraps [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 and [Pi](https://pi.dev/). To prepare a local checkout with the same tooling, install [mise](https://mise.jdx.dev/) and run:
 
 ```bash
-cargo install cargo-deny --version 0.20.2 --locked
+mise install
+mise bootstrap
+```
+
+Then run the complete local gate:
+
+```bash
 cargo xtask check
 ```
 

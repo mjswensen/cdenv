@@ -358,21 +358,11 @@ fn validate_run_arguments(
     for (index, argument) in arguments.iter().enumerate() {
         let property = format!("$.runArgs[{index}]");
         let diagnostic_argument = &raw_arguments[index];
-        if reserved_long(argument, &["--name", "--rm", "--user", "--entrypoint"])
-            || reserved_short(argument, &['u'])
-        {
+        if let Some(kind) = reserved_create_setting(argument) {
             return Err(DockerOptionError::new(
                 property,
                 diagnostic_argument,
-                if argument == "--rm" || argument.starts_with("--rm=") {
-                    DockerOptionErrorKind::AutoRemove
-                } else if argument == "--name" || argument.starts_with("--name=") {
-                    DockerOptionErrorKind::ContainerName
-                } else if argument == "--entrypoint" || argument.starts_with("--entrypoint=") {
-                    DockerOptionErrorKind::Entrypoint
-                } else {
-                    DockerOptionErrorKind::ContainerUser
-                },
+                kind,
                 "option conflicts with a cdenv-owned create setting",
             ));
         }
@@ -502,6 +492,28 @@ fn reserved_short(argument: &str, names: &[char]) -> bool {
         .is_some_and(|name| names.contains(&name))
 }
 
+fn reserved_create_setting(argument: &str) -> Option<DockerOptionErrorKind> {
+    if argument == "--rm" || argument.starts_with("--rm=") {
+        Some(DockerOptionErrorKind::AutoRemove)
+    } else if argument == "--name" || argument.starts_with("--name=") {
+        Some(DockerOptionErrorKind::ContainerName)
+    } else if argument == "--entrypoint" || argument.starts_with("--entrypoint=") {
+        Some(DockerOptionErrorKind::Entrypoint)
+    } else if argument == "--workdir"
+        || argument.starts_with("--workdir=")
+        || reserved_short(argument, &['w'])
+    {
+        Some(DockerOptionErrorKind::WorkspaceFolder)
+    } else if argument == "--user"
+        || argument.starts_with("--user=")
+        || reserved_short(argument, &['u'])
+    {
+        Some(DockerOptionErrorKind::ContainerUser)
+    } else {
+        None
+    }
+}
+
 fn reserved_attach_short(argument: &str) -> bool {
     let Some(flags) = argument
         .strip_prefix('-')
@@ -616,6 +628,8 @@ pub enum DockerOptionErrorKind {
     AutoRemove,
     /// Container/remote user is planned separately.
     ContainerUser,
+    /// The authoritative container workspace folder is cdenv-owned.
+    WorkspaceFolder,
     /// Generated Feature entrypoint handling is cdenv-owned.
     Entrypoint,
     /// Attach/detach/stdin/TTY mode is cdenv-owned.

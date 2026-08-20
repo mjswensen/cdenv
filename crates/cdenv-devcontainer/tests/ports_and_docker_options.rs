@@ -331,6 +331,10 @@ fn run_reserved_options_and_owned_mounts_report_exact_tokens() {
         (vec!["--name=other"], DockerOptionErrorKind::ContainerName),
         (vec!["--rm"], DockerOptionErrorKind::AutoRemove),
         (vec!["-u1000"], DockerOptionErrorKind::ContainerUser),
+        (
+            vec!["--workdir=/other"],
+            DockerOptionErrorKind::WorkspaceFolder,
+        ),
         (vec!["-it"], DockerOptionErrorKind::AttachmentMode),
         (vec!["--"], DockerOptionErrorKind::AttachmentMode),
         (

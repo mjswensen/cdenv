@@ -15,10 +15,10 @@ use cdenv_cli::{
 };
 use cdenv_core::{GenerationId, InstallationId, ProfileId, WorkspaceName};
 use cdenv_devcontainer::{
-    BuildPlan, ConfigPath, ContainerPath, DockerOptionPlanningInputs, HostSubstitutionInputs,
-    ParseLimits, RawProfile, RuntimePlanningInputs, ScenarioMetadata, StableIdentityLabels,
-    merge_image_metadata, parse_jsonc, plan_docker_options, plan_ports, plan_runtime,
-    validate_profile,
+    BuildPlan, ConfigPath, ContainerPath, DockerOptionPlanningInputs, GpuAccessIntent,
+    HostSubstitutionInputs, ParseLimits, RawProfile, RuntimePlanningInputs, ScenarioMetadata,
+    StableIdentityLabels, merge_image_metadata, parse_jsonc, plan_docker_options, plan_ports,
+    plan_runtime, validate_profile,
 };
 use tempfile::TempDir;
 
@@ -225,6 +225,7 @@ async fn fake_cli_receives_exact_pull_and_create_arguments_with_owned_settings()
                 runtime: &runtime,
                 options: &docker.create,
                 ports: &ports,
+                gpu_access: GpuAccessIntent::Requested,
                 command: &command,
                 cdenv_owned_targets: &owned,
             },
@@ -253,6 +254,8 @@ async fn fake_cli_receives_exact_pull_and_create_arguments_with_owned_settings()
             "cdenv.profile=cdenv-devcontainer-v1".to_owned(),
             "--publish".to_owned(),
             "127.0.0.1:3000:3000".to_owned(),
+            "--gpus".to_owned(),
+            "all".to_owned(),
             "--mount".to_owned(),
             format!(
                 "type=bind,source={},target=/workspaces/workspace",
@@ -262,6 +265,8 @@ async fn fake_cli_receives_exact_pull_and_create_arguments_with_owned_settings()
             "MODE=development".to_owned(),
             "--user".to_owned(),
             "root".to_owned(),
+            "--workdir".to_owned(),
+            "/workspaces/workspace".to_owned(),
             "--init".to_owned(),
             "--cap-add".to_owned(),
             "SYS_PTRACE".to_owned(),

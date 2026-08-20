@@ -10,8 +10,9 @@ use cdenv_core::{
     ContainerId, ContainerIdError, GenerationId, InstallationId, ProfileId, WorkspaceName,
 };
 use cdenv_devcontainer::{
-    CreateOptionsPlan, DockerOptionError, DockerfileBuildPlan, MountKind, PlannedMount, PortPlan,
-    RuntimePlan, validate_build_options_at_boundary, validate_create_options_at_boundary,
+    CreateOptionsPlan, DockerOptionError, DockerfileBuildPlan, GpuAccessIntent, MountKind,
+    PlannedMount, PortPlan, RuntimePlan, validate_build_options_at_boundary,
+    validate_create_options_at_boundary,
 };
 use getrandom::fill;
 use thiserror::Error;
@@ -132,6 +133,8 @@ pub struct DockerCreateRequest<'a> {
     pub options: &'a CreateOptionsPlan,
     /// Create-time publication requests.
     pub ports: &'a PortPlan,
+    /// Explicit host-requirement GPU grant decision.
+    pub gpu_access: GpuAccessIntent,
     /// Container command appended after the image, in exact order.
     pub command: &'a [String],
     /// Container targets owned by injected cdenv assets.
@@ -561,6 +564,10 @@ pub fn create_arguments(
         arguments.push(OsString::from("--publish"));
         arguments.push(OsString::from(&publication.argument));
     }
+    if request.gpu_access == GpuAccessIntent::Requested {
+        arguments.push(OsString::from("--gpus"));
+        arguments.push(OsString::from("all"));
+    }
     arguments.push(OsString::from("--mount"));
     arguments.push(OsString::from(mount_argument(
         &request.runtime.workspace.mount,
@@ -575,6 +582,8 @@ pub fn create_arguments(
     }
     arguments.push(OsString::from("--user"));
     arguments.push(OsString::from(request.runtime.container_user.as_str()));
+    arguments.push(OsString::from("--workdir"));
+    arguments.push(OsString::from(request.runtime.workspace.folder.as_str()));
     if request.runtime.init {
         arguments.push(OsString::from("--init"));
     }

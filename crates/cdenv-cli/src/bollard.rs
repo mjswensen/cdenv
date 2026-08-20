@@ -161,6 +161,30 @@ pub fn correlate_containers(
         .collect()
 }
 
+/// One Docker-inspected container mount.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InspectedMount {
+    /// Docker mount kind, such as `bind` or `volume`.
+    pub kind: String,
+    /// Bind source path or named-volume name.
+    pub source: Option<String>,
+    /// Absolute container destination.
+    pub target: String,
+    /// Docker-normalized comma-separated mode.
+    pub mode: Option<String>,
+}
+
+/// One Docker-inspected requested host port binding.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct InspectedPortBinding {
+    /// Container port/protocol key, such as `3000/tcp`.
+    pub container: String,
+    /// Docker-normalized host address.
+    pub host_ip: Option<String>,
+    /// Requested or daemon-assigned host port.
+    pub host_port: Option<String>,
+}
+
 /// Authoritative typed container inspection.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContainerInspection {
@@ -174,6 +198,14 @@ pub struct ContainerInspection {
     pub image_reference: Option<String>,
     /// Exact labels.
     pub labels: BTreeMap<String, String>,
+    /// Configured container user.
+    pub user: String,
+    /// Configured container working directory.
+    pub working_directory: String,
+    /// Docker-inspected mounts in stable order.
+    pub mounts: Vec<InspectedMount>,
+    /// Docker-inspected requested port bindings in stable order.
+    pub ports: Vec<InspectedPortBinding>,
     /// Whether Docker reports the container running.
     pub running: bool,
 }
@@ -965,6 +997,43 @@ fn map_container(
         .map_err(|source| BollardAdapterError::InvalidContainerId { value: id, source })?;
     let config = required(container.config, "container inspect", "Config")?;
     let state = required(container.state, "container inspect", "State")?;
+    let mut mounts = container
+        .mounts
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mount| {
+            let kind = required(mount.typ, "container inspect mount", "Type")?;
+            let source = if kind == "volume" {
+                mount.name
+            } else {
+                mount.source
+            };
+            Ok(InspectedMount {
+                kind,
+                source,
+                target: required(mount.destination, "container inspect mount", "Destination")?,
+                mode: mount.mode,
+            })
+        })
+        .collect::<Result<Vec<_>, BollardAdapterError>>()?;
+    mounts.sort();
+    let mut ports = container
+        .host_config
+        .and_then(|host| host.port_bindings)
+        .unwrap_or_default()
+        .into_iter()
+        .flat_map(|(container, bindings)| {
+            bindings
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |binding| InspectedPortBinding {
+                    container: container.clone(),
+                    host_ip: binding.host_ip,
+                    host_port: binding.host_port,
+                })
+        })
+        .collect::<Vec<_>>();
+    ports.sort();
     Ok(ContainerInspection {
         id,
         name: required(container.name, "container inspect", "Name")?
@@ -976,6 +1045,10 @@ fn map_container(
         )?,
         image_reference: config.image,
         labels: config.labels.unwrap_or_default().into_iter().collect(),
+        user: config.user.unwrap_or_default(),
+        working_directory: config.working_dir.unwrap_or_default(),
+        mounts,
+        ports,
         running: state.running.unwrap_or(false),
     })
 }
@@ -1061,7 +1134,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use bollard::models::{
-        ContainerConfig, ContainerState, ContainerSummaryStateEnum, ImageConfig,
+        ContainerConfig, ContainerState, ContainerSummaryStateEnum, HostConfig, ImageConfig,
+        MountPoint, PortBinding,
     };
 
     use super::*;
@@ -1201,11 +1275,30 @@ mod tests {
             config: Some(ContainerConfig {
                 image: Some("example:tag".to_owned()),
                 labels: Some(labels()),
+                user: Some("developer".to_owned()),
+                working_dir: Some("/workspaces/project".to_owned()),
                 ..ContainerConfig::default()
             }),
             state: Some(ContainerState {
                 running: Some(running),
                 ..ContainerState::default()
+            }),
+            mounts: Some(vec![MountPoint {
+                typ: Some("bind".to_owned()),
+                source: Some("/source".to_owned()),
+                destination: Some("/workspaces/project".to_owned()),
+                mode: Some("rw".to_owned()),
+                ..MountPoint::default()
+            }]),
+            host_config: Some(HostConfig {
+                port_bindings: Some(HashMap::from([(
+                    "3000/tcp".to_owned(),
+                    Some(vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_owned()),
+                        host_port: Some("3000".to_owned()),
+                    }]),
+                )])),
+                ..HostConfig::default()
             }),
             ..ContainerInspectResponse::default()
         }
@@ -1378,9 +1471,21 @@ mod tests {
             (
                 container.name.as_str(),
                 container.running,
-                container.image_reference.as_deref()
+                container.image_reference.as_deref(),
+                container.user.as_str(),
+                container.working_directory.as_str(),
+                container.mounts.len(),
+                container.ports.len(),
             ),
-            ("owned-name", true, Some("example:tag"))
+            (
+                "owned-name",
+                true,
+                Some("example:tag"),
+                "developer",
+                "/workspaces/project",
+                1,
+                1,
+            )
         );
 
         let mut architectures = Vec::new();

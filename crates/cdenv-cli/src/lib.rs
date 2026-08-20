@@ -12,6 +12,7 @@ mod docker;
 mod docker_cli;
 mod error;
 mod git;
+mod image_orchestration;
 mod installation;
 mod locking;
 mod output;
@@ -25,8 +26,9 @@ pub use bollard::{
     AttachedExec, BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BollardAdapterError,
     ContainerDiscoveryScope, ContainerExpectation, ContainerInspection, CorrelatedContainers,
     DetachedExec, DiscoveredContainer, ExecCommand, ExecId, ExecInspect, ExecStreamError,
-    ImageCleanupExpectation, ImageInspection, MAXIMUM_EXEC_FRAME_BYTES, WorkspaceCorrelation,
-    correlate_containers, decode_docker_multiplexed,
+    ImageCleanupExpectation, ImageInspection, InspectedMount, InspectedPortBinding,
+    MAXIMUM_EXEC_FRAME_BYTES, WorkspaceCorrelation, correlate_containers,
+    decode_docker_multiplexed,
 };
 pub use command_line::{
     CliCommand, CommandKind, CommandLine, CreateArgs, DoctorArgs, DownArgs, ForwardArgs,
@@ -54,6 +56,11 @@ pub use docker_cli::{
 };
 pub use error::ApplicationError;
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
+pub use image_orchestration::{
+    ImageCleanupFailure, ImageContainerCreateRequest, ImageContainerError, ImageContainerFacts,
+    ImageContainerMatchState, ImageContainerOrchestrator, RecordedContainerRequest,
+    classify_image_container_matches,
+};
 pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
     Installation, InstallationError, InstallationRecord, KeyedDigest, KeyedDigestError,

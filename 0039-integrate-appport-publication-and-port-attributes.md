@@ -17,9 +17,11 @@ Apply fixed create-time port publication safely and expose its semantics consist
 
 ## Work
 
-- Translate numeric `appPort` values to `127.0.0.1:<port>:<port>` and preserve validated explicit Docker publication strings.
-- Emit an explicit security warning for any non-loopback binding. Never turn an omitted address into non-loopback exposure.
-- Apply publication during image container creation and through deterministic Compose overrides, then verify actual bindings through Bollard.
+The pure port model, image-scenario Docker arguments, and image-scenario Bollard binding verification already landed in 18, 22, and 25. Treat those as the tested baseline: do not reimplement them in this issue.
+
+- Complete the remaining integration of numeric `appPort` values as `127.0.0.1:<port>:<port>` and validated explicit Docker publication strings across reconciliation and Compose.
+- Emit an explicit security warning for any non-loopback binding in human and JSON output. Never turn an omitted address into non-loopback exposure.
+- Apply publication through deterministic Compose overrides, retain the existing image path, then verify actual bindings through Bollard.
 - Classify `appPort` changes as create drift; ordinary `up` must not recreate or silently republish an active generation.
 - Render `label`/`protocol`/URL information where applicable and structured warnings for `openBrowser`, `openBrowserOnce`, and unsupported embedded preview behavior without launching UI.
 - Keep automatic process/range/regex port discovery deferred and visible as a capability diagnostic.
@@ -30,7 +32,7 @@ Load the `rust-best-practices` skill. Reuse validated port newtypes, keep adapte
 
 ## Acceptance criteria
 
-- Fake command/override tests prove exact loopback/default and explicit binding arguments.
+- Existing image command tests remain green, and new reconciliation/Compose override tests prove exact loopback/default and explicit binding arguments without duplicating the image implementation.
 - Real image and Compose tests inspect the daemon binding and reach a fixture service only through the requested interface.
 - Non-loopback inputs always produce a human and JSON security warning.
 - Changing `appPort` yields create drift and invokes no recreate during plain `up`.

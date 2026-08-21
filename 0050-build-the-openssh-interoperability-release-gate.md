@@ -9,7 +9,7 @@ _Converted from [`implementation-chunks/50-openssh-release-gate.md`] on 2026-08-
 
 
 **Parent phase:** [Implementation plan §17.3, §17.6, and Chunk 17](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#176-automated-openssh-release-gate)
-**Depends on:** 41, 44, 45, 46, and rebuild flows through 48
+**Depends on:** 41, 44, 45, 46, 59, and rebuild flows through 48
 
 ## Goal
 
@@ -37,7 +37,7 @@ Load the `rust-best-practices` skill, especially testing, performance, async saf
 
 ## Acceptance criteria
 
-- `cargo xtask test-integration --suite openssh` passes every §17.6 item on Linux x86_64 and arm64 CI.
+- `cargo xtask test-integration --suite openssh` passes every §17.6 item on Linux x86_64 and arm64 CI and records a positive discovered/executed test count; zero-test or all-skipped runs fail.
 - Debian and Alpine both pass applicable exec, PTY, cleanup, and forwarding cases.
 - Protocol stdout remains byte-exact under tracing, hook failure, Docker errors, cancellation, and high concurrency.
 - Tests prove there is no published port 22, `sshd`, installation-wide daemon, or permanent agent SSH process.

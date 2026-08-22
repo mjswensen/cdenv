@@ -87,7 +87,12 @@ fn validate_local_tree(
                 }
                 pending.push(canonical);
             } else if metadata.is_file() {
-                bytes += metadata.len();
+                bytes = bytes
+                    .checked_add(metadata.len())
+                    .ok_or(FeatureSourceError::Limit {
+                        kind: "local bytes",
+                        limit: limits.extracted_bytes,
+                    })?;
                 if bytes > limits.extracted_bytes {
                     return Err(FeatureSourceError::Limit {
                         kind: "local bytes",

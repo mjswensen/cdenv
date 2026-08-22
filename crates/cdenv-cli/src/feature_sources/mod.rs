@@ -11,14 +11,14 @@ use thiserror::Error;
 
 /// Maximum redirects followed for Feature requests.
 pub const MAX_FEATURE_REDIRECTS: usize = 5;
-/// Maximum downloaded blob size (256 MiB).
-pub const MAX_FEATURE_BLOB_BYTES: u64 = 256 * 1024 * 1024;
+/// Maximum compressed Feature archive size (64 MiB; V1 support contract).
+pub const MAX_FEATURE_BLOB_BYTES: u64 = 64 * 1024 * 1024;
 /// Maximum manifest or token response size (1 MiB).
 pub const MAX_FEATURE_METADATA_BYTES: u64 = 1024 * 1024;
-/// Maximum files and directories accepted from one Feature.
-pub const MAX_FEATURE_FILES: usize = 10_000;
-/// Maximum bytes extracted from one Feature (1 GiB).
-pub const MAX_FEATURE_EXTRACTED_BYTES: u64 = 1024 * 1024 * 1024;
+/// Maximum files and directories accepted from one Feature (4096; V1 support contract).
+pub const MAX_FEATURE_FILES: usize = 4096;
+/// Maximum bytes extracted from one Feature (128 MiB; V1 support contract).
+pub const MAX_FEATURE_EXTRACTED_BYTES: u64 = 128 * 1024 * 1024;
 /// Maximum archive expansion relative to its compressed size.
 pub const MAX_FEATURE_EXPANSION_RATIO: u64 = 100;
 /// Maximum UTF-8 archive path length.
@@ -317,5 +317,26 @@ impl FeatureSourceResolver {
             },
             artifact: path,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_the_published_v1_feature_source_limits() {
+        let limits = FeatureSourceLimits::default();
+        assert_eq!(limits.blob_bytes, 64 * 1024 * 1024);
+        assert_eq!(limits.extracted_bytes, 128 * 1024 * 1024);
+        assert_eq!(limits.files, 4096);
+        assert_eq!(limits.metadata_bytes, 1024 * 1024);
+        assert!(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../docs/cdenv-devcontainer-v1-support.md"
+        ))
+        .contains(
+            "feature-source-limits: compressed=67108864 expanded=134217728 entries=4096 metadata=1048576"
+        ));
     }
 }

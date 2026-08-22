@@ -135,9 +135,15 @@ GPU access unless requested. Binary units are normalized with checked overflow.
 | Lockfile | Adjacent `devcontainer-lock.json` is frozen when present. It records version, resolved manifest digest, blob integrity, and dependencies. Only explicit `cdenv lock` writes it. Corrupt cache and stale/inconsistent lock entries fail closed. |
 
 Archives are limited to 64 MiB compressed download, 128 MiB expanded data,
-4096 entries, and 1 MiB Feature metadata. Traversal, absolute paths, escaping
+4096 entries, and 1 MiB Feature metadata. OCI, HTTPS, cached, and local paths
+apply the relevant bounds; local paths have no compressed download. Redirects
+are limited to 5, archive paths to 4096 UTF-8 bytes, and expansion to 100 times
+the compressed size. Cumulative sizes and expansion calculations use checked
+arithmetic and fail closed on overflow. Traversal, absolute paths, escaping
 symlinks, hard links, devices, and unsupported tar entry types are rejected;
 extraction is confined to a newly controlled directory.
+
+<!-- feature-source-limits: compressed=67108864 expanded=134217728 entries=4096 metadata=1048576 -->
 
 ## Compose and Docker interpretations
 

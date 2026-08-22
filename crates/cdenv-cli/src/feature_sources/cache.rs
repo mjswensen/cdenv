@@ -48,19 +48,13 @@ impl FeatureSourceResolver {
                 url: "<response-body>".to_owned(),
                 source,
             })?;
-            size = size
-                .checked_add(chunk.len() as u64)
-                .ok_or(FeatureSourceError::Limit {
-                    kind: "download bytes",
-                    limit: self.limits.blob_bytes,
-                })?;
-            if size > self.limits.blob_bytes {
-                let _ = fs::remove_file(&temporary);
-                return Err(FeatureSourceError::Limit {
-                    kind: "download bytes",
-                    limit: self.limits.blob_bytes,
-                });
-            }
+            size = match checked_download_size(size, chunk.len() as u64, self.limits.blob_bytes) {
+                Ok(size) => size,
+                Err(error) => {
+                    let _ = fs::remove_file(&temporary);
+                    return Err(error);
+                }
+            };
             hash.update(&chunk);
             output
                 .write_all(&chunk)
@@ -114,6 +108,26 @@ impl FeatureSourceResolver {
     pub(super) fn cache_path(&self, digest: &str) -> PathBuf {
         self.blobs.join(digest.trim_start_matches("sha256:"))
     }
+}
+
+fn checked_download_size(
+    current: u64,
+    additional: u64,
+    limit: u64,
+) -> Result<u64, FeatureSourceError> {
+    let size = current
+        .checked_add(additional)
+        .ok_or(FeatureSourceError::Limit {
+            kind: "download bytes",
+            limit,
+        })?;
+    if size > limit {
+        return Err(FeatureSourceError::Limit {
+            kind: "download bytes",
+            limit,
+        });
+    }
+    Ok(size)
 }
 
 pub(super) fn validate_digest(value: &str) -> Result<(), FeatureSourceError> {
@@ -223,4 +237,16 @@ pub(super) fn extraction_directory(blobs: &Path, digest: &str) -> PathBuf {
 
 pub(super) fn cache_path(blobs: &Path, digest: &str) -> PathBuf {
     blobs.join(digest.trim_start_matches("sha256:"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn downloaded_size_accepts_the_limit_and_detects_one_byte_overflow() {
+        assert_eq!(checked_download_size(63, 1, 64).expect("exact limit"), 64);
+        assert!(checked_download_size(64, 1, 64).is_err());
+        assert!(checked_download_size(u64::MAX, 1, 64).is_err());
+    }
 }

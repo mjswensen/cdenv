@@ -149,14 +149,17 @@ fn extract_into(
                 kind: "extracted bytes",
                 limit: limits.extracted_bytes,
             })?;
-        if extracted > limits.extracted_bytes
-            || extracted > compressed.saturating_mul(limits.expansion_ratio)
-        {
+        let expansion_limit =
+            compressed
+                .checked_mul(limits.expansion_ratio)
+                .ok_or(FeatureSourceError::Limit {
+                    kind: "archive expansion ratio",
+                    limit: limits.expansion_ratio,
+                })?;
+        if extracted > limits.extracted_bytes || extracted > expansion_limit {
             return Err(FeatureSourceError::Limit {
                 kind: "extracted bytes/ratio",
-                limit: limits
-                    .extracted_bytes
-                    .min(compressed.saturating_mul(limits.expansion_ratio)),
+                limit: limits.extracted_bytes.min(expansion_limit),
             });
         }
         if let Some(parent) = target.parent() {
@@ -222,6 +225,20 @@ mod tests {
         tar.finish().expect("finish");
     }
 
+    fn archive_with_entries(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = File::create(path).expect("archive");
+        let mut tar = tar::Builder::new(file);
+        for (name, bytes) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(bytes.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            tar.append_data(&mut header, name, Cursor::new(*bytes))
+                .expect("entry");
+        }
+        tar.finish().expect("finish");
+    }
+
     #[test]
     fn extraction_accepts_metadata_and_rejects_traversal() {
         let temporary = tempfile::tempdir().expect("temp");
@@ -258,5 +275,42 @@ mod tests {
             .is_err()
         );
         assert!(!temporary.path().join("escape").exists());
+    }
+
+    #[test]
+    fn extraction_limits_accept_exact_bounds_and_reject_one_over() {
+        let temporary = tempfile::tempdir().expect("temp");
+        let archive_path = temporary.path().join("entries.tar");
+        archive_with_entries(&archive_path, &[("one", b"a"), ("two", b"b")]);
+        let limits = FeatureSourceLimits {
+            files: 2,
+            extracted_bytes: 2,
+            expansion_ratio: 10,
+            ..FeatureSourceLimits::default()
+        };
+        extract_archive(&archive_path, &temporary.path().join("accepted"), limits)
+            .expect("exact entry and byte limits");
+
+        let entries_over = FeatureSourceLimits { files: 1, ..limits };
+        assert!(
+            extract_archive(
+                &archive_path,
+                &temporary.path().join("entries-over"),
+                entries_over
+            )
+            .is_err()
+        );
+        let bytes_over = FeatureSourceLimits {
+            extracted_bytes: 1,
+            ..limits
+        };
+        assert!(
+            extract_archive(
+                &archive_path,
+                &temporary.path().join("bytes-over"),
+                bytes_over
+            )
+            .is_err()
+        );
     }
 }

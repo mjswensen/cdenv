@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use cdenv_devcontainer::{FeatureValue, ResolvedFeature};
+use cdenv_devcontainer::{DockerfileBuildPlan, FeatureValue, RepositoryPath, ResolvedFeature};
 use serde_json::Value;
 use thiserror::Error;
 
@@ -47,6 +47,9 @@ pub enum GeneratedImageError {
     /// Final image metadata could not be encoded as a Docker label.
     #[error("generated image metadata cannot be encoded")]
     MetadataEncoding,
+    /// The generated context cannot be represented as a neutral Docker plan.
+    #[error("cannot construct generated Docker build plan")]
+    BuildPlan,
 }
 
 impl GeneratedImagePlan {
@@ -105,9 +108,30 @@ impl GeneratedImagePlan {
                 });
             }
             dockerfile.push_str(&format!("COPY {directory}/ /tmp/cdenv-feature-{index}/\n"));
-            dockerfile.push_str(&format!("RUN --mount=type=cache,target=/var/cache/cdenv-feature-{index} \\\n    cd /tmp/cdenv-feature-{index} && ./install.sh {}\n", feature_arguments(&feature.resolved.options)));
+            dockerfile.push_str(&format!("RUN --mount=type=cache,target=/var/cache/cdenv-feature-{index} \\\n    cd /tmp/cdenv-feature-{index} && /bin/sh ./install.sh {}\n", feature_arguments(&feature.resolved.options)));
         }
         Ok(Self { dockerfile, files })
+    }
+
+    /// Returns a neutral `BuildKit` plan for this entirely generated context.
+    ///
+    /// The Docker CLI adapter ignores the repository paths when used with
+    /// generated context and Dockerfile inputs; empty paths avoid leaking a
+    /// checkout path into the generated-image plan.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the internal neutral paths violate the shared
+    /// repository-path invariant.
+    pub fn build_plan(&self) -> Result<DockerfileBuildPlan, GeneratedImageError> {
+        Ok(DockerfileBuildPlan {
+            dockerfile: RepositoryPath::parse("").map_err(|_| GeneratedImageError::BuildPlan)?,
+            context: RepositoryPath::parse("").map_err(|_| GeneratedImageError::BuildPlan)?,
+            target: None,
+            arguments: BTreeMap::new(),
+            cache_from: Vec::new(),
+            options: Vec::new(),
+        })
     }
 
     /// Returns exact generated Dockerfile bytes.
@@ -128,10 +152,14 @@ fn feature_arguments(options: &BTreeMap<String, FeatureValue>) -> String {
         .iter()
         .map(|(name, value)| match value {
             FeatureValue::Boolean(value) => format!("{name}={value}"),
-            FeatureValue::String(value) => format!("{name}={value:?}"),
+            FeatureValue::String(value) => format!("{name}={}", shell_quote(value)),
         })
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
 }
 
 /// One account observed by the architecture-matched container helper.

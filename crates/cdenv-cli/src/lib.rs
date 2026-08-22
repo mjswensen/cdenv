@@ -14,6 +14,7 @@ mod docker_cli;
 mod error;
 mod feature_lock;
 mod feature_sources;
+mod generated_image;
 mod git;
 mod image_orchestration;
 mod installation;
@@ -68,6 +69,10 @@ pub use feature_sources::{
     MAX_FEATURE_EXPANSION_RATIO, MAX_FEATURE_EXTRACTED_BYTES, MAX_FEATURE_FILES,
     MAX_FEATURE_METADATA_BYTES, MAX_FEATURE_PATH_BYTES, MAX_FEATURE_REDIRECTS, VerifiedFeature,
     extract_archive,
+};
+pub use generated_image::{
+    GeneratedFeature, GeneratedImageError, GeneratedImagePlan, LinuxAccount, UidGidMutation,
+    UidGidUpdateError, plan_uid_gid_update,
 };
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
 pub use image_orchestration::{

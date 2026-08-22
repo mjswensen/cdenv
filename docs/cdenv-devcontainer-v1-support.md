@@ -147,6 +147,13 @@ extraction is confined to a newly controlled directory.
 
 ## Compose and Docker interpretations
 
+Repository Docker build contexts are passed directly to Docker without cdenv
+walking their contents: Docker remains authoritative for `.dockerignore`,
+Dockerfile-specific ignore files, negation, and context selection. cdenv bounds
+and validates only its own generated contexts before materializing them, while
+still canonicalizing the selected repository context and Dockerfile below the
+checkout trust boundary.
+
 Only `docker compose` V2 and BuildKit are supported. Legacy Compose V1, the
 removed classic Docker builder, non-Docker orchestrators, broad project `down`
 for normal stop, and implicit reconciliation during drift-safe resume are not.

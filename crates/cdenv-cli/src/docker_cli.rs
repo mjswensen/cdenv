@@ -344,7 +344,7 @@ impl DockerCliAdapter {
         if matches!(request.dockerfile, DockerfileInput::Repository) {
             ensure_contained(&checkout, &dockerfile, "Dockerfile")?;
         }
-        validate_context_tree(&context, self.context_limits, generated_context)?;
+        validate_prepared_context(&context, self.context_limits, generated_context)?;
         let iid_file = temporary.path().join("image.id");
         let arguments = build_arguments(
             request.plan,
@@ -712,11 +712,24 @@ fn prepare_dockerfile(
     }
 }
 
-fn validate_context_tree(
+/// Validates only cdenv-materialized context trees.
+///
+/// Repository contexts are passed directly to Docker: Docker owns `.dockerignore` and every
+/// context-selection rule, while generated contexts have no repository ignore semantics and are
+/// bounded before cdenv materializes them.
+fn validate_prepared_context(
     root: &Path,
     limits: DockerContextLimits,
     generated: bool,
 ) -> Result<(), DockerCliError> {
+    if generated {
+        validate_context_tree(root, limits)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_context_tree(root: &Path, limits: DockerContextLimits) -> Result<(), DockerCliError> {
     let canonical_root = canonical_directory(root, "build context")?;
     let mut pending = vec![canonical_root.clone()];
     let mut entries = 0_usize;
@@ -759,11 +772,7 @@ fn validate_context_tree(
                 pending.push(path);
             } else if metadata.is_file() {
                 bytes = bytes.saturating_add(metadata.len());
-                let maximum = if generated {
-                    limits.maximum_generated_bytes
-                } else {
-                    limits.maximum_bytes
-                };
+                let maximum = limits.maximum_generated_bytes;
                 if bytes > maximum {
                     return Err(DockerCliError::ContextTooLarge { bytes, maximum });
                 }
@@ -1057,12 +1066,27 @@ mod tests {
             maximum_generated_bytes: 8,
         };
 
-        let result = validate_context_tree(temporary.path(), limits, false);
+        let result = validate_context_tree(temporary.path(), limits);
 
         assert!(matches!(
             result,
             Err(DockerCliError::ContextTooLarge { .. })
         ));
+    }
+
+    #[test]
+    fn repository_context_defers_ignored_size_semantics_to_docker() {
+        let temporary = tempfile::tempdir().expect("temporary context");
+        fs::write(temporary.path().join(".dockerignore"), "ignored-large\n").expect("ignore file");
+        fs::write(temporary.path().join("ignored-large"), [0_u8; 9]).expect("ignored large file");
+        let limits = DockerContextLimits {
+            maximum_entries: 1,
+            maximum_bytes: 8,
+            maximum_generated_bytes: 8,
+        };
+
+        validate_prepared_context(temporary.path(), limits, false)
+            .expect("Docker owns repository ignore matching");
     }
 
     #[cfg(unix)]
@@ -1076,7 +1100,7 @@ mod tests {
         fs::write(temporary.path().join("outside"), "outside").expect("outside file");
         symlink("../outside", context.join("escape")).expect("escaping symlink");
 
-        let result = validate_context_tree(&context, DockerContextLimits::default(), false);
+        let result = validate_context_tree(&context, DockerContextLimits::default());
 
         assert!(matches!(
             result,

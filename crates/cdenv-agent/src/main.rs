@@ -1,29 +1,41 @@
 //! Thin executable entry point for the cdenv container agent.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 fn main() -> ExitCode {
-    if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new("version"))
-        || std::env::args_os().nth(2).is_some()
-    {
-        eprintln!("Usage: cdenv-agent version");
-        return ExitCode::FAILURE;
-    }
-
-    match cdenv_agent::ensure_supported_platform() {
-        Ok(()) => match serde_json::to_string(&cdenv_agent::version()) {
-            Ok(version) => {
-                println!("{version}");
-                ExitCode::SUCCESS
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    let result = cdenv_agent::ensure_supported_platform()
+        .map_err(|error| error.to_string())
+        .and_then(|()| match arguments.as_slice() {
+            [command] if command == "version" => {
+                serde_json::to_string(&cdenv_agent::version()).map_err(|error| error.to_string())
             }
-            Err(error) => {
-                eprintln!("cdenv-agent: failed to encode version: {error}");
-                ExitCode::FAILURE
-            }
-        },
+            [command] if command == "identity" => cdenv_agent::identity()
+                .map_err(|error| error.to_string())
+                .and_then(|identity| {
+                    serde_json::to_string(&identity).map_err(|error| error.to_string())
+                }),
+            [command, manifest] if command == "provision" => provision(Path::new(manifest)),
+            _ => Err("Usage: cdenv-agent <version|identity|provision MANIFEST>".to_owned()),
+        });
+    match result {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("cdenv-agent: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn provision(manifest: &Path) -> Result<String, String> {
+    let contents = std::fs::read(manifest)
+        .map_err(|error| format!("cannot read provision manifest: {error}"))?;
+    let request = serde_json::from_slice(&contents)
+        .map_err(|error| format!("invalid provision manifest: {error}"))?;
+    cdenv_agent::provision(&request).map_err(|error| error.to_string())?;
+    Ok("{}".to_owned())
 }

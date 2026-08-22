@@ -13,6 +13,7 @@ name = "cdenv-agent"
 path = "src/main.rs"
 
 [dependencies]
+nix.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

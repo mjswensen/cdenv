@@ -165,8 +165,8 @@ pub(super) fn verify_cached(
     digest: &str,
     size: Option<u64>,
 ) -> Result<bool, FeatureSourceError> {
-    let file = match File::open(path) {
-        Ok(file) => file,
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(source) => {
             return Err(FeatureSourceError::Cache {
@@ -175,6 +175,16 @@ pub(super) fn verify_cached(
             });
         }
     };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(FeatureSourceError::Cache {
+            path: path.to_path_buf(),
+            source: io::Error::new(io::ErrorKind::InvalidData, "cache entry is not regular"),
+        });
+    }
+    let file = File::open(path).map_err(|source| FeatureSourceError::Cache {
+        path: path.to_path_buf(),
+        source,
+    })?;
     if !file
         .metadata()
         .map_err(|source| FeatureSourceError::Cache {
@@ -248,5 +258,17 @@ mod tests {
         assert_eq!(checked_download_size(63, 1, 64).expect("exact limit"), 64);
         assert!(checked_download_size(64, 1, 64).is_err());
         assert!(checked_download_size(u64::MAX, 1, 64).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cache_verification_rejects_a_symlink_before_hashing() {
+        let temporary = tempfile::tempdir().expect("temp");
+        let target = temporary.path().join("target");
+        fs::write(&target, b"cache").expect("target");
+        let entry = temporary.path().join("entry");
+        std::os::unix::fs::symlink(&target, &entry).expect("symlink");
+
+        assert!(verify_cached(&entry, &digest_bytes(b"cache"), Some(5)).is_err());
     }
 }

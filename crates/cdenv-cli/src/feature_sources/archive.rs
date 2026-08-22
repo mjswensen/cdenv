@@ -6,6 +6,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufReader, Read};
 use std::path::{Component, Path};
 
+const COMPLETE_MARKER: &str = ".cdenv-feature-complete";
+
 /// Safely extracts a gzip-compressed or plain tar archive into a newly-created directory.
 ///
 /// # Errors
@@ -16,7 +18,7 @@ pub fn extract_archive(
     limits: FeatureSourceLimits,
 ) -> Result<(), FeatureSourceError> {
     if destination.exists() {
-        return Ok(());
+        return validate_extraction(destination);
     }
     let parent = destination
         .parent()
@@ -33,24 +35,88 @@ pub fn extract_archive(
         path: temporary.clone(),
         source,
     })?;
-    let result = extract_into(archive, &temporary, limits);
+    let result = extract_into(archive, &temporary, limits).and_then(|()| {
+        File::create_new(temporary.join(COMPLETE_MARKER))
+            .map_err(|source| FeatureSourceError::ArchiveIo {
+                path: temporary.join(COMPLETE_MARKER),
+                source,
+            })?
+            .sync_all()
+            .map_err(|source| FeatureSourceError::ArchiveIo {
+                path: temporary.join(COMPLETE_MARKER),
+                source,
+            })
+    });
     if let Err(error) = result {
         let _ = fs::remove_dir_all(&temporary);
         return Err(error);
     }
     if let Err(source) = fs::rename(&temporary, destination) {
-        if destination.is_dir() {
-            let _ = fs::remove_dir_all(&temporary);
-        } else {
-            let _ = fs::remove_dir_all(&temporary);
-            return Err(FeatureSourceError::ArchiveIo {
-                path: destination.to_path_buf(),
+        let _ = fs::remove_dir_all(&temporary);
+        if destination.exists() {
+            return validate_extraction(destination);
+        }
+        return Err(FeatureSourceError::ArchiveIo {
+            path: destination.to_path_buf(),
+            source,
+        });
+    }
+    Ok(())
+}
+fn validate_extraction(destination: &Path) -> Result<(), FeatureSourceError> {
+    let metadata =
+        fs::symlink_metadata(destination).map_err(|source| FeatureSourceError::ArchiveIo {
+            path: destination.to_path_buf(),
+            source,
+        })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(FeatureSourceError::Archive {
+            path: destination.to_path_buf(),
+            message: "existing extraction is not a regular directory",
+        });
+    }
+    let marker = destination.join(COMPLETE_MARKER);
+    let marker_metadata =
+        fs::symlink_metadata(&marker).map_err(|source| FeatureSourceError::ArchiveIo {
+            path: marker.clone(),
+            source,
+        })?;
+    if !marker_metadata.is_file() || marker_metadata.file_type().is_symlink() {
+        return Err(FeatureSourceError::Archive {
+            path: marker,
+            message: "existing extraction is incomplete or unsafe",
+        });
+    }
+    let mut pending = vec![destination.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        for entry in fs::read_dir(&directory).map_err(|source| FeatureSourceError::ArchiveIo {
+            path: directory.clone(),
+            source,
+        })? {
+            let entry = entry.map_err(|source| FeatureSourceError::ArchiveIo {
+                path: directory.clone(),
                 source,
-            });
+            })?;
+            let path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&path).map_err(|source| FeatureSourceError::ArchiveIo {
+                    path: path.clone(),
+                    source,
+                })?;
+            if metadata.file_type().is_symlink() || !(metadata.is_dir() || metadata.is_file()) {
+                return Err(FeatureSourceError::Archive {
+                    path,
+                    message: "existing extraction contains an unsafe entry",
+                });
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+            }
         }
     }
     Ok(())
 }
+
 #[expect(
     clippy::too_many_lines,
     reason = "the streaming archive state and all bound checks remain visible together"
@@ -240,22 +306,21 @@ mod tests {
     }
 
     #[test]
-    fn extraction_accepts_metadata_and_rejects_traversal() {
+    fn extraction_creates_a_complete_regular_directory() {
         let temporary = tempfile::tempdir().expect("temp");
-        let good = temporary.path().join("good.tar");
-        archive(&good, "devcontainer-feature.json");
-        extract_archive(
-            &good,
-            &temporary.path().join("out"),
-            FeatureSourceLimits::default(),
-        )
-        .expect("safe archive");
-        assert!(
-            temporary
-                .path()
-                .join("out/devcontainer-feature.json")
-                .is_file()
-        );
+        let archive_path = temporary.path().join("feature.tar");
+        archive(&archive_path, "devcontainer-feature.json");
+        let destination = temporary.path().join("out");
+        extract_archive(&archive_path, &destination, FeatureSourceLimits::default())
+            .expect("safe archive");
+        assert!(destination.join("devcontainer-feature.json").is_file());
+        extract_archive(&archive_path, &destination, FeatureSourceLimits::default())
+            .expect("validated cache reuse");
+    }
+
+    #[test]
+    fn extraction_rejects_parent_traversal() {
+        let temporary = tempfile::tempdir().expect("temp");
         let bad = temporary.path().join("bad.tar");
         let file = File::create(&bad).expect("archive");
         let mut builder = tar::Builder::new(file);
@@ -275,6 +340,19 @@ mod tests {
             .is_err()
         );
         assert!(!temporary.path().join("escape").exists());
+    }
+
+    #[test]
+    fn extraction_rejects_existing_directory_without_completion_marker() {
+        let temporary = tempfile::tempdir().expect("temp");
+        let archive_path = temporary.path().join("feature.tar");
+        archive(&archive_path, "devcontainer-feature.json");
+        let destination = temporary.path().join("out");
+        fs::create_dir(&destination).expect("incomplete extraction");
+
+        assert!(
+            extract_archive(&archive_path, &destination, FeatureSourceLimits::default()).is_err()
+        );
     }
 
     #[test]

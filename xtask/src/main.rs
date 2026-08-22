@@ -2,7 +2,10 @@
 
 use std::env;
 use std::ffi::{OsStr, OsString};
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const QUALITY_COMMANDS: &[&[&str]] = &[
     &["fmt", "--check"],
@@ -53,12 +56,13 @@ fn main() -> ExitCode {
 
     match command.to_str() {
         Some("check") if arguments.next().is_none() => run_quality_gate(),
+        Some("build") if arguments.next().is_none() => build_distribution(),
         Some("test-integration") => run_integration(arguments),
         Some("help" | "--help" | "-h") if arguments.next().is_none() => {
             print_help();
             ExitCode::SUCCESS
         }
-        Some("check" | "help" | "--help" | "-h") => {
+        Some("build" | "check" | "help" | "--help" | "-h") => {
             eprintln!("xtask: unexpected additional arguments");
             print_help();
             ExitCode::FAILURE
@@ -73,6 +77,148 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the release pipeline keeps its ordered Docker staging steps auditable in one place"
+)]
+fn build_distribution() -> ExitCode {
+    let build_id = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => format!("{:x}-{}", duration.as_nanos(), std::process::id()),
+        Err(error) => {
+            eprintln!("xtask: cannot create build ID: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
+    let stage = root.join("target/cdenv-agent").join(&build_id);
+    if let Err(error) = fs::create_dir_all(&stage) {
+        eprintln!("xtask: cannot create staging directory: {error}");
+        return ExitCode::FAILURE;
+    }
+    for (platform, name, machine) in [
+        ("linux/amd64", "cdenv-agent-x86_64", 62_u16),
+        ("linux/arm64", "cdenv-agent-aarch64", 183_u16),
+    ] {
+        let tag = format!("cdenv-agent-{build_id}-{name}");
+        let built = Command::new("docker")
+            .current_dir(&root)
+            .args([
+                "buildx",
+                "build",
+                "--load",
+                "--platform",
+                platform,
+                "--build-arg",
+                &format!("CDENV_AGENT_BUILD_ID={build_id}"),
+                "--file",
+                "xtask/agent.Dockerfile",
+                "--tag",
+                &tag,
+                ".",
+            ])
+            .status();
+        if !matches!(built, Ok(status) if status.success()) {
+            eprintln!("xtask: Docker Buildx failed for {platform}");
+            return ExitCode::FAILURE;
+        }
+        let version = Command::new("docker")
+            .args(["run", "--rm", "--platform", platform, &tag, "version"])
+            .output();
+        let expected_version = format!("\"buildId\":\"{build_id}\"");
+        if !matches!(version, Ok(ref output) if output.status.success() && String::from_utf8_lossy(&output.stdout).contains("\"name\":\"cdenv-agent\"") && String::from_utf8_lossy(&output.stdout).contains("\"protocolVersion\":1") && String::from_utf8_lossy(&output.stdout).contains(&expected_version))
+        {
+            eprintln!(
+                "xtask: {platform} agent did not report the expected build and protocol identity"
+            );
+            return ExitCode::FAILURE;
+        }
+        let container = format!("{tag}-extract");
+        if !matches!(Command::new("docker").args(["create", "--name", &container, &tag]).status(), Ok(status) if status.success())
+        {
+            eprintln!("xtask: could not create {platform} artifact container");
+            return ExitCode::FAILURE;
+        }
+        let destination = stage.join(name);
+        let copied = Command::new("docker")
+            .args([
+                "cp",
+                &format!("{container}:/cdenv-agent"),
+                &destination.display().to_string(),
+            ])
+            .status();
+        let _ = Command::new("docker")
+            .args(["rm", "-f", &container])
+            .status();
+        if !matches!(copied, Ok(status) if status.success()) {
+            eprintln!("xtask: could not stage {platform} artifact");
+            return ExitCode::FAILURE;
+        }
+        if fs::read(&destination)
+            .ok()
+            .and_then(|bytes| validate_static_elf(&bytes, machine).ok())
+            .is_none()
+        {
+            eprintln!(
+                "xtask: staged {platform} artifact is not static for its claimed architecture"
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    match Command::new(cargo)
+        .current_dir(&root)
+        .args(["build", "--release", "--package", "cdenv-cli", "--locked"])
+        .env("CDENV_AGENT_ARTIFACT_DIR", &stage)
+        .env("CDENV_BUILD_ID", &build_id)
+        .status()
+    {
+        Ok(status) if status.success() => {
+            eprintln!("xtask: staged host and agents with build ID {build_id}");
+            ExitCode::SUCCESS
+        }
+        Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
+        Err(error) => {
+            eprintln!("xtask: failed to build host: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn validate_static_elf(bytes: &[u8], machine: u16) -> Result<(), ()> {
+    if bytes.len() < 64
+        || &bytes[..4] != b"\x7fELF"
+        || bytes[4] != 2
+        || bytes[5] != 1
+        || u16::from_le_bytes([bytes[18], bytes[19]]) != machine
+    {
+        return Err(());
+    }
+    let offset = usize::try_from(u64::from_le_bytes(
+        bytes[32..40].try_into().map_err(|_| ())?,
+    ))
+    .map_err(|_| ())?;
+    let size = usize::from(u16::from_le_bytes([bytes[54], bytes[55]]));
+    let count = usize::from(u16::from_le_bytes([bytes[56], bytes[57]]));
+    let end = offset
+        .checked_add(size.checked_mul(count).ok_or(())?)
+        .ok_or(())?;
+    if size < 4 || end > bytes.len() {
+        return Err(());
+    }
+    if (0..count).any(|index| {
+        u32::from_le_bytes(
+            bytes[offset + index * size..][..4]
+                .try_into()
+                .unwrap_or([0; 4]),
+        ) == 3
+    }) {
+        return Err(());
+    }
+    Ok(())
 }
 
 fn run_quality_gate() -> ExitCode {

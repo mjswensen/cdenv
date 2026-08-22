@@ -1,6 +1,8 @@
 //! Deterministic generated Feature-image material and UID/GID mutation planning.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use cdenv_devcontainer::{DockerfileBuildPlan, FeatureValue, RepositoryPath, ResolvedFeature};
 use serde_json::Value;
@@ -19,6 +21,26 @@ pub struct GeneratedFeature {
     pub files: Vec<GeneratedContextFile>,
 }
 
+impl GeneratedFeature {
+    /// Reads one already-verified, regular Feature directory into generated material.
+    ///
+    /// The caller must supply a cache/extraction directory, never a checkout
+    /// path. Symlinks and special files are rejected rather than followed.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed source-tree error for unreadable, linked, or non-regular
+    /// Feature files.
+    pub fn from_directory(
+        resolved: ResolvedFeature,
+        directory: &Path,
+    ) -> Result<Self, GeneratedImageError> {
+        let mut files = Vec::new();
+        collect_feature_files(directory, directory, &mut files)?;
+        Ok(Self { resolved, files })
+    }
+}
+
 /// Immutable material for a Feature-derived Docker image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GeneratedImagePlan {
@@ -27,7 +49,7 @@ pub struct GeneratedImagePlan {
 }
 
 /// A safe generated-image planning failure.
-#[derive(Debug, Error, PartialEq, Eq)]
+#[derive(Debug, Error)]
 #[non_exhaustive]
 pub enum GeneratedImageError {
     /// A Feature source was not represented by a safe relative file.
@@ -47,6 +69,21 @@ pub enum GeneratedImageError {
     /// Final image metadata could not be encoded as a Docker label.
     #[error("generated image metadata cannot be encoded")]
     MetadataEncoding,
+    /// A verified Feature tree could not be read as regular files.
+    #[error("cannot read Feature source `{path}`: {source}")]
+    FeatureSource {
+        /// Source path.
+        path: PathBuf,
+        /// Underlying filesystem error.
+        #[source]
+        source: std::io::Error,
+    },
+    /// A Feature source contains a symlink, special file, or invalid root.
+    #[error("Feature source `{path}` is not a regular contained file tree")]
+    InvalidFeatureSource {
+        /// Rejected source path.
+        path: PathBuf,
+    },
     /// The generated context cannot be represented as a neutral Docker plan.
     #[error("cannot construct generated Docker build plan")]
     BuildPlan,
@@ -145,6 +182,60 @@ impl GeneratedImagePlan {
     pub fn files(&self) -> &[GeneratedContextFile] {
         &self.files
     }
+}
+
+fn collect_feature_files(
+    root: &Path,
+    directory: &Path,
+    files: &mut Vec<GeneratedContextFile>,
+) -> Result<(), GeneratedImageError> {
+    let metadata =
+        fs::symlink_metadata(directory).map_err(|source| GeneratedImageError::FeatureSource {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(GeneratedImageError::InvalidFeatureSource {
+            path: directory.to_path_buf(),
+        });
+    }
+    let mut entries = fs::read_dir(directory)
+        .map_err(|source| GeneratedImageError::FeatureSource {
+            path: directory.to_path_buf(),
+            source,
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|source| GeneratedImageError::FeatureSource {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    for entry in entries {
+        let path = entry.path();
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|source| GeneratedImageError::FeatureSource {
+                path: path.clone(),
+                source,
+            })?;
+        if metadata.file_type().is_symlink() {
+            return Err(GeneratedImageError::InvalidFeatureSource { path });
+        }
+        if metadata.is_dir() {
+            collect_feature_files(root, &path, files)?;
+        } else if metadata.is_file() {
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|_| GeneratedImageError::InvalidFeatureSource { path: path.clone() })?;
+            files.push(GeneratedContextFile {
+                path: relative.to_path_buf(),
+                contents: fs::read(&path)
+                    .map_err(|source| GeneratedImageError::FeatureSource { path, source })?,
+            });
+        } else {
+            return Err(GeneratedImageError::InvalidFeatureSource { path });
+        }
+    }
+    Ok(())
 }
 
 fn feature_arguments(options: &BTreeMap<String, FeatureValue>) -> String {

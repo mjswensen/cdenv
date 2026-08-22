@@ -41,12 +41,13 @@ impl FeatureSourceResolver {
         accept: Option<&str>,
         token: Option<&str>,
     ) -> Result<Response, FeatureSourceError> {
+        let mut authorization = token;
         for followed in 0..=self.limits.redirects {
             let mut request = self.client.get(url.clone());
             if let Some(value) = accept {
                 request = request.header(ACCEPT, value);
             }
-            if let Some(value) = token {
+            if let Some(value) = authorization {
                 request = request.header(AUTHORIZATION, format!("Bearer {value}"));
             }
             let response =
@@ -74,7 +75,7 @@ impl FeatureSourceResolver {
                     url: url.to_string(),
                     message: "redirect omitted a valid Location",
                 })?;
-            url = checked_https_url(
+            let redirect = checked_https_url(
                 url.join(location)
                     .map_err(|_| FeatureSourceError::Url {
                         url: location.to_owned(),
@@ -82,9 +83,26 @@ impl FeatureSourceResolver {
                     })?
                     .as_str(),
             )?;
+            if !same_origin(&url, &redirect) {
+                authorization = None;
+            }
+            url = redirect;
         }
         unreachable!("redirect loop always returns")
     }
+}
+
+/// Returns whether two request URLs have the same scheme, host, and effective port.
+///
+/// Redirected bearer credentials are only retained within this origin boundary.
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.scheme() == right.scheme()
+        && left.host_str().is_some_and(|host| {
+            right
+                .host_str()
+                .is_some_and(|other| host.eq_ignore_ascii_case(other))
+        })
+        && left.port_or_known_default() == right.port_or_known_default()
 }
 
 pub(super) fn checked_https_url(value: &str) -> Result<Url, FeatureSourceError> {
@@ -128,4 +146,22 @@ pub(super) fn checked_https_url(value: &str) -> Result<Url, FeatureSourceError> 
         });
     }
     Ok(url)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn same_origin_requires_scheme_host_and_effective_port_to_match() {
+        let origin = Url::parse("https://registry.example:443/v2/tool").expect("origin URL");
+        let same = Url::parse("https://REGISTRY.example/v2/blob").expect("same-origin URL");
+        let different_port = Url::parse("https://registry.example:8443/blob").expect("port URL");
+        let different_scheme = Url::parse("http://registry.example/blob").expect("scheme URL");
+        let different_host = Url::parse("https://token.example/blob").expect("host URL");
+
+        assert!(same_origin(&origin, &same));
+        assert!(!same_origin(&origin, &different_port));
+        assert!(!same_origin(&origin, &different_scheme));
+        assert!(!same_origin(&origin, &different_host));
+    }
 }

@@ -25,24 +25,10 @@ impl FeatureSourceResolver {
         let parsed = OciReference::parse(value)?;
         let accept = format!("{OCI_MANIFEST}, {DOCKER_MANIFEST}, {OCI_INDEX}, {DOCKER_LIST}");
         let mut manifest_url = parsed.manifest_url(&parsed.selector)?;
-        let mut response = self
-            .get_following(manifest_url.clone(), Some(&accept), None)
+        let mut token = None;
+        let response = self
+            .get_oci_response(manifest_url.clone(), Some(&accept), &mut token)
             .await?;
-        if response.status() == StatusCode::UNAUTHORIZED {
-            let challenge = response
-                .headers()
-                .get(WWW_AUTHENTICATE)
-                .and_then(|v| v.to_str().ok())
-                .ok_or_else(|| {
-                    FeatureSourceError::Authentication(
-                        "registry requires unsupported private authentication".to_owned(),
-                    )
-                })?;
-            let token = bearer_token(&self.client, self.limits, challenge).await?;
-            response = self
-                .get_following(manifest_url.clone(), Some(&accept), Some(&token))
-                .await?;
-        }
         require_success(&response)?;
         let (mut manifest, mut manifest_digest, media) =
             read_manifest(response, self.limits.metadata_bytes).await?;
@@ -61,7 +47,7 @@ impl FeatureSourceResolver {
             validate_digest(&descriptor.digest)?;
             manifest_url = parsed.manifest_url(&descriptor.digest)?;
             let selected = self
-                .get_following(manifest_url, Some(&accept), None)
+                .get_oci_response(manifest_url, Some(&accept), &mut token)
                 .await?;
             require_success(&selected)?;
             let result = read_manifest(selected, self.limits.metadata_bytes).await?;
@@ -94,7 +80,7 @@ impl FeatureSourceResolver {
             cached
         } else {
             let response = self
-                .get_following(parsed.blob_url(&layer.digest)?, None, None)
+                .get_oci_response(parsed.blob_url(&layer.digest)?, None, &mut token)
                 .await?;
             require_success(&response)?;
             self.cache_response(response, Some(&layer.digest), Some(layer.size))
@@ -114,6 +100,32 @@ impl FeatureSourceResolver {
             },
             artifact: path,
         })
+    }
+
+    /// Sends a registry request, acquiring or refreshing only anonymous Bearer credentials.
+    async fn get_oci_response(
+        &self,
+        url: Url,
+        accept: Option<&str>,
+        token: &mut Option<String>,
+    ) -> Result<Response, FeatureSourceError> {
+        let response = self
+            .get_following(url.clone(), accept, token.as_deref())
+            .await?;
+        if response.status() != StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+        let challenge = response
+            .headers()
+            .get(WWW_AUTHENTICATE)
+            .and_then(|value| value.to_str().ok())
+            .ok_or_else(|| {
+                FeatureSourceError::Authentication(
+                    "registry requires anonymous Bearer authentication".to_owned(),
+                )
+            })?;
+        *token = Some(bearer_token(&self.client, self.limits, challenge).await?);
+        self.get_following(url, accept, token.as_deref()).await
     }
 }
 
@@ -332,5 +344,28 @@ pub(super) fn require_success(response: &Response) -> Result<(), FeatureSourceEr
             "server returned {}",
             response.status()
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bearer_challenge_accepts_anonymous_scope_without_credentials() {
+        let fields = parse_bearer_challenge(
+            "Bearer realm=\"https://tokens.example/token\",service=\"registry.example\",scope=\"repository:tool:pull\"",
+        )
+        .expect("anonymous Bearer challenge");
+
+        assert_eq!(fields.realm, "https://tokens.example/token");
+        assert_eq!(fields.service, Some("registry.example"));
+        assert_eq!(fields.scope, Some("repository:tool:pull"));
+    }
+
+    #[test]
+    fn bearer_challenge_rejects_private_and_malformed_authentication() {
+        assert!(parse_bearer_challenge("Basic realm=\"private\"").is_err());
+        assert!(parse_bearer_challenge("Bearer realm=unquoted").is_err());
     }
 }

@@ -375,6 +375,77 @@ fn set_mode(_file: &File, _mode: u32) -> io::Result<()> {
 mod tests {
     use super::*;
 
+    fn request(reference: &str) -> FeatureRequest {
+        FeatureRequest::new(FeatureReference::parse(reference).expect("reference"))
+    }
+
+    fn lock_for(request: &FeatureRequest) -> FeatureLock {
+        FeatureLock {
+            requested: [(request.reference.to_string(), request.options.clone())]
+                .into_iter()
+                .collect(),
+            ..FeatureLock::default()
+        }
+    }
+
+    #[test]
+    fn existing_container_lock_inspection_is_network_free_and_reports_root_drift() {
+        let current_request = request("./features/tool");
+        let bytes = lock_for(&current_request).to_json_bytes().expect("lock");
+        assert_eq!(
+            inspect_existing_container_lock(Some(&bytes), std::slice::from_ref(&current_request))
+                .expect("current lock"),
+            ExistingContainerLockStatus::Current
+        );
+        assert_eq!(
+            inspect_existing_container_lock(None, std::slice::from_ref(&current_request))
+                .expect("missing lock"),
+            ExistingContainerLockStatus::Missing
+        );
+        assert_eq!(
+            inspect_existing_container_lock(Some(&bytes), &[request("./features/other")])
+                .expect("root drift"),
+            ExistingContainerLockStatus::Drift
+        );
+        let mut changed_options = current_request;
+        changed_options
+            .options
+            .insert("enabled".to_owned(), FeatureValue::Boolean(true));
+        assert_eq!(
+            inspect_existing_container_lock(Some(&bytes), &[changed_options])
+                .expect("option drift"),
+            ExistingContainerLockStatus::Drift
+        );
+    }
+
+    #[test]
+    fn existing_container_lock_inspection_rejects_malformed_and_newer_locks() {
+        let request = request("./features/tool");
+        assert!(
+            inspect_existing_container_lock(Some(b"not JSON"), std::slice::from_ref(&request))
+                .is_err()
+        );
+        assert!(
+            inspect_existing_container_lock(
+                Some(br#"{"version":2,"requested":{},"features":{}}"#),
+                &[request]
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn offline_resolution_rejects_a_missing_frozen_record() {
+        let request = request("./features/tool");
+        let lock = lock_for(&request);
+        let resolver = FeatureSourceResolver::new(tempfile::tempdir().expect("cache").path())
+            .expect("resolver");
+        assert!(
+            resolve_frozen_features_offline(&lock, &[request], &[], &resolver, Path::new("."))
+                .is_err()
+        );
+    }
+
     #[tokio::test]
     async fn local_lock_is_deterministic_and_changes_only_adjacent_target() {
         let checkout = tempfile::tempdir().expect("checkout");
@@ -387,6 +458,10 @@ mod tests {
         )
         .expect("config");
         fs::write(feature.join("devcontainer-feature.json"), br#"{"id":"tool","version":"1","options":{"enabled":{"type":"boolean","default":false}}}"#).expect("feature");
+        let other_config = checkout.path().join("other/.devcontainer");
+        fs::create_dir_all(&other_config).expect("other config");
+        let other_lock = other_config.join(FEATURE_LOCK_FILE);
+        fs::write(&other_lock, b"unrelated lock").expect("other lock");
         let selected = Path::new(".devcontainer/devcontainer.json");
         let target = generate_feature_lock(
             checkout.path(),
@@ -396,6 +471,24 @@ mod tests {
         .await
         .expect("lock");
         let first = fs::read(&target).expect("lock bytes");
+        assert_eq!(
+            fs::read(&other_lock).expect("other lock"),
+            b"unrelated lock"
+        );
+        let lock = FeatureLock::parse(&first).expect("lock parse");
+        let mut root = request("./features/tool");
+        root.options
+            .insert("enabled".to_owned(), FeatureValue::Boolean(true));
+        let requests = vec![root];
+        let offline =
+            FeatureSourceResolver::new(checkout.path().join("offline-cache")).expect("resolver");
+        assert_eq!(
+            resolve_frozen_features_offline(&lock, &requests, &[], &offline, &config)
+                .expect("offline local lock")
+                .installation_order
+                .len(),
+            1
+        );
         #[cfg(unix)]
         {
             use std::os::unix::fs::{MetadataExt, PermissionsExt};

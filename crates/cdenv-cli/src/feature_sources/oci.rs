@@ -31,26 +31,18 @@ impl FeatureSourceResolver {
             .await?;
         require_success(&response)?;
         let (mut manifest, mut manifest_digest, media) =
-            read_manifest(response, self.limits.metadata_bytes).await?;
+            read_manifest(response, self.limits.metadata_bytes, None).await?;
         if matches!(media.as_str(), OCI_INDEX | DOCKER_LIST) {
             let index: IndexDocument = serde_json::from_slice(&manifest)
                 .map_err(|error| FeatureSourceError::Oci(error.to_string()))?;
-            let descriptor = index
-                .manifests
-                .into_iter()
-                .find(|item| matches!(item.media_type.as_str(), OCI_MANIFEST | DOCKER_MANIFEST))
-                .ok_or_else(|| {
-                    FeatureSourceError::Oci(
-                        "manifest list has no supported image manifest".to_owned(),
-                    )
-                })?;
-            validate_digest(&descriptor.digest)?;
+            let descriptor = select_manifest(index)?;
             manifest_url = parsed.manifest_url(&descriptor.digest)?;
             let selected = self
                 .get_oci_response(manifest_url, Some(&accept), &mut token)
                 .await?;
             require_success(&selected)?;
-            let result = read_manifest(selected, self.limits.metadata_bytes).await?;
+            let result =
+                read_manifest(selected, self.limits.metadata_bytes, Some(&descriptor)).await?;
             manifest = result.0;
             manifest_digest = result.1;
         }
@@ -59,22 +51,7 @@ impl FeatureSourceResolver {
         }
         let document: ManifestDocument = serde_json::from_slice(&manifest)
             .map_err(|error| FeatureSourceError::Oci(error.to_string()))?;
-        let layer = document
-            .layers
-            .into_iter()
-            .find(|layer| {
-                matches!(
-                    layer.media_type.as_str(),
-                    FEATURE_LAYER
-                        | FEATURE_LAYER_GZIP
-                        | "application/vnd.oci.image.layer.v1.tar"
-                        | "application/vnd.oci.image.layer.v1.tar+gzip"
-                )
-            })
-            .ok_or_else(|| {
-                FeatureSourceError::Oci("manifest has no supported Feature layer".to_owned())
-            })?;
-        validate_digest(&layer.digest)?;
+        let layer = feature_layer(document)?;
         let cached = self.cache_path(&layer.digest);
         let path = if verify_cached(&cached, &layer.digest, Some(layer.size))? {
             cached
@@ -222,6 +199,49 @@ struct Descriptor {
     digest: String,
     size: u64,
 }
+
+/// Selects the sole architecture-independent Feature manifest from a list.
+fn select_manifest(index: IndexDocument) -> Result<Descriptor, FeatureSourceError> {
+    let mut manifests = index
+        .manifests
+        .into_iter()
+        .filter(|item| matches!(item.media_type.as_str(), OCI_MANIFEST | DOCKER_MANIFEST));
+    let manifest = manifests.next().ok_or_else(|| {
+        FeatureSourceError::Oci("manifest list has no supported Feature manifest".to_owned())
+    })?;
+    if manifests.next().is_some() {
+        return Err(FeatureSourceError::Oci(
+            "manifest list has ambiguous Feature manifests".to_owned(),
+        ));
+    }
+    validate_digest(&manifest.digest)?;
+    Ok(manifest)
+}
+
+/// Requires the single, explicitly typed payload defined by the Feature contract.
+fn feature_layer(manifest: ManifestDocument) -> Result<Descriptor, FeatureSourceError> {
+    let mut layers = manifest.layers.into_iter();
+    let layer = layers
+        .next()
+        .ok_or_else(|| FeatureSourceError::Oci("manifest has no Feature layer".to_owned()))?;
+    if layers.next().is_some() {
+        return Err(FeatureSourceError::Oci(
+            "manifest has multiple layers; exactly one Feature layer is required".to_owned(),
+        ));
+    }
+    if !matches!(
+        layer.media_type.as_str(),
+        FEATURE_LAYER | FEATURE_LAYER_GZIP
+    ) {
+        return Err(FeatureSourceError::Oci(format!(
+            "manifest layer has unsupported Feature media type `{}`",
+            layer.media_type
+        )));
+    }
+    validate_digest(&layer.digest)?;
+    Ok(layer)
+}
+
 #[derive(Deserialize)]
 struct TokenDocument {
     token: Option<String>,
@@ -275,6 +295,7 @@ fn parse_bearer_challenge(value: &str) -> Result<BearerFields<'_>, FeatureSource
 async fn read_manifest(
     response: Response,
     limit: u64,
+    descriptor: Option<&Descriptor>,
 ) -> Result<(Vec<u8>, String, String), FeatureSourceError> {
     let media = response
         .headers()
@@ -295,9 +316,26 @@ async fn read_manifest(
         )));
     }
     let bytes = read_response(response, limit).await?;
+    if let Some(descriptor) = descriptor {
+        verify_manifest_descriptor(descriptor, &bytes)?;
+    }
     let digest = digest_bytes(&bytes);
     Ok((bytes, digest, media))
 }
+fn verify_manifest_descriptor(
+    descriptor: &Descriptor,
+    bytes: &[u8],
+) -> Result<(), FeatureSourceError> {
+    if bytes.len() as u64 != descriptor.size {
+        return Err(FeatureSourceError::Oci(format!(
+            "selected manifest size mismatch: expected {}, observed {}",
+            descriptor.size,
+            bytes.len()
+        )));
+    }
+    verify_digest(&descriptor.digest, bytes)
+}
+
 pub(super) async fn read_response(
     response: Response,
     limit: u64,
@@ -351,6 +389,15 @@ pub(super) fn require_success(response: &Response) -> Result<(), FeatureSourceEr
 mod tests {
     use super::*;
 
+    fn descriptor(media_type: &str) -> Descriptor {
+        Descriptor {
+            media_type: media_type.to_owned(),
+            digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+                .to_owned(),
+            size: 1,
+        }
+    }
+
     #[test]
     fn bearer_challenge_accepts_anonymous_scope_without_credentials() {
         let fields = parse_bearer_challenge(
@@ -367,5 +414,48 @@ mod tests {
     fn bearer_challenge_rejects_private_and_malformed_authentication() {
         assert!(parse_bearer_challenge("Basic realm=\"private\"").is_err());
         assert!(parse_bearer_challenge("Bearer realm=unquoted").is_err());
+    }
+
+    #[test]
+    fn manifest_list_requires_one_supported_manifest() {
+        let selected = select_manifest(IndexDocument {
+            manifests: vec![descriptor(OCI_MANIFEST)],
+        })
+        .expect("single Feature manifest");
+        assert_eq!(selected.media_type, OCI_MANIFEST);
+
+        let ambiguous = select_manifest(IndexDocument {
+            manifests: vec![descriptor(OCI_MANIFEST), descriptor(DOCKER_MANIFEST)],
+        });
+        assert!(ambiguous.is_err());
+    }
+
+    #[test]
+    fn feature_manifest_requires_one_explicit_feature_layer() {
+        let layer = feature_layer(ManifestDocument {
+            layers: vec![descriptor(FEATURE_LAYER)],
+        })
+        .expect("Feature layer");
+        assert_eq!(layer.media_type, FEATURE_LAYER);
+
+        let generic = feature_layer(ManifestDocument {
+            layers: vec![descriptor("application/vnd.oci.image.layer.v1.tar")],
+        });
+        assert!(generic.is_err());
+        let duplicate = feature_layer(ManifestDocument {
+            layers: vec![descriptor(FEATURE_LAYER), descriptor(FEATURE_LAYER_GZIP)],
+        });
+        assert!(duplicate.is_err());
+        let missing = feature_layer(ManifestDocument { layers: Vec::new() });
+        assert!(missing.is_err());
+    }
+
+    #[test]
+    fn selected_manifest_descriptor_rejects_size_and_digest_mismatches() {
+        let selected = descriptor(OCI_MANIFEST);
+        assert!(verify_manifest_descriptor(&selected, b"x").is_err());
+        let mut matching_size = descriptor(OCI_MANIFEST);
+        matching_size.size = 3;
+        assert!(verify_manifest_descriptor(&matching_size, b"abc").is_err());
     }
 }

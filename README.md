@@ -31,10 +31,15 @@ cargo doc --workspace --no-deps
 cargo deny check
 ```
 
-Ordinary workspace tests do not require Docker or OpenSSH. Environment-backed tests use the explicit entry point:
+Ordinary workspace tests do not require Docker or OpenSSH. Environment-backed tests use an explicit named suite:
 
 ```bash
-cargo xtask test-integration
+cargo xtask test-integration --suite devcontainer-v1
+cargo xtask test-integration --suite openssh
 ```
 
-When integration support is declared in CI, missing Docker Engine/CLI, Compose V2, or OpenSSH dependencies are errors rather than skipped tests.
+A suite fails when it is unknown, unavailable, discovers zero tests, or executes no
+passing tests; it never turns an empty package into a successful gate. Until the
+suite is implemented, this is reported as unavailable. Set `CDENV_INTEGRATION=1`
+for declared CI runs: missing Docker Engine/CLI, Compose V2, or OpenSSH dependencies
+then fail rather than skip.

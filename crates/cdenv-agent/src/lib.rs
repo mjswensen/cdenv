@@ -7,11 +7,20 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod environment;
+#[cfg(target_os = "linux")]
+mod lifecycle;
 
 pub use environment::{
     EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError, EnvironmentProbe,
     EnvironmentSnapshot, EnvironmentTemplate, EnvironmentTemplateSegment, capture_environment,
     emit_current_environment, run_with_environment,
+};
+#[cfg(target_os = "linux")]
+pub use lifecycle::{
+    LifecycleCommand, LifecycleError, LifecycleInspection, LifecyclePhase, LifecycleProcess,
+    LifecycleRunRequest, LifecycleRunnerState, LifecycleStage, LifecycleStagePlan, LifecycleStdin,
+    LifecycleValue, LifecycleValueSegment, cancel_lifecycle, execute_lifecycle_command,
+    inspect_lifecycle, run_lifecycle,
 };
 
 /// The protocol spoken by this agent release.

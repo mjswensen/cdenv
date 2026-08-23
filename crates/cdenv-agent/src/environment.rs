@@ -105,6 +105,10 @@ impl EnvironmentSnapshot {
         command.envs(&self.entries);
     }
 
+    pub(crate) fn value(&self, name: &OsStr) -> Option<&OsStr> {
+        self.entries.get(name).map(OsString::as_os_str)
+    }
+
     /// Returns the number of effective entries without exposing them.
     #[must_use]
     pub fn len(&self) -> usize {

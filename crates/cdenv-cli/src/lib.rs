@@ -8,6 +8,7 @@ mod agent_artifacts;
 mod bollard;
 mod command_line;
 mod compose;
+mod compose_lifecycle;
 mod config;
 mod create;
 mod docker;
@@ -44,7 +45,12 @@ pub use command_line::{
 };
 pub use compose::{
     ComposeAdapter, ComposeAdapterError, ComposeBaseClaim, ComposeBaseRequest, ComposeProject,
-    ComposeUpClaim, ComposeUpRequest, compose_arguments,
+    ComposeStopRequest, ComposeUpClaim, ComposeUpRequest, compose_arguments,
+};
+pub use compose_lifecycle::{
+    ComposeLifecycleError, ComposeLifecycleFacts, ComposeLifecycleOrchestrator,
+    ComposeServiceSetState, CreateComposeRequest, RecordedComposeRequest,
+    classify_compose_service_set,
 };
 pub use config::{ConfigLoadError, ConfigSource, discover_and_read_config};
 pub use create::{

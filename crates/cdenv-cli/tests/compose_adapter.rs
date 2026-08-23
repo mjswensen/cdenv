@@ -7,8 +7,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use cdenv_cli::{
-    CancellationToken, ComposeAdapter, ComposeProject, DockerEndpoint, DockerEnvironment,
-    DockerSocketProbe, ProcessRunner,
+    CancellationToken, ComposeAdapter, ComposeProject, ComposeStopRequest, DockerEndpoint,
+    DockerEnvironment, DockerSocketProbe, ProcessRunner,
 };
 
 struct Environment(OsString);
@@ -112,6 +112,56 @@ printf '%s\n' '{"services":{"app":{"image":"example.invalid/app:latest","depends
         !log.windows(b"secret-user".len())
             .any(|value| value == b"secret-user")
     );
+}
+
+#[tokio::test]
+async fn stop_targets_only_the_persisted_managed_services_without_down_or_override() {
+    let temporary = tempfile::tempdir().expect("temporary fixture");
+    let checkout = temporary.path().join("checkout");
+    fs::create_dir(&checkout).expect("checkout");
+    let compose_file = checkout.join("compose.yaml");
+    fs::write(&compose_file, "services: {}").expect("Compose file");
+    let executable = temporary.path().join("fake-docker");
+    let record = temporary.path().join("record");
+    fs::write(
+        &executable,
+        "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" > \"$RECORD\"\n",
+    )
+    .expect("fake executable");
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).expect("executable mode");
+    let socket = temporary.path().join("docker.sock");
+    let endpoint = DockerEndpoint::resolve_with_probe(
+        &Environment(OsString::from(format!("unix://{}", socket.display()))),
+        &ExactSocket(socket),
+    )
+    .expect("endpoint");
+    let adapter = ComposeAdapter::new(
+        executable,
+        endpoint,
+        ProcessRunner::new(temporary.path().join("logs")),
+        vec![(OsString::from("RECORD"), record.as_os_str().to_owned())],
+        temporary.path().join("managed-tmp"),
+    );
+    let managed = vec!["app".to_owned(), "db".to_owned()];
+
+    adapter
+        .stop(
+            &ComposeStopRequest {
+                project: ComposeProject {
+                    files: std::slice::from_ref(&compose_file),
+                    project_name: "cdenv-installation-workspace",
+                    working_directory: &checkout,
+                },
+                managed_services: &managed,
+            },
+            &CancellationToken::default(),
+        )
+        .await
+        .expect("managed stop");
+
+    let arguments = fs::read_to_string(record).expect("record");
+    assert!(arguments.ends_with("stop\napp\ndb\n"), "{arguments}");
+    assert!(!arguments.contains("down"), "{arguments}");
 }
 
 #[tokio::test]

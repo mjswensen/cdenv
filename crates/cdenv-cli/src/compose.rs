@@ -54,6 +54,14 @@ pub struct ComposeUpRequest<'a> {
     pub force_recreate: bool,
 }
 
+/// Request to stop only a persisted cdenv-managed Compose service set.
+pub struct ComposeStopRequest<'a> {
+    /// Explicit isolated project inputs.
+    pub project: ComposeProject<'a>,
+    /// Exact persisted service set. Dependencies must already be included.
+    pub managed_services: &'a [String],
+}
+
 /// Exact image claim emitted by Compose and tagged by the adapter.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ComposeBaseClaim {
@@ -310,6 +318,48 @@ impl ComposeAdapter {
         )
     }
 
+    /// Stops exactly the persisted managed services without removing Compose resources.
+    ///
+    /// This intentionally uses `compose stop`, never `down`: project networks, containers,
+    /// named volumes, and services started outside the persisted set remain untouched.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid service-set, cancellation, process, or non-zero-exit failures.
+    pub async fn stop(
+        &self,
+        request: &ComposeStopRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<(), ComposeAdapterError> {
+        validate_project(request.project)?;
+        if request.managed_services.is_empty() {
+            return Err(ComposeAdapterError::MissingManagedServices);
+        }
+        let mut seen = BTreeSet::new();
+        let mut command = vec![OsString::from("stop")];
+        for service in request.managed_services {
+            validate_value("managed service", service)?;
+            if !seen.insert(service) {
+                return Err(ComposeAdapterError::DuplicateManagedService {
+                    service: service.clone(),
+                });
+            }
+            command.push(OsString::from(service));
+        }
+        let arguments = compose_arguments_os(request.project, None, &command)?;
+        let result = self
+            .run(
+                "compose-stop",
+                &arguments,
+                request.project.working_directory,
+                false,
+                &[],
+                cancellation,
+            )
+            .await?;
+        ensure_success("stop", &result)
+    }
+
     async fn run(
         &self,
         operation: &'static str,
@@ -428,6 +478,15 @@ pub enum ComposeAdapterError {
     /// No explicit Compose file was supplied.
     #[error("at least one explicit Compose file is required")]
     MissingFiles,
+    /// A persisted managed set must never be empty.
+    #[error("the persisted Compose managed service set is empty")]
+    MissingManagedServices,
+    /// Persisted service names must be unique.
+    #[error("persisted Compose managed service `{service}` occurs more than once")]
+    DuplicateManagedService {
+        /// Repeated service name.
+        service: String,
+    },
     /// A Compose file/cwd is not absolute or escapes the working tree.
     #[error("Compose file {path:?} must be an absolute regular file below {root:?}")]
     InvalidFile {

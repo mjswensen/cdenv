@@ -32,13 +32,13 @@ use crate::{BollardConnector, DockerEndpoint, ImageId};
 /// Default bound applied to each Docker discovery and control API call.
 pub const BOLLARD_CONTROL_TIMEOUT: Duration = Duration::from_secs(15);
 
-const INSTALLATION_LABEL: &str = "cdenv.installation";
-const WORKSPACE_LABEL: &str = "cdenv.workspace";
-const GENERATION_LABEL: &str = "cdenv.generation";
-const PROFILE_LABEL: &str = "cdenv.profile";
+pub(crate) const INSTALLATION_LABEL: &str = "cdenv.installation";
+pub(crate) const WORKSPACE_LABEL: &str = "cdenv.workspace";
+pub(crate) const GENERATION_LABEL: &str = "cdenv.generation";
+pub(crate) const PROFILE_LABEL: &str = "cdenv.profile";
 const GENERATED_IMAGE_LABEL: &str = "cdenv.generated";
-const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
-const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
+pub(crate) const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
+pub(crate) const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
 
 /// The exact scope sent in one `all=true` container-list request.
 #[derive(Clone, Copy, Debug)]

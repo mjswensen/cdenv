@@ -4,6 +4,7 @@
 //! and bytes. Docker, Compose, filesystem, network, credential-helper, and
 //! subprocess adapters belong to the host application rather than this crate.
 
+mod compose;
 mod discovery;
 mod docker_options;
 mod feature;
@@ -18,6 +19,11 @@ mod profile;
 mod schema;
 mod substitution;
 
+pub use compose::{
+    ComposeIdentity, ComposeModel, ComposePlan, ComposePlanningError, ComposePlanningInputs,
+    ComposePrimaryOverride, ComposeServiceModel, MAXIMUM_COMPOSE_PROJECT_NAME_LENGTH,
+    compose_project_name, plan_compose,
+};
 pub use discovery::{
     ConfigInventory, ConfigPath, ConfigPathError, DiscoveryError, discover_config,
 };

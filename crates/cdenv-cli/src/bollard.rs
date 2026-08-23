@@ -247,6 +247,29 @@ pub struct ContainerExpectation<'a> {
     pub running: Option<bool>,
 }
 
+/// Expected authoritative identity for a Compose primary claim.
+#[derive(Clone, Copy, Debug)]
+pub struct ComposePrimaryExpectation<'a> {
+    /// Exact ID claimed by Compose for the primary service.
+    pub id: &'a ContainerId,
+    /// Exact content-addressed final image.
+    pub image_id: &'a ImageId,
+    /// Installation namespace.
+    pub installation: &'a InstallationId,
+    /// Workspace identity.
+    pub workspace: &'a WorkspaceName,
+    /// Environment generation.
+    pub generation: GenerationId,
+    /// Compatibility profile.
+    pub profile: &'a ProfileId,
+    /// Isolated Compose project.
+    pub project: &'a str,
+    /// Exact primary service.
+    pub service: &'a str,
+    /// Required running state.
+    pub running: bool,
+}
+
 /// Identity required before narrowly scoped image cleanup.
 #[derive(Clone, Copy, Debug)]
 pub struct ImageCleanupExpectation<'a> {
@@ -723,6 +746,77 @@ impl<A: BollardApi> BollardAdapter<A> {
         Ok(())
     }
 
+    /// Verifies a Compose primary claim and rejects any second matching primary container.
+    ///
+    /// # Errors
+    ///
+    /// Returns an inspect/discovery failure, exact identity mismatch, or ambiguous-primary error.
+    pub async fn verify_compose_primary(
+        &self,
+        expected: ComposePrimaryExpectation<'_>,
+    ) -> Result<ContainerInspection, BollardAdapterError> {
+        let inspection = self.inspect_container(expected.id).await?;
+        verify_value("container ID", expected.id.as_str(), inspection.id.as_str())?;
+        verify_value(
+            "image ID",
+            expected.image_id.as_str(),
+            inspection.image_id.as_str(),
+        )?;
+        verify_label(
+            &inspection.labels,
+            INSTALLATION_LABEL,
+            expected.installation.as_str(),
+        )?;
+        verify_label(
+            &inspection.labels,
+            WORKSPACE_LABEL,
+            expected.workspace.as_str(),
+        )?;
+        verify_label(
+            &inspection.labels,
+            GENERATION_LABEL,
+            &expected.generation.to_string(),
+        )?;
+        verify_label(&inspection.labels, PROFILE_LABEL, expected.profile.as_str())?;
+        verify_label(&inspection.labels, COMPOSE_PROJECT_LABEL, expected.project)?;
+        verify_label(&inspection.labels, COMPOSE_SERVICE_LABEL, expected.service)?;
+        verify_value(
+            "running state",
+            &expected.running.to_string(),
+            &inspection.running.to_string(),
+        )?;
+
+        let matches = self
+            .discover(ContainerDiscoveryScope {
+                installation: expected.installation,
+                workspace: Some(expected.workspace),
+                generation: Some(expected.generation),
+            })
+            .await?
+            .into_iter()
+            .filter(|container| {
+                container
+                    .labels
+                    .get(COMPOSE_PROJECT_LABEL)
+                    .map(String::as_str)
+                    == Some(expected.project)
+                    && container
+                        .labels
+                        .get(COMPOSE_SERVICE_LABEL)
+                        .map(String::as_str)
+                        == Some(expected.service)
+            })
+            .collect::<Vec<_>>();
+        if matches.len() != 1 || matches[0].id != *expected.id {
+            return Err(BollardAdapterError::AmbiguousComposePrimary {
+                project: expected.project.to_owned(),
+                service: expected.service.to_owned(),
+                matches: matches.len(),
+            });
+        }
+        Ok(inspection)
+    }
+
     /// Starts one exact container.
     ///
     /// # Errors
@@ -952,6 +1046,18 @@ pub enum BollardAdapterError {
         expected: String,
         /// Docker value, or absence.
         actual: Option<String>,
+    },
+    /// Compose primary discovery did not produce exactly the claimed container.
+    #[error(
+        "Compose primary `{project}/{service}` is ambiguous or substituted ({matches} matching containers)"
+    )]
+    AmbiguousComposePrimary {
+        /// Isolated project.
+        project: String,
+        /// Exact primary service.
+        service: String,
+        /// Number of matching primary labels.
+        matches: usize,
     },
     /// Grace timeout does not fit Docker's API.
     #[error("container stop timeout is too large for the Docker API")]

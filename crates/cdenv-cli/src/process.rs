@@ -169,6 +169,33 @@ impl ProcessRunner {
         request: &ProcessRequest<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ProcessResult, ProcessError> {
+        self.run_with_stdout_logging(request, cancellation, true)
+            .await
+    }
+
+    /// Runs a process while keeping stdout only in bounded memory and out of the operation log.
+    ///
+    /// This is intended for typed parsing of interpolated configuration that may contain values
+    /// unknown to cdenv's redactor. Stderr and operation metadata remain logged.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::run`].
+    pub async fn run_secret_stdout(
+        &self,
+        request: &ProcessRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ProcessResult, ProcessError> {
+        self.run_with_stdout_logging(request, cancellation, false)
+            .await
+    }
+
+    async fn run_with_stdout_logging(
+        &self,
+        request: &ProcessRequest<'_>,
+        cancellation: &CancellationToken,
+        log_stdout: bool,
+    ) -> Result<ProcessResult, ProcessError> {
         if request.operation.is_empty()
             || !request
                 .operation
@@ -232,13 +259,13 @@ impl ProcessRunner {
         let redactions = collect_redactions(request);
         let stdout_reader = tokio::spawn(capture_stream(
             stdout,
-            log.clone(),
+            log_stdout.then(|| log.clone()),
             redactions.clone(),
             self.maximum_capture_bytes,
         ));
         let stderr_reader = tokio::spawn(capture_stream(
             stderr,
-            log.clone(),
+            Some(log.clone()),
             redactions,
             self.maximum_capture_bytes,
         ));
@@ -472,7 +499,7 @@ fn collect_redactions(request: &ProcessRequest<'_>) -> Vec<Vec<u8>> {
 
 async fn capture_stream(
     mut reader: impl AsyncRead + Unpin,
-    log: RestrictedLog,
+    log: Option<RestrictedLog>,
     redactions: Vec<Vec<u8>>,
     maximum_bytes: usize,
 ) -> Result<CapturedOutput, RestrictedLogError> {
@@ -492,10 +519,22 @@ async fn capture_stream(
             break;
         }
         let ready = redact_chunk(&chunk[..count], &mut pending, &redactions, false);
-        append_output(&ready, &log, &mut captured, maximum_bytes, &mut truncated)?;
+        append_output(
+            &ready,
+            log.as_ref(),
+            &mut captured,
+            maximum_bytes,
+            &mut truncated,
+        )?;
     }
     let ready = redact_chunk(&[], &mut pending, &redactions, true);
-    append_output(&ready, &log, &mut captured, maximum_bytes, &mut truncated)?;
+    append_output(
+        &ready,
+        log.as_ref(),
+        &mut captured,
+        maximum_bytes,
+        &mut truncated,
+    )?;
     Ok(CapturedOutput {
         bytes: captured,
         truncated,
@@ -525,12 +564,14 @@ fn redact_chunk(bytes: &[u8], pending: &mut Vec<u8>, secrets: &[Vec<u8>], eof: b
 
 fn append_output(
     bytes: &[u8],
-    log: &RestrictedLog,
+    log: Option<&RestrictedLog>,
     captured: &mut Vec<u8>,
     maximum_bytes: usize,
     truncated: &mut bool,
 ) -> Result<(), RestrictedLogError> {
-    log.write_bytes(bytes)?;
+    if let Some(log) = log {
+        log.write_bytes(bytes)?;
+    }
     let remaining = maximum_bytes.saturating_sub(captured.len());
     let accepted = remaining.min(bytes.len());
     captured.extend_from_slice(&bytes[..accepted]);

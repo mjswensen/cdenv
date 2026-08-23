@@ -83,6 +83,6 @@ pub use profile::{
 };
 pub use schema::{BASE_SCHEMA_SHA256, PROFILE_REVISION, SPECIFICATION_COMMIT, base_schema};
 pub use substitution::{
-    DeferredString, HostSubstitutionInputs, ResolvedString, StableIdentityLabels,
+    DeferredSegment, DeferredString, HostSubstitutionInputs, ResolvedString, StableIdentityLabels,
     SubstitutionError, SubstitutionProperty, SubstitutionSummary, substitute_host,
 };

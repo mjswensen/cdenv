@@ -6,6 +6,14 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+mod environment;
+
+pub use environment::{
+    EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError, EnvironmentProbe,
+    EnvironmentSnapshot, EnvironmentTemplate, EnvironmentTemplateSegment, capture_environment,
+    emit_current_environment, run_with_environment,
+};
+
 /// The protocol spoken by this agent release.
 pub const PROTOCOL_VERSION: u32 = 1;
 /// The build identity supplied by the release pipeline.

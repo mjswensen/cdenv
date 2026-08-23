@@ -183,6 +183,19 @@ owned by the effective remote UID/GID with their exact restricted modes.
 Read-only or `noexec` filesystems produce a typed provisioning failure rather
 than weakened permissions.
 
+The verified agent captures the actual Docker Exec environment as the effective
+remote user. It runs `none`, login, interactive, or login-interactive probes
+through that user's passwd-database shell, resolves deferred
+`${containerEnv:...}` segments against the unmodified container environment,
+and applies `remoteEnv` last. Snapshots use a bounded binary framing so valid
+non-UTF-8 Unix names and values remain exact. They are atomically replaced in a
+mode-`0700` selected-user directory as mode-`0600` generation files; the host
+receives only the path and entry count. `PWD`, `OLDPWD`, `SHLVL`, `_`, and all
+`SSH_` entries are removed before child reuse. Capture requests travel only over
+attached Exec stdin, and probe output is suppressed from diagnostics. Readiness
+work receives the first snapshot token; a second atomic capture is required
+before the token can be published to new SSH transports.
+
 `build.options` and `runArgs` are passed as argument arrays without a shell only
 after reserved-option validation. cdenv owns Dockerfile/context selection,
 result tags/outputs, identity labels, names, generated assets, user, and

@@ -94,6 +94,20 @@ enum Segment {
     ContainerEnv { name: String, default: String },
 }
 
+/// A borrowed runtime segment used to transfer a deferred value to the container agent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeferredSegment<'a> {
+    /// Host-stage resolved UTF-8 literal text.
+    Literal(&'a str),
+    /// A lookup against the actual active container environment.
+    ContainerEnvironment {
+        /// Environment name.
+        name: &'a str,
+        /// Missing-name default.
+        default: &'a str,
+    },
+}
+
 impl std::fmt::Debug for DeferredString {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -114,6 +128,16 @@ impl DeferredString {
         self.segments
             .iter()
             .any(|segment| matches!(segment, Segment::ContainerEnv { .. }))
+    }
+
+    /// Borrows the ordered segments for binary-safe container-side runtime resolution.
+    pub fn segments(&self) -> impl Iterator<Item = DeferredSegment<'_>> {
+        self.segments.iter().map(|segment| match segment {
+            Segment::Literal(value) => DeferredSegment::Literal(value),
+            Segment::ContainerEnv { name, default } => {
+                DeferredSegment::ContainerEnvironment { name, default }
+            }
+        })
     }
 
     /// Resolves deferred expressions from an explicitly captured active-container environment.

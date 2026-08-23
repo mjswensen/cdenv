@@ -138,6 +138,7 @@ dependencies = [
  "nix",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror",
 ]
 

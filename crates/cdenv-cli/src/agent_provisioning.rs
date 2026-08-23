@@ -12,7 +12,7 @@ use getrandom::fill;
 use serde::{Deserialize, Serialize};
 use tar::{Builder, Header};
 use thiserror::Error;
-use tokio::io::{AsyncWrite, Empty};
+use tokio::io::AsyncWrite;
 
 use crate::bollard::BollardApi;
 use crate::{
@@ -102,6 +102,7 @@ pub trait AgentProvisioningEngine: Send + Sync {
     fn execute<'a>(
         &'a self,
         command: ExecCommand<'a>,
+        input: &'a [u8],
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = Result<AgentCommandOutput, AgentProvisionTransportError>> + Send + 'a;
 }
@@ -138,16 +139,17 @@ impl<A: BollardApi> AgentProvisioningEngine for BollardAdapter<A> {
     async fn execute(
         &self,
         command: ExecCommand<'_>,
+        input: &[u8],
         cancellation: &CancellationToken,
     ) -> Result<AgentCommandOutput, AgentProvisionTransportError> {
         let exec = self
-            .create_attached_exec(&command, false)
+            .create_attached_exec(&command, !input.is_empty())
             .await
             .map_err(|source| AgentProvisionTransportError::Exec {
                 source,
                 stderr: String::new(),
             })?;
-        let mut stdin: Empty = tokio::io::empty();
+        let mut stdin = input;
         let mut stdout = BoundedWriter::default();
         let mut stderr = BoundedWriter::default();
         if let Err(source) = self
@@ -292,6 +294,7 @@ impl<E: AgentProvisioningEngine> AgentProvisioner<E> {
                     working_directory: None,
                     environment: &[],
                 },
+                b"",
                 cancellation,
             )
             .await
@@ -373,6 +376,7 @@ impl<E: AgentProvisioningEngine> AgentProvisioner<E> {
                     working_directory: None,
                     environment: &[],
                 },
+                b"",
                 cancellation,
             )
             .await
@@ -400,6 +404,7 @@ impl<E: AgentProvisioningEngine> AgentProvisioner<E> {
                     working_directory: None,
                     environment: &[],
                 },
+                b"",
                 cancellation,
             )
             .await
@@ -434,6 +439,7 @@ impl<E: AgentProvisioningEngine> AgentProvisioner<E> {
                     working_directory: None,
                     environment: &[],
                 },
+                b"",
                 &CancellationToken::default(),
             )
             .await;
@@ -752,6 +758,7 @@ mod tests {
         async fn execute(
             &self,
             command: ExecCommand<'_>,
+            _input: &[u8],
             _cancellation: &CancellationToken,
         ) -> Result<AgentCommandOutput, AgentProvisionTransportError> {
             self.actions.lock().expect("actions").push(Action::Execute {

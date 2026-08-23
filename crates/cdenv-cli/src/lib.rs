@@ -5,6 +5,7 @@
 //! this boundary without moving parsing or rendering into the executable.
 
 mod agent_artifacts;
+mod agent_environment;
 mod agent_provisioning;
 mod bollard;
 mod command_line;
@@ -30,6 +31,10 @@ mod storage;
 mod workspace_registry;
 
 pub use agent_artifacts::{AgentArtifactError, AgentArtifactIdentity, AgentArtifactProvider};
+pub use agent_environment::{
+    AgentEnvironmentCapturer, AgentEnvironmentError, AgentEnvironmentRequest, ReadinessEnvironment,
+    SshEnvironment,
+};
 pub use agent_provisioning::{
     AgentProvisionAsset, AgentProvisionRequest, AgentProvisionTransportError, AgentProvisioner,
     AgentProvisioningError, AgentProvisioningFacts, RemoteAgentIdentity,

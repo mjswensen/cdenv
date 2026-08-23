@@ -51,6 +51,17 @@ impl DockerResourceIdentity<'_> {
             format!("cdenv.profile={}", self.profile),
         ]
     }
+
+    fn generated_image_labels(self) -> [String; 5] {
+        let [installation, workspace, generation, profile] = self.labels();
+        [
+            installation,
+            workspace,
+            generation,
+            profile,
+            "cdenv.generated=true".to_owned(),
+        ]
+    }
 }
 
 /// Explicit limits for repository and generated Docker build contexts.
@@ -524,7 +535,7 @@ pub fn build_arguments(
         arguments.push(OsString::from("--cache-from"));
         arguments.push(OsString::from(source));
     }
-    for label in identity.labels() {
+    for label in identity.generated_image_labels() {
         arguments.push(OsString::from("--label"));
         arguments.push(OsString::from(label));
     }

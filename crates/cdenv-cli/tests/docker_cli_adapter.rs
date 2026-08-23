@@ -390,6 +390,7 @@ async fn fake_cli_build_uses_buildkit_ordered_options_labels_tag_and_typed_iid_c
             .any(|values| values == ["--tag", "cdenv/workspace:g2"])
     );
     assert!(arguments.contains(&"cdenv.profile=cdenv-devcontainer-v1".to_owned()));
+    assert!(arguments.contains(&"cdenv.generated=true".to_owned()));
     assert_eq!(
         fixture.environment(),
         format!(

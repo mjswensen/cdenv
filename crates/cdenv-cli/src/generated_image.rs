@@ -1,16 +1,20 @@
 //! Deterministic generated Feature-image material and UID/GID mutation planning.
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use cdenv_core::ContainerArchitecture;
 use cdenv_devcontainer::{DockerfileBuildPlan, FeatureValue, RepositoryPath, ResolvedFeature};
 use serde_json::Value;
 use thiserror::Error;
 
-use crate::GeneratedContextFile;
+use crate::{AgentArtifactError, AgentArtifactProvider, GeneratedContextFile};
 
 const METADATA_LABEL: &str = "devcontainer.metadata";
+const AGENT_CONTEXT_PATH: &str = ".cdenv/cdenv-agent";
+const UPDATE_CONTEXT_PATH: &str = ".cdenv/update-user.json";
 
 /// One Feature directory already copied into generated build material.
 #[derive(Clone, Debug, PartialEq)]
@@ -48,6 +52,45 @@ pub struct GeneratedImagePlan {
     files: Vec<GeneratedContextFile>,
 }
 
+/// Architecture-matched helper material for one derived UID/GID layer.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedUidGidUpdate {
+    helper: Vec<u8>,
+    manifest: Vec<u8>,
+}
+
+impl GeneratedUidGidUpdate {
+    /// Selects the verified static helper for the inspected base-image architecture.
+    ///
+    /// # Errors
+    ///
+    /// Rejects an unavailable/malformed helper or unsafe account name.
+    pub fn from_provider(
+        provider: AgentArtifactProvider,
+        architecture: ContainerArchitecture,
+        mutation: &UidGidMutation,
+    ) -> Result<Self, GeneratedImageError> {
+        let helper = provider.artifact(architecture)?;
+        Self::from_helper(helper, mutation)
+    }
+
+    fn from_helper(helper: &[u8], mutation: &UidGidMutation) -> Result<Self, GeneratedImageError> {
+        if !valid_account_name(&mutation.account) {
+            return Err(GeneratedImageError::InvalidAccount);
+        }
+        let manifest = serde_json::to_vec(&serde_json::json!({
+            "account": mutation.account,
+            "uid": mutation.target_uid,
+            "gid": mutation.target_gid,
+        }))
+        .map_err(|_| GeneratedImageError::MetadataEncoding)?;
+        Ok(Self {
+            helper: helper.to_vec(),
+            manifest,
+        })
+    }
+}
+
 /// A safe generated-image planning failure.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -69,6 +112,18 @@ pub enum GeneratedImageError {
     /// Final image metadata could not be encoded as a Docker label.
     #[error("generated image metadata cannot be encoded")]
     MetadataEncoding,
+    /// The base image, label, or option could alter generated Dockerfile structure.
+    #[error("generated image input `{field}` is unsafe")]
+    UnsafeDockerfileInput {
+        /// Safe input category.
+        field: &'static str,
+    },
+    /// The architecture-matched static helper was unavailable or invalid.
+    #[error(transparent)]
+    AgentArtifact(#[from] AgentArtifactError),
+    /// The account cannot be represented by the generated helper manifest.
+    #[error("generated UID/GID account name is unsafe")]
+    InvalidAccount,
     /// A verified Feature tree could not be read as regular files.
     #[error("cannot read Feature source `{path}`: {source}")]
     FeatureSource {
@@ -100,22 +155,46 @@ impl GeneratedImagePlan {
     ///
     /// Returns an error for unsafe paths, missing install scripts, or metadata
     /// serialization failures.
-    #[expect(
-        clippy::format_push_string,
-        reason = "the short deterministic Dockerfile rendering remains directly readable"
-    )]
     pub fn new(
         base_image: &str,
         features: &[GeneratedFeature],
         metadata: &Value,
         labels: &BTreeMap<String, String>,
     ) -> Result<Self, GeneratedImageError> {
+        Self::new_with_uid_update(base_image, features, metadata, labels, None)
+    }
+
+    /// Produces generated Feature material followed by an optional UID/GID layer.
+    ///
+    /// The helper must have been selected for the inspected base-image architecture
+    /// by [`crate::AgentArtifactProvider`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation failures as [`Self::new`].
+    #[expect(
+        clippy::format_push_string,
+        reason = "the short deterministic Dockerfile rendering remains directly readable"
+    )]
+    pub fn new_with_uid_update(
+        base_image: &str,
+        features: &[GeneratedFeature],
+        metadata: &Value,
+        labels: &BTreeMap<String, String>,
+        uid_update: Option<&GeneratedUidGidUpdate>,
+    ) -> Result<Self, GeneratedImageError> {
+        if base_image.is_empty()
+            || base_image.starts_with('-')
+            || base_image.chars().any(char::is_whitespace)
+            || base_image.chars().any(char::is_control)
+        {
+            return Err(GeneratedImageError::UnsafeDockerfileInput {
+                field: "base image",
+            });
+        }
         let metadata =
             serde_json::to_string(metadata).map_err(|_| GeneratedImageError::MetadataEncoding)?;
-        let mut dockerfile = format!("FROM {base_image}\nLABEL {METADATA_LABEL}={metadata:?}\n");
-        for (key, value) in labels {
-            dockerfile.push_str(&format!("LABEL {key}={value:?}\n"));
-        }
+        let mut dockerfile = format!("FROM {base_image}\nUSER root\n");
         let mut files = Vec::new();
         for (index, feature) in features.iter().enumerate() {
             let directory = format!("features/{index}");
@@ -144,8 +223,33 @@ impl GeneratedImagePlan {
                     contents: file.contents.clone(),
                 });
             }
-            dockerfile.push_str(&format!("COPY {directory}/ /tmp/cdenv-feature-{index}/\n"));
-            dockerfile.push_str(&format!("RUN --mount=type=cache,target=/var/cache/cdenv-feature-{index} \\\n    cd /tmp/cdenv-feature-{index} && /bin/sh ./install.sh {}\n", feature_arguments(&feature.resolved.options)));
+            let assignments = feature_assignments(&feature.resolved.options)?;
+            dockerfile.push_str(&format!(
+                "COPY --chown=0:0 {directory}/ /tmp/cdenv-feature-{index}/\n"
+            ));
+            dockerfile.push_str(&format!(
+                "RUN cd /tmp/cdenv-feature-{index} && {assignments}/bin/sh ./install.sh && cd / && rm -rf /tmp/cdenv-feature-{index}\n"
+            ));
+        }
+        if let Some(update) = uid_update {
+            files.push(GeneratedContextFile {
+                path: AGENT_CONTEXT_PATH.into(),
+                contents: update.helper.clone(),
+            });
+            files.push(GeneratedContextFile {
+                path: UPDATE_CONTEXT_PATH.into(),
+                contents: update.manifest.clone(),
+            });
+            dockerfile.push_str(&format!(
+                "COPY --chown=0:0 --chmod=0555 {AGENT_CONTEXT_PATH} /tmp/cdenv-agent\nCOPY --chown=0:0 --chmod=0444 {UPDATE_CONTEXT_PATH} /tmp/cdenv-update-user.json\nRUN /tmp/cdenv-agent update-user /tmp/cdenv-update-user.json && rm -f /tmp/cdenv-agent /tmp/cdenv-update-user.json\n"
+            ));
+        }
+        dockerfile.push_str(&format!("LABEL {METADATA_LABEL}={metadata:?}\n"));
+        for (key, value) in labels {
+            if key == METADATA_LABEL || !valid_label_key(key) {
+                return Err(GeneratedImageError::UnsafeDockerfileInput { field: "label" });
+            }
+            dockerfile.push_str(&format!("LABEL {key}={value:?}\n"));
         }
         Ok(Self { dockerfile, files })
     }
@@ -238,19 +342,55 @@ fn collect_feature_files(
     Ok(())
 }
 
-fn feature_arguments(options: &BTreeMap<String, FeatureValue>) -> String {
-    options
-        .iter()
-        .map(|(name, value)| match value {
-            FeatureValue::Boolean(value) => format!("{name}={value}"),
-            FeatureValue::String(value) => format!("{name}={}", shell_quote(value)),
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
+fn feature_assignments(
+    options: &BTreeMap<String, FeatureValue>,
+) -> Result<String, GeneratedImageError> {
+    let mut assignments = String::new();
+    for (name, value) in options {
+        let name = name.to_ascii_uppercase();
+        if !valid_environment_name(&name) {
+            return Err(GeneratedImageError::UnsafeDockerfileInput {
+                field: "Feature option name",
+            });
+        }
+        let value = match value {
+            FeatureValue::Boolean(value) => value.to_string(),
+            FeatureValue::String(value) => shell_quote(value),
+        };
+        write!(assignments, "{name}={value} ").map_err(|_| {
+            GeneratedImageError::UnsafeDockerfileInput {
+                field: "Feature option value",
+            }
+        })?;
+    }
+    Ok(assignments)
 }
 
 fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\\"'\\\"'"))
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn valid_environment_name(value: &str) -> bool {
+    let mut bytes = value.bytes();
+    bytes
+        .next()
+        .is_some_and(|byte| byte == b'_' || byte.is_ascii_alphabetic())
+        && bytes.all(|byte| byte == b'_' || byte.is_ascii_alphanumeric())
+}
+
+fn valid_label_key(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
+fn valid_account_name(value: &str) -> bool {
+    !value.is_empty()
+        && value != "root"
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
 /// One account observed by the architecture-matched container helper.
@@ -327,11 +467,12 @@ pub fn plan_uid_gid_update(
     if !enabled {
         return Ok(None);
     }
+    let remote_account = remote_user.split(':').next().unwrap_or_default();
     let account = accounts
         .iter()
-        .find(|account| account.name == remote_user)
+        .find(|account| account.name == remote_account)
         .ok_or_else(|| UidGidUpdateError::MissingUser {
-            user: remote_user.to_owned(),
+            user: remote_account.to_owned(),
         })?;
     if account.uid == 0 {
         return Err(UidGidUpdateError::RootAccount);
@@ -367,6 +508,79 @@ pub fn plan_uid_gid_update(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn feature(id: &str, options: BTreeMap<String, FeatureValue>) -> GeneratedFeature {
+        let reference =
+            cdenv_devcontainer::FeatureReference::parse(&format!("./{id}")).expect("reference");
+        GeneratedFeature {
+            resolved: ResolvedFeature {
+                identity: cdenv_devcontainer::FeatureInstallIdentity::local(&reference),
+                reference,
+                metadata: cdenv_devcontainer::FeatureMetadata {
+                    id: id.to_owned(),
+                    version: "1.0.0".to_owned(),
+                    options: BTreeMap::new(),
+                    depends_on: BTreeMap::new(),
+                    installs_after: Vec::new(),
+                    contributions: cdenv_devcontainer::FeatureContributions::default(),
+                },
+                options,
+            },
+            files: vec![GeneratedContextFile {
+                path: "install.sh".into(),
+                contents: b"#!/bin/sh\n".to_vec(),
+            }],
+        }
+    }
+
+    #[test]
+    fn generated_dockerfile_is_ordered_layered_and_metadata_last() {
+        let first = feature(
+            "first",
+            BTreeMap::from([("message".to_owned(), FeatureValue::String("a'b".to_owned()))]),
+        );
+        let second = feature(
+            "second",
+            BTreeMap::from([("enabled".to_owned(), FeatureValue::Boolean(true))]),
+        );
+        let update = GeneratedUidGidUpdate::from_helper(
+            b"ELF helper",
+            &UidGidMutation {
+                account: "dev".to_owned(),
+                current_uid: 1000,
+                current_gid: 1000,
+                target_uid: 501,
+                target_gid: 20,
+            },
+        )
+        .expect("update material");
+        let plan = GeneratedImagePlan::new_with_uid_update(
+            "example.invalid/base@sha256:abc",
+            &[first, second],
+            &serde_json::json!([{"remoteUser":"dev"}]),
+            &BTreeMap::from([("cdenv.retention".to_owned(), "workspace".to_owned())]),
+            Some(&update),
+        )
+        .expect("plan");
+        assert_eq!(
+            std::str::from_utf8(plan.dockerfile()).expect("Dockerfile"),
+            concat!(
+                "FROM example.invalid/base@sha256:abc\n",
+                "USER root\n",
+                "COPY --chown=0:0 features/0/ /tmp/cdenv-feature-0/\n",
+                "RUN cd /tmp/cdenv-feature-0 && MESSAGE='a'\"'\"'b' /bin/sh ./install.sh && cd / && rm -rf /tmp/cdenv-feature-0\n",
+                "COPY --chown=0:0 features/1/ /tmp/cdenv-feature-1/\n",
+                "RUN cd /tmp/cdenv-feature-1 && ENABLED=true /bin/sh ./install.sh && cd / && rm -rf /tmp/cdenv-feature-1\n",
+                "COPY --chown=0:0 --chmod=0555 .cdenv/cdenv-agent /tmp/cdenv-agent\n",
+                "COPY --chown=0:0 --chmod=0444 .cdenv/update-user.json /tmp/cdenv-update-user.json\n",
+                "RUN /tmp/cdenv-agent update-user /tmp/cdenv-update-user.json && rm -f /tmp/cdenv-agent /tmp/cdenv-update-user.json\n",
+                "LABEL devcontainer.metadata=\"[{\\\"remoteUser\\\":\\\"dev\\\"}]\"\n",
+                "LABEL cdenv.retention=\"workspace\"\n",
+            )
+        );
+        assert_eq!(plan.files().len(), 4);
+    }
+
     #[test]
     fn uid_gid_planning_preserves_root_and_conflict_invariants() {
         let accounts = vec![

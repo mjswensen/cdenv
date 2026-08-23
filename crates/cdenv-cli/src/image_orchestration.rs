@@ -792,6 +792,7 @@ fn verify_built_image(
         ("cdenv.workspace", identity.workspace.to_string()),
         ("cdenv.generation", identity.generation.to_string()),
         ("cdenv.profile", identity.profile.to_string()),
+        ("cdenv.generated", "true".to_owned()),
     ] {
         if image.labels.get(key) != Some(&expected) {
             return Err(ImageContainerError::ImageMismatch { field: key });
@@ -1254,6 +1255,7 @@ mod tests {
                     "cdenv.profile".to_owned(),
                     "cdenv-devcontainer-v1".to_owned(),
                 ),
+                ("cdenv.generated".to_owned(), "true".to_owned()),
             ])
         } else {
             BTreeMap::new()

@@ -70,6 +70,18 @@ pub struct ProvisionRequest {
     pub files: Vec<ProvisionFile>,
 }
 
+/// Root-only named-account rewrite used while building a derived image.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateUserRequest {
+    /// Existing non-root account name.
+    pub account: String,
+    /// Host UID applied only to the derived image.
+    pub uid: u32,
+    /// Host GID applied only to the derived image.
+    pub gid: u32,
+}
+
 /// Provisioning or platform failure.
 #[derive(Debug, Error)]
 #[non_exhaustive]
@@ -136,6 +148,41 @@ pub enum AgentError {
         #[source]
         source: nix::Error,
     },
+    /// The requested account does not exist.
+    #[error("cannot update UID/GID: account `{account}` does not exist")]
+    MissingUser {
+        /// Requested account.
+        account: String,
+    },
+    /// Root must never be rewritten.
+    #[error("cannot update UID/GID for root")]
+    RootAccount,
+    /// The account's primary group could not be resolved.
+    #[error("cannot update UID/GID: primary group {gid} for `{account}` does not exist")]
+    MissingPrimaryGroup {
+        /// Requested account.
+        account: String,
+        /// Unresolved group ID.
+        gid: u32,
+    },
+    /// Another account or group owns a requested numeric identity.
+    #[error("cannot update UID/GID: {kind} {id} belongs to `{owner}`")]
+    IdentityConflict {
+        /// `UID` or `GID`.
+        kind: &'static str,
+        /// Conflicting identity.
+        id: u32,
+        /// Existing owner.
+        owner: String,
+    },
+    /// The Linux account database was malformed or could not be safely replaced.
+    #[error("cannot update Linux account database `{path}`: {message}")]
+    AccountDatabase {
+        /// `/etc/passwd` or `/etc/group`.
+        path: &'static str,
+        /// Safe failure detail.
+        message: String,
+    },
 }
 
 /// Returns this executable's machine-readable version identity.
@@ -176,15 +223,27 @@ pub fn provision(request: &ProvisionRequest) -> Result<(), AgentError> {
     platform::provision(request)
 }
 
+/// Rewrites one conflict-free named Linux account without distro utilities.
+///
+/// # Errors
+///
+/// Returns typed platform, permission, account, conflict, database, or ownership errors.
+pub fn update_user(request: &UpdateUserRequest) -> Result<(), AgentError> {
+    platform::update_user(request)
+}
+
 #[cfg(target_os = "linux")]
 mod platform {
-    use std::fs;
-    use std::os::unix::fs::PermissionsExt;
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
     use std::path::{Component, Path};
 
     use nix::unistd::{Gid, Uid, chown, getegid, geteuid};
 
-    use super::{AgentError, BUILD_ID, Identity, PROTOCOL_VERSION, ProvisionRequest};
+    use super::{
+        AgentError, BUILD_ID, Identity, PROTOCOL_VERSION, ProvisionRequest, UpdateUserRequest,
+    };
 
     #[expect(
         clippy::unnecessary_wraps,
@@ -219,9 +278,7 @@ mod platform {
     }
 
     pub(super) fn provision(request: &ProvisionRequest) -> Result<(), AgentError> {
-        if geteuid().as_raw() != 0 {
-            return Err(AgentError::NotRoot);
-        }
+        require_root()?;
         if request.build_id != BUILD_ID {
             return Err(AgentError::ManifestMismatch { field: "buildId" });
         }
@@ -238,6 +295,267 @@ mod platform {
                 request.uid,
                 request.gid,
             )?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn update_user(request: &UpdateUserRequest) -> Result<(), AgentError> {
+        require_root()?;
+        if request.account == "root" || request.uid == 0 {
+            return Err(AgentError::RootAccount);
+        }
+        let passwd = read_database("/etc/passwd")?;
+        let group = read_database("/etc/group")?;
+        let account = find_account(&passwd, &request.account)?;
+        if account.uid == 0 {
+            return Err(AgentError::RootAccount);
+        }
+        reject_uid_conflict(&passwd, request, account.uid)?;
+        let primary_group = find_primary_group(&group, &request.account, account.gid)?;
+        reject_gid_conflict(&group, request, &primary_group)?;
+        if account.uid == request.uid && account.gid == request.gid {
+            return Ok(());
+        }
+        let home = safe_account_home(&account.home)?;
+        let updated_passwd = rewrite_passwd(&passwd, request)?;
+        let updated_group = rewrite_group(&group, &primary_group, request.gid)?;
+        replace_database("/etc/group", updated_group.as_bytes())?;
+        replace_database("/etc/passwd", updated_passwd.as_bytes())?;
+        chown_tree(home, account.uid, account.gid, request.uid, request.gid)?;
+        Ok(())
+    }
+
+    #[derive(Clone)]
+    struct Account {
+        uid: u32,
+        gid: u32,
+        home: String,
+    }
+
+    fn require_root() -> Result<(), AgentError> {
+        if geteuid().as_raw() == 0 {
+            Ok(())
+        } else {
+            Err(AgentError::NotRoot)
+        }
+    }
+
+    fn read_database(path: &'static str) -> Result<String, AgentError> {
+        fs::read_to_string(path).map_err(|source| AgentError::AccountDatabase {
+            path,
+            message: source.to_string(),
+        })
+    }
+
+    fn fields<'a>(
+        line: &'a str,
+        path: &'static str,
+        minimum: usize,
+    ) -> Result<Vec<&'a str>, AgentError> {
+        let fields = line.split(':').collect::<Vec<_>>();
+        if fields.len() < minimum {
+            Err(AgentError::AccountDatabase {
+                path,
+                message: "malformed entry".to_owned(),
+            })
+        } else {
+            Ok(fields)
+        }
+    }
+
+    fn find_account(passwd: &str, name: &str) -> Result<Account, AgentError> {
+        for line in passwd.lines().filter(|line| !line.is_empty()) {
+            let entry = fields(line, "/etc/passwd", 7)?;
+            if entry[0] == name {
+                return Ok(Account {
+                    uid: entry[2].parse().map_err(|_| AgentError::AccountDatabase {
+                        path: "/etc/passwd",
+                        message: "invalid UID".to_owned(),
+                    })?,
+                    gid: entry[3].parse().map_err(|_| AgentError::AccountDatabase {
+                        path: "/etc/passwd",
+                        message: "invalid GID".to_owned(),
+                    })?,
+                    home: entry[5].to_owned(),
+                });
+            }
+        }
+        Err(AgentError::MissingUser {
+            account: name.to_owned(),
+        })
+    }
+
+    fn reject_uid_conflict(
+        passwd: &str,
+        request: &UpdateUserRequest,
+        current_uid: u32,
+    ) -> Result<(), AgentError> {
+        if request.uid == current_uid {
+            return Ok(());
+        }
+        for line in passwd.lines().filter(|line| !line.is_empty()) {
+            let entry = fields(line, "/etc/passwd", 7)?;
+            if entry[0] != request.account && entry[2].parse::<u32>().ok() == Some(request.uid) {
+                return Err(AgentError::IdentityConflict {
+                    kind: "UID",
+                    id: request.uid,
+                    owner: entry[0].to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn find_primary_group(group: &str, account: &str, gid: u32) -> Result<String, AgentError> {
+        for line in group.lines().filter(|line| !line.is_empty()) {
+            let entry = fields(line, "/etc/group", 4)?;
+            if entry[2].parse::<u32>().ok() == Some(gid) {
+                return Ok(entry[0].to_owned());
+            }
+        }
+        Err(AgentError::MissingPrimaryGroup {
+            account: account.to_owned(),
+            gid,
+        })
+    }
+
+    fn reject_gid_conflict(
+        group: &str,
+        request: &UpdateUserRequest,
+        primary_group: &str,
+    ) -> Result<(), AgentError> {
+        for line in group.lines().filter(|line| !line.is_empty()) {
+            let entry = fields(line, "/etc/group", 4)?;
+            if entry[0] != primary_group && entry[2].parse::<u32>().ok() == Some(request.gid) {
+                return Err(AgentError::IdentityConflict {
+                    kind: "GID",
+                    id: request.gid,
+                    owner: entry[0].to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    fn rewrite_passwd(passwd: &str, request: &UpdateUserRequest) -> Result<String, AgentError> {
+        rewrite_database(passwd, "/etc/passwd", 7, |entry| {
+            if entry[0] == request.account {
+                entry[2] = request.uid.to_string();
+                entry[3] = request.gid.to_string();
+            }
+        })
+    }
+
+    fn rewrite_group(group: &str, name: &str, gid: u32) -> Result<String, AgentError> {
+        rewrite_database(group, "/etc/group", 4, |entry| {
+            if entry[0] == name {
+                entry[2] = gid.to_string();
+            }
+        })
+    }
+
+    fn rewrite_database(
+        contents: &str,
+        path: &'static str,
+        minimum: usize,
+        mut update: impl FnMut(&mut [String]),
+    ) -> Result<String, AgentError> {
+        let mut output = String::with_capacity(contents.len());
+        for line in contents.lines() {
+            if line.is_empty() {
+                output.push('\n');
+                continue;
+            }
+            let parsed = fields(line, path, minimum)?;
+            let mut entry = parsed.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            update(&mut entry);
+            output.push_str(&entry.join(":"));
+            output.push('\n');
+        }
+        Ok(output)
+    }
+
+    fn safe_account_home(value: &str) -> Result<&Path, AgentError> {
+        let path = Path::new(value);
+        if path == Path::new("/")
+            || !path.is_absolute()
+            || path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::CurDir | Component::Prefix(_)
+                )
+            })
+        {
+            return Err(AgentError::AccountDatabase {
+                path: "/etc/passwd",
+                message: "account home cannot be safely re-owned".to_owned(),
+            });
+        }
+        Ok(path)
+    }
+
+    fn replace_database(path: &'static str, contents: &[u8]) -> Result<(), AgentError> {
+        let target = Path::new(path);
+        let temporary = target.with_extension(format!("cdenv-{}", std::process::id()));
+        let result = (|| {
+            let metadata = fs::metadata(target)?;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&temporary)?;
+            file.set_permissions(metadata.permissions())?;
+            file.write_all(contents)?;
+            file.sync_all()?;
+            fs::rename(&temporary, target)
+        })();
+        if let Err(source) = result {
+            let _ = fs::remove_file(&temporary);
+            return Err(AgentError::AccountDatabase {
+                path,
+                message: source.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    #[expect(
+        clippy::similar_names,
+        reason = "UID and GID are the conventional paired Linux account terms"
+    )]
+    fn chown_tree(
+        path: &Path,
+        old_uid: u32,
+        old_gid: u32,
+        new_uid: u32,
+        new_gid: u32,
+    ) -> Result<(), AgentError> {
+        let metadata =
+            fs::symlink_metadata(path).map_err(|source| AgentError::AccountDatabase {
+                path: "/etc/passwd",
+                message: format!("cannot inspect account home: {source}"),
+            })?;
+        if metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+        let uid = (metadata.uid() == old_uid).then(|| Uid::from_raw(new_uid));
+        let gid = (metadata.gid() == old_gid).then(|| Gid::from_raw(new_gid));
+        if uid.is_some() || gid.is_some() {
+            chown(path, uid, gid).map_err(|source| AgentError::Ownership {
+                path: path.display().to_string(),
+                source,
+            })?;
+        }
+        if metadata.is_dir() {
+            for entry in fs::read_dir(path).map_err(|source| AgentError::AccountDatabase {
+                path: "/etc/passwd",
+                message: format!("cannot read account home: {source}"),
+            })? {
+                let entry = entry.map_err(|source| AgentError::AccountDatabase {
+                    path: "/etc/passwd",
+                    message: format!("cannot read account home: {source}"),
+                })?;
+                chown_tree(&entry.path(), old_uid, old_gid, new_uid, new_gid)?;
+            }
         }
         Ok(())
     }
@@ -311,11 +629,50 @@ mod platform {
         }
         Ok(path)
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const PASSWD: &str = "root:x:0:0:root:/root:/bin/sh\ndev:x:1000:1000::/home/dev:/bin/sh\n";
+        const GROUP: &str = "root:x:0:\ndev:x:1000:\n";
+
+        #[test]
+        fn account_rewrite_changes_only_the_selected_numeric_fields() {
+            let request = UpdateUserRequest {
+                account: "dev".to_owned(),
+                uid: 501,
+                gid: 20,
+            };
+            assert_eq!(
+                rewrite_passwd(PASSWD, &request).expect("passwd"),
+                "root:x:0:0:root:/root:/bin/sh\ndev:x:501:20::/home/dev:/bin/sh\n"
+            );
+            assert_eq!(
+                rewrite_group(GROUP, "dev", 20).expect("group"),
+                "root:x:0:\ndev:x:20:\n"
+            );
+        }
+
+        #[test]
+        fn account_validation_rejects_conflicts_and_root_home() {
+            let request = UpdateUserRequest {
+                account: "dev".to_owned(),
+                uid: 0,
+                gid: 20,
+            };
+            assert!(matches!(
+                reject_uid_conflict(PASSWD, &request, 1000),
+                Err(AgentError::IdentityConflict { kind: "UID", .. })
+            ));
+            assert!(safe_account_home("/").is_err());
+        }
+    }
 }
 
 #[cfg(not(target_os = "linux"))]
 mod platform {
-    use super::{AgentError, Identity, ProvisionRequest};
+    use super::{AgentError, Identity, ProvisionRequest, UpdateUserRequest};
     const fn unsupported() -> AgentError {
         AgentError::UnsupportedOperatingSystem {
             operating_system: std::env::consts::OS,
@@ -328,6 +685,9 @@ mod platform {
         Err(unsupported())
     }
     pub(super) fn provision(_: &ProvisionRequest) -> Result<(), AgentError> {
+        Err(unsupported())
+    }
+    pub(super) fn update_user(_: &UpdateUserRequest) -> Result<(), AgentError> {
         Err(unsupported())
     }
 }

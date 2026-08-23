@@ -71,8 +71,8 @@ pub use feature_sources::{
     extract_archive,
 };
 pub use generated_image::{
-    GeneratedFeature, GeneratedImageError, GeneratedImagePlan, LinuxAccount, UidGidMutation,
-    UidGidUpdateError, plan_uid_gid_update,
+    GeneratedFeature, GeneratedImageError, GeneratedImagePlan, GeneratedUidGidUpdate, LinuxAccount,
+    UidGidMutation, UidGidUpdateError, plan_uid_gid_update,
 };
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
 pub use image_orchestration::{

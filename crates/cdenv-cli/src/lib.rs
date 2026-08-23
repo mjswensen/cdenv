@@ -5,6 +5,7 @@
 //! this boundary without moving parsing or rendering into the executable.
 
 mod agent_artifacts;
+mod agent_provisioning;
 mod bollard;
 mod command_line;
 mod compose;
@@ -29,6 +30,10 @@ mod storage;
 mod workspace_registry;
 
 pub use agent_artifacts::{AgentArtifactError, AgentArtifactIdentity, AgentArtifactProvider};
+pub use agent_provisioning::{
+    AgentProvisionAsset, AgentProvisionRequest, AgentProvisionTransportError, AgentProvisioner,
+    AgentProvisioningError, AgentProvisioningFacts, RemoteAgentIdentity,
+};
 pub use bollard::{
     AttachedExec, BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BollardAdapterError,
     ComposePrimaryExpectation, ContainerDiscoveryScope, ContainerExpectation, ContainerInspection,

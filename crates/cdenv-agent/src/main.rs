@@ -17,9 +17,14 @@ fn main() -> ExitCode {
                     serde_json::to_string(&identity).map_err(|error| error.to_string())
                 }),
             [command, manifest] if command == "provision" => provision(Path::new(manifest)),
+            [command, path] if command == "cleanup-staging" => {
+                cdenv_agent::cleanup_staging(&path.to_string_lossy())
+                    .map(|()| "{}".to_owned())
+                    .map_err(|error| error.to_string())
+            }
             [command, manifest] if command == "update-user" => update_user(Path::new(manifest)),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|provision MANIFEST|update-user MANIFEST>"
+                "Usage: cdenv-agent <version|identity|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST>"
                     .to_owned(),
             ),
         });
@@ -39,8 +44,8 @@ fn provision(manifest: &Path) -> Result<String, String> {
     let contents = read_manifest(manifest, "provision")?;
     let request = serde_json::from_slice(&contents)
         .map_err(|error| format!("invalid provision manifest: {error}"))?;
-    cdenv_agent::provision(&request).map_err(|error| error.to_string())?;
-    Ok("{}".to_owned())
+    let result = cdenv_agent::provision(&request).map_err(|error| error.to_string())?;
+    serde_json::to_string(&result).map_err(|error| error.to_string())
 }
 
 fn update_user(manifest: &Path) -> Result<String, String> {

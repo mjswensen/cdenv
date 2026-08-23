@@ -62,12 +62,26 @@ pub struct ProvisionRequest {
     pub build_id: String,
     /// Agent protocol expected by the host.
     pub protocol_version: u32,
-    /// UID owning all installed files.
+    /// UID owning installed private assets.
     pub uid: u32,
-    /// GID owning all installed files.
+    /// GID owning installed private assets.
     pub gid: u32,
-    /// Files to atomically install.
+    /// Operation-owned staging directory removed on every return path.
+    pub staging_directory: String,
+    /// Staged agent executable below `stagingDirectory`.
+    pub agent_source: String,
+    /// Ordered secure executable destinations attempted by the agent.
+    pub agent_destinations: Vec<String>,
+    /// Private assets to atomically install for the selected user.
     pub files: Vec<ProvisionFile>,
+}
+
+/// Successful root provisioning result emitted as typed JSON.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProvisionResult {
+    /// Actual executable path selected from the ordered candidates.
+    pub agent_path: String,
 }
 
 /// Root-only named-account rewrite used while building a derived image.
@@ -115,11 +129,52 @@ pub enum AgentError {
         /// Rejected path.
         path: String,
     },
-    /// A staged source was not a regular non-symlink file.
-    #[error("provision source `{path}` is not a regular file")]
+    /// A staged source was not a regular non-symlink file owned by this staging operation.
+    #[error("provision source `{path}` is not a regular operation-owned staging file")]
     InvalidSource {
         /// Rejected source path.
         path: String,
+    },
+    /// A file mode contained special bits or no owner permissions.
+    #[error("provision mode {mode:#o} is invalid")]
+    InvalidMode {
+        /// Rejected Unix permission bits.
+        mode: u32,
+    },
+    /// Manifest destinations must be unique.
+    #[error("provision destination `{path}` occurs more than once")]
+    DuplicateDestination {
+        /// Repeated destination.
+        path: String,
+    },
+    /// No ordered candidate supported a secure executable installation.
+    #[error(
+        "no secure executable agent location is available; last candidate `{path}` failed: {reason}"
+    )]
+    NoExecutableLocation {
+        /// Last attempted candidate.
+        path: String,
+        /// Safe OS/filesystem reason.
+        reason: String,
+    },
+    /// Operation-owned staging cleanup failed after otherwise successful provisioning.
+    #[error("cannot remove provision staging directory `{path}`: {source}")]
+    StagingCleanup {
+        /// Staging directory.
+        path: String,
+        /// Filesystem failure.
+        #[source]
+        source: std::io::Error,
+    },
+    /// Provisioning and mandatory staging cleanup both failed.
+    #[error("{provision}; staging cleanup for `{path}` also failed: {cleanup}")]
+    ProvisionCleanup {
+        /// Primary provisioning failure.
+        provision: Box<AgentError>,
+        /// Staging directory.
+        path: String,
+        /// Cleanup failure.
+        cleanup: std::io::Error,
     },
     /// A destination parent could not be created or secured.
     #[error("cannot prepare provision destination `{path}`: {source}")]
@@ -219,8 +274,17 @@ pub fn identity() -> Result<Identity, AgentError> {
 /// # Errors
 ///
 /// Returns typed platform, manifest, permission, path, ownership, or filesystem errors.
-pub fn provision(request: &ProvisionRequest) -> Result<(), AgentError> {
+pub fn provision(request: &ProvisionRequest) -> Result<ProvisionResult, AgentError> {
     platform::provision(request)
+}
+
+/// Removes one validated operation-owned staging directory as root.
+///
+/// # Errors
+///
+/// Returns typed platform, permission, path, ownership, or filesystem errors.
+pub fn cleanup_staging(path: &str) -> Result<(), AgentError> {
+    platform::cleanup_staging(path)
 }
 
 /// Rewrites one conflict-free named Linux account without distro utilities.
@@ -234,15 +298,18 @@ pub fn update_user(request: &UpdateUserRequest) -> Result<(), AgentError> {
 
 #[cfg(target_os = "linux")]
 mod platform {
+    use std::collections::BTreeSet;
     use std::fs::{self, OpenOptions};
     use std::io::Write;
     use std::os::unix::fs::{MetadataExt, PermissionsExt};
-    use std::path::{Component, Path};
+    use std::path::{Component, Path, PathBuf};
 
+    use nix::sys::statvfs::{FsFlags, statvfs};
     use nix::unistd::{Gid, Uid, chown, getegid, geteuid};
 
     use super::{
-        AgentError, BUILD_ID, Identity, PROTOCOL_VERSION, ProvisionRequest, UpdateUserRequest,
+        AgentError, BUILD_ID, Identity, PROTOCOL_VERSION, ProvisionRequest, ProvisionResult,
+        UpdateUserRequest,
     };
 
     #[expect(
@@ -277,8 +344,34 @@ mod platform {
         })
     }
 
-    pub(super) fn provision(request: &ProvisionRequest) -> Result<(), AgentError> {
+    pub(super) fn provision(request: &ProvisionRequest) -> Result<ProvisionResult, AgentError> {
         require_root()?;
+        let staging = validate_staging_directory(&request.staging_directory)?;
+        let cleanup = StagingCleanup::new(staging.clone());
+        let result = provision_staged(request, &staging);
+        let cleanup_result = cleanup.finish();
+        match (result, cleanup_result) {
+            (Ok(result), Ok(())) => Ok(result),
+            (Err(provision), Err(AgentError::StagingCleanup { path, source })) => {
+                Err(AgentError::ProvisionCleanup {
+                    provision: Box::new(provision),
+                    path,
+                    cleanup: source,
+                })
+            }
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(provision), Err(cleanup)) => Err(AgentError::ProvisionCleanup {
+                provision: Box::new(provision),
+                path: request.staging_directory.clone(),
+                cleanup: std::io::Error::other(cleanup),
+            }),
+        }
+    }
+
+    fn provision_staged(
+        request: &ProvisionRequest,
+        staging: &Path,
+    ) -> Result<ProvisionResult, AgentError> {
         if request.build_id != BUILD_ID {
             return Err(AgentError::ManifestMismatch { field: "buildId" });
         }
@@ -287,16 +380,79 @@ mod platform {
                 field: "protocolVersion",
             });
         }
+        if request.agent_destinations.is_empty() {
+            return Err(AgentError::NoExecutableLocation {
+                path: "<none>".to_owned(),
+                reason: "manifest supplied no candidates".to_owned(),
+            });
+        }
+        validate_mode(0o555)?;
+        let agent_source = validate_staged_source(&request.agent_source, staging)?;
+        let mut destinations = BTreeSet::new();
+        for file in &request.files {
+            validate_mode(file.mode)?;
+            validate_staged_source(&file.source, staging)?;
+            let destination = safe_path(&file.destination, "destination")?;
+            if !destinations.insert(destination.to_path_buf()) {
+                return Err(AgentError::DuplicateDestination {
+                    path: file.destination.clone(),
+                });
+            }
+        }
+
+        let mut last_failure = None;
+        let mut selected = None;
+        for destination in &request.agent_destinations {
+            let destination = safe_path(destination, "destination")?;
+            if !destinations.insert(destination.to_path_buf()) {
+                return Err(AgentError::DuplicateDestination {
+                    path: destination.display().to_string(),
+                });
+            }
+            match install_agent(agent_source, destination) {
+                Ok(()) => {
+                    selected = Some(destination.to_path_buf());
+                    break;
+                }
+                Err(error) => {
+                    last_failure = Some((destination.to_path_buf(), error.to_string()));
+                }
+            }
+        }
+        let agent_path = selected.ok_or_else(|| {
+            let (path, reason) = last_failure.unwrap_or_else(|| {
+                (
+                    PathBuf::from("<none>"),
+                    "manifest supplied no candidates".to_owned(),
+                )
+            });
+            AgentError::NoExecutableLocation {
+                path: path.display().to_string(),
+                reason,
+            }
+        })?;
+
         for file in &request.files {
             install(
-                file.source.as_str(),
-                file.destination.as_str(),
+                validate_staged_source(&file.source, staging)?,
+                safe_path(&file.destination, "destination")?,
                 file.mode,
                 request.uid,
                 request.gid,
             )?;
         }
-        Ok(())
+        Ok(ProvisionResult {
+            agent_path: agent_path.display().to_string(),
+        })
+    }
+
+    pub(super) fn cleanup_staging(value: &str) -> Result<(), AgentError> {
+        require_root()?;
+        let path = validate_staging_directory(value)?;
+        fs::remove_dir_all(&path).map_err(|source| AgentError::StagingCleanup {
+            path: path.display().to_string(),
+            source,
+        })
     }
 
     pub(super) fn update_user(request: &UpdateUserRequest) -> Result<(), AgentError> {
@@ -560,34 +716,64 @@ mod platform {
         Ok(())
     }
 
+    fn install_agent(source: &Path, destination: &Path) -> Result<(), AgentError> {
+        let parent = prepare_parent(destination, 0, 0, 0o755)?;
+        let flags = statvfs(parent).map_err(|source| AgentError::Install {
+            path: destination.display().to_string(),
+            source: std::io::Error::from_raw_os_error(source as i32),
+        })?;
+        if flags.flags().contains(FsFlags::ST_NOEXEC) {
+            return Err(AgentError::Install {
+                path: destination.display().to_string(),
+                source: std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            });
+        }
+        install(source, destination, 0o555, 0, 0)
+    }
+
     fn install(
-        source: &str,
-        destination: &str,
+        source: &Path,
+        destination: &Path,
         mode: u32,
         uid: u32,
         gid: u32,
     ) -> Result<(), AgentError> {
-        let source = safe_path(source, "source")?;
-        let destination = safe_path(destination, "destination")?;
-        let source_metadata =
-            fs::symlink_metadata(source).map_err(|_| AgentError::InvalidSource {
-                path: source.display().to_string(),
+        validate_mode(mode)?;
+        let parent_mode = if mode.trailing_zeros() >= 6 {
+            0o700
+        } else {
+            0o755
+        };
+        let parent = prepare_parent(destination, uid, gid, parent_mode)?;
+        let temporary = parent.join(format!(
+            ".cdenv-install-{}-{}",
+            std::process::id(),
+            destination
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("file")
+        ));
+        let _temporary_cleanup = TemporaryCleanup(temporary.clone());
+        let mut input = OpenOptions::new()
+            .read(true)
+            .open(source)
+            .map_err(|source| AgentError::Install {
+                path: destination.display().to_string(),
+                source,
             })?;
-        if !source_metadata.is_file() || source_metadata.file_type().is_symlink() {
-            return Err(AgentError::InvalidSource {
-                path: source.display().to_string(),
-            });
-        }
-        let parent = destination.parent().ok_or_else(|| AgentError::UnsafePath {
-            kind: "destination",
+        let mut output = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|source| AgentError::Install {
+                path: destination.display().to_string(),
+                source,
+            })?;
+        std::io::copy(&mut input, &mut output).map_err(|source| AgentError::Install {
             path: destination.display().to_string(),
-        })?;
-        fs::create_dir_all(parent).map_err(|source| AgentError::PrepareDestination {
-            path: parent.display().to_string(),
             source,
         })?;
-        let temporary = parent.join(format!(".cdenv-install-{}", std::process::id()));
-        fs::copy(source, &temporary).map_err(|source| AgentError::Install {
+        output.sync_all().map_err(|source| AgentError::Install {
             path: destination.display().to_string(),
             source,
         })?;
@@ -610,6 +796,146 @@ mod platform {
             path: destination.display().to_string(),
             source,
         })
+    }
+
+    fn prepare_parent(
+        destination: &Path,
+        uid: u32,
+        gid: u32,
+        mode: u32,
+    ) -> Result<&Path, AgentError> {
+        let parent = destination.parent().ok_or_else(|| AgentError::UnsafePath {
+            kind: "destination",
+            path: destination.display().to_string(),
+        })?;
+        reject_symlink_components(parent)?;
+        fs::create_dir_all(parent).map_err(|source| AgentError::PrepareDestination {
+            path: parent.display().to_string(),
+            source,
+        })?;
+        reject_symlink_components(parent)?;
+        fs::set_permissions(parent, fs::Permissions::from_mode(mode)).map_err(|source| {
+            AgentError::PrepareDestination {
+                path: parent.display().to_string(),
+                source,
+            }
+        })?;
+        chown(parent, Some(Uid::from_raw(uid)), Some(Gid::from_raw(gid))).map_err(|source| {
+            AgentError::Ownership {
+                path: parent.display().to_string(),
+                source,
+            }
+        })?;
+        Ok(parent)
+    }
+
+    fn reject_symlink_components(path: &Path) -> Result<(), AgentError> {
+        let mut current = PathBuf::from("/");
+        for component in path.components().skip(1) {
+            current.push(component);
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(AgentError::UnsafePath {
+                        kind: "destination",
+                        path: current.display().to_string(),
+                    });
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(source) => {
+                    return Err(AgentError::PrepareDestination {
+                        path: current.display().to_string(),
+                        source,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_mode(mode: u32) -> Result<(), AgentError> {
+        if mode == 0 || mode & !0o777 != 0 || mode & 0o700 == 0 {
+            Err(AgentError::InvalidMode { mode })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn validate_staging_directory(value: &str) -> Result<PathBuf, AgentError> {
+        let path = safe_path(value, "staging")?;
+        let valid_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| {
+                name.starts_with(".cdenv-stage-") && name.len() > ".cdenv-stage-".len()
+            });
+        if !valid_name {
+            return Err(AgentError::UnsafePath {
+                kind: "staging",
+                path: value.to_owned(),
+            });
+        }
+        let metadata = fs::symlink_metadata(path).map_err(|_| AgentError::InvalidSource {
+            path: value.to_owned(),
+        })?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() || metadata.uid() != 0 {
+            return Err(AgentError::InvalidSource {
+                path: value.to_owned(),
+            });
+        }
+        Ok(path.to_path_buf())
+    }
+
+    fn validate_staged_source<'a>(value: &'a str, staging: &Path) -> Result<&'a Path, AgentError> {
+        let path = safe_path(value, "source")?;
+        if path.parent() != Some(staging) {
+            return Err(AgentError::InvalidSource {
+                path: value.to_owned(),
+            });
+        }
+        let metadata = fs::symlink_metadata(path).map_err(|_| AgentError::InvalidSource {
+            path: value.to_owned(),
+        })?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.uid() != 0 {
+            return Err(AgentError::InvalidSource {
+                path: value.to_owned(),
+            });
+        }
+        Ok(path)
+    }
+
+    struct TemporaryCleanup(PathBuf);
+
+    impl Drop for TemporaryCleanup {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    struct StagingCleanup(Option<PathBuf>);
+
+    impl StagingCleanup {
+        fn new(path: PathBuf) -> Self {
+            Self(Some(path))
+        }
+
+        fn finish(mut self) -> Result<(), AgentError> {
+            let Some(path) = self.0.take() else {
+                return Ok(());
+            };
+            fs::remove_dir_all(&path).map_err(|source| AgentError::StagingCleanup {
+                path: path.display().to_string(),
+                source,
+            })
+        }
+    }
+
+    impl Drop for StagingCleanup {
+        fn drop(&mut self) {
+            if let Some(path) = self.0.take() {
+                let _ = fs::remove_dir_all(path);
+            }
+        }
     }
 
     fn safe_path<'a>(value: &'a str, kind: &'static str) -> Result<&'a Path, AgentError> {
@@ -672,7 +998,7 @@ mod platform {
 
 #[cfg(not(target_os = "linux"))]
 mod platform {
-    use super::{AgentError, Identity, ProvisionRequest, UpdateUserRequest};
+    use super::{AgentError, Identity, ProvisionRequest, ProvisionResult, UpdateUserRequest};
     const fn unsupported() -> AgentError {
         AgentError::UnsupportedOperatingSystem {
             operating_system: std::env::consts::OS,
@@ -684,7 +1010,10 @@ mod platform {
     pub(super) fn identity() -> Result<Identity, AgentError> {
         Err(unsupported())
     }
-    pub(super) fn provision(_: &ProvisionRequest) -> Result<(), AgentError> {
+    pub(super) fn provision(_: &ProvisionRequest) -> Result<ProvisionResult, AgentError> {
+        Err(unsupported())
+    }
+    pub(super) fn cleanup_staging(_: &str) -> Result<(), AgentError> {
         Err(unsupported())
     }
     pub(super) fn update_user(_: &UpdateUserRequest) -> Result<(), AgentError> {
@@ -706,5 +1035,23 @@ mod tests {
             super::identity().expect("identity").uid,
             nix::unistd::geteuid().as_raw()
         );
+    }
+
+    #[test]
+    fn provision_manifest_requires_operation_owned_staging() {
+        let result = serde_json::from_str::<super::ProvisionRequest>(
+            r#"{"buildId":"development","protocolVersion":1,"uid":1,"gid":1,"agentSource":"/tmp/agent","agentDestinations":["/tmp/final"],"files":[]}"#,
+        );
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn provision_manifest_rejects_unknown_fields() {
+        let result = serde_json::from_str::<super::ProvisionRequest>(
+            r#"{"buildId":"development","protocolVersion":1,"uid":1,"gid":1,"stagingDirectory":"/tmp/.cdenv-stage-x","agentSource":"/tmp/.cdenv-stage-x/agent","agentDestinations":["/tmp/final"],"files":[],"unexpected":true}"#,
+        );
+
+        assert!(result.is_err());
     }
 }

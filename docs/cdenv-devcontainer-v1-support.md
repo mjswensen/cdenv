@@ -163,6 +163,26 @@ Project identity is installation/workspace scoped. Ordinary resume starts the
 persisted container IDs directly; ordinary `down` stops that exact managed set
 and preserves containers, networks, and named volumes.
 
+Agent provisioning uses only Docker archive upload, Docker Exec, and the static
+Linux agent's filesystem/syscall implementation; it does not require a shell,
+`tar`, `id`, `cp`, `install`, or `chmod` in the container. Every successful
+`up`-style flow uploads and atomically reinstalls the selected architecture's
+agent before verifying its final build ID and protocol as the remote user.
+Executable destinations are tried in this order:
+
+1. `/usr/local/libexec/cdenv/cdenv-agent`
+2. `/usr/libexec/cdenv/cdenv-agent`
+3. `/opt/cdenv/bin/cdenv-agent`
+4. `/var/lib/cdenv/bin/cdenv-agent`
+5. `/tmp/cdenv-<uid>/bin/cdenv-agent`
+
+Candidates inside the checkout are excluded. The final fallback is accepted
+only when its filesystem is executable; its directory and agent remain
+root-owned and non-writable by the remote user. Private provisioned assets are
+owned by the effective remote UID/GID with their exact restricted modes.
+Read-only or `noexec` filesystems produce a typed provisioning failure rather
+than weakened permissions.
+
 `build.options` and `runArgs` are passed as argument arrays without a shell only
 after reserved-option validation. cdenv owns Dockerfile/context selection,
 result tags/outputs, identity labels, names, generated assets, user, and

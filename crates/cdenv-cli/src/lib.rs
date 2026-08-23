@@ -22,6 +22,7 @@ mod generated_image;
 mod git;
 mod image_orchestration;
 mod installation;
+mod lifecycle_orchestration;
 mod locking;
 mod output;
 mod paths;
@@ -105,6 +106,13 @@ pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
     Installation, InstallationError, InstallationRecord, KeyedDigest, KeyedDigestError,
     PlanFingerprintCategory, SshIncludeConsent,
+};
+pub use lifecycle_orchestration::{
+    BackgroundReadiness, BackgroundRunnerOutcome, ContainerLifecycle, HostLifecycle,
+    HostLifecycleError, HostLifecycleExecutor, LifecycleCommandFailure, LifecycleInput,
+    LifecycleMutation, LifecycleMutationFailure, LifecycleMutationOutcome, LifecycleOperation,
+    LifecycleOrchestrationError, LifecycleOrchestrationRequest, LifecycleOrchestrator,
+    LifecycleReadiness, LifecycleRetryClassification, LifecycleScenario,
 };
 pub use locking::{
     AttachSetupError, LockBehavior, LockError, LockGuard, LockMode, ensure_lock_file,

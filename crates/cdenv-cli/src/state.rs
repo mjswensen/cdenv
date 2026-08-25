@@ -443,6 +443,12 @@ impl LifecycleCheckpoint {
             indeterminate,
         }
     }
+
+    /// Returns whether one-time lifecycle execution has no safe retry outcome.
+    #[must_use]
+    pub const fn indeterminate(&self) -> bool {
+        self.indeterminate
+    }
 }
 
 /// Forward target protocol used for URL and display behavior.
@@ -569,6 +575,29 @@ pub struct ActiveGeneration {
 }
 
 impl ActiveGeneration {
+    /// Returns the immutable generation identity.
+    #[must_use]
+    pub const fn generation(&self) -> GenerationId {
+        self.generation
+    }
+
+    /// Returns the active generation's category fingerprints.
+    #[must_use]
+    pub const fn fingerprints(&self) -> &PlanFingerprints {
+        &self.fingerprints
+    }
+
+    /// Returns durable lifecycle retry state.
+    #[must_use]
+    pub const fn lifecycle(&self) -> &LifecycleCheckpoint {
+        &self.lifecycle
+    }
+
+    /// Commits a runtime-only fingerprint after its settings were applied.
+    pub(crate) fn commit_runtime_fingerprint(&mut self, runtime: KeyedDigest) {
+        self.fingerprints.runtime = runtime;
+    }
+
     /// Creates a fully provisioned active-generation record.
     #[expect(
         clippy::too_many_arguments,

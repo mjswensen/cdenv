@@ -27,6 +27,7 @@ mod locking;
 mod output;
 mod paths;
 mod process;
+mod reconciliation;
 mod state;
 mod storage;
 mod workspace_registry;
@@ -130,6 +131,12 @@ pub use paths::{
 pub use process::{
     CancellationToken, CapturedOutput, OperationId, ProcessDeadline, ProcessEnvironmentVariable,
     ProcessError, ProcessRequest, ProcessResult, ProcessRunner,
+};
+pub use reconciliation::{
+    CategoryDrift, EnvironmentReconciler, EnvironmentReconciliationRequest, EnvironmentTransition,
+    FeatureSourcePolicy, PreparedDesiredPlan, ReadyEnvironment, ReconciliationError,
+    ReconciliationOutcome, ReconciliationPlanner, ReconciliationRequest, ReconciliationWarning,
+    RuntimeReconciliation, reconcile_workspace,
 };
 pub use state::{
     ActiveForwarding, ActiveGeneration, ActiveScenario, DeclaredForward, DesiredConfigPath,

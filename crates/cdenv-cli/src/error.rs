@@ -29,6 +29,18 @@ pub enum ApplicationError {
         /// Credential-safe failure summary.
         message: String,
     },
+    /// Local workspace enumeration failed for `list`.
+    #[error("list failed: {message}")]
+    ListFailed {
+        /// Safe read-only reporting diagnostic.
+        message: String,
+    },
+    /// Requested workspace status could not be established.
+    #[error("status failed: {message}")]
+    StatusFailed {
+        /// Safe read-only reporting diagnostic.
+        message: String,
+    },
     /// Parsing exists, but this implementation stage has no command workflow.
     #[error("command `{command}` is not implemented in this build")]
     CommandUnavailable {
@@ -45,6 +57,8 @@ impl ApplicationError {
             Self::RootResolution(_) => "root_resolution_failed",
             Self::CreateFailed { .. } => "create_failed",
             Self::LockFailed { .. } => "lock_failed",
+            Self::ListFailed { .. } => "list_failed",
+            Self::StatusFailed { .. } => "status_failed",
             Self::CommandUnavailable { .. } => "command_unavailable",
         }
     }
@@ -56,6 +70,8 @@ impl ApplicationError {
             Self::RootResolution(_)
             | Self::CreateFailed { .. }
             | Self::LockFailed { .. }
+            | Self::ListFailed { .. }
+            | Self::StatusFailed { .. }
             | Self::CommandUnavailable { .. } => ExitCode::FAILURE,
         }
     }

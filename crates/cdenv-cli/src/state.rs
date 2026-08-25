@@ -402,6 +402,20 @@ pub enum ActiveScenario {
     },
 }
 
+impl ActiveScenario {
+    /// Returns Compose project and managed services for a Compose scenario.
+    #[must_use]
+    pub fn compose(&self) -> Option<(&str, &[String])> {
+        match self {
+            Self::Compose {
+                project,
+                managed_services,
+            } => Some((project, managed_services)),
+            Self::Image | Self::Dockerfile => None,
+        }
+    }
+}
+
 /// One persisted lifecycle execution stage.
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -442,6 +456,18 @@ impl LifecycleCheckpoint {
             running,
             indeterminate,
         }
+    }
+
+    /// Returns the latest completed lifecycle stage.
+    #[must_use]
+    pub const fn completed_through(&self) -> Option<LifecycleStage> {
+        self.completed_through
+    }
+
+    /// Returns the lifecycle stage still running in the background.
+    #[must_use]
+    pub const fn running(&self) -> Option<LifecycleStage> {
+        self.running
     }
 
     /// Returns whether one-time lifecycle execution has no safe retry outcome.
@@ -513,6 +539,24 @@ pub struct ActiveForwarding {
 }
 
 impl ActiveForwarding {
+    /// Returns the provisioned supervisor build identity, when configured.
+    #[must_use]
+    pub const fn supervisor_build_id(&self) -> Option<&AgentBuildId> {
+        self.supervisor_build_id.as_ref()
+    }
+
+    /// Returns configuration-declared forwarding requests.
+    #[must_use]
+    pub fn requested(&self) -> &[DeclaredForward] {
+        &self.requested
+    }
+
+    /// Returns the last committed listener assignments.
+    #[must_use]
+    pub fn assigned(&self) -> &[ForwardingEndpointAssignment] {
+        &self.assigned
+    }
+
     /// Creates persisted forwarding reconciliation state.
     #[must_use]
     pub fn new(
@@ -542,6 +586,36 @@ pub struct ProvisionedState {
 }
 
 impl ProvisionedState {
+    /// Returns the effective remote user.
+    #[must_use]
+    pub fn remote_user(&self) -> &str {
+        &self.remote_user
+    }
+
+    /// Returns the effective remote workspace folder.
+    #[must_use]
+    pub fn remote_workspace_folder(&self) -> &str {
+        &self.remote_workspace_folder
+    }
+
+    /// Returns the verified container architecture.
+    #[must_use]
+    pub const fn container_architecture(&self) -> ContainerArchitecture {
+        self.container_architecture
+    }
+
+    /// Returns the provisioned agent build identity.
+    #[must_use]
+    pub const fn agent_build_id(&self) -> &AgentBuildId {
+        &self.agent_build_id
+    }
+
+    /// Returns the provisioned agent protocol version.
+    #[must_use]
+    pub const fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
     /// Creates verified provision identity without persisting environment values.
     #[must_use]
     pub fn new(
@@ -611,10 +685,28 @@ impl ActiveGeneration {
         &self.fingerprints
     }
 
+    /// Returns the active generation's resolved Feature digests.
+    #[must_use]
+    pub const fn feature_digests(&self) -> &BTreeMap<String, String> {
+        &self.feature_digests
+    }
+
     /// Returns durable lifecycle retry state.
     #[must_use]
     pub const fn lifecycle(&self) -> &LifecycleCheckpoint {
         &self.lifecycle
+    }
+
+    /// Returns persisted declared-forwarding state.
+    #[must_use]
+    pub const fn forwarding(&self) -> &ActiveForwarding {
+        &self.forwarding
+    }
+
+    /// Returns verified provision identity.
+    #[must_use]
+    pub const fn provisioned(&self) -> &ProvisionedState {
+        &self.provisioned
     }
 
     /// Commits a runtime-only fingerprint after its settings were applied.
@@ -708,6 +800,18 @@ impl WorkspaceState {
     #[must_use]
     pub const fn schema_version(&self) -> u32 {
         self.schema_version
+    }
+
+    /// Returns the installation namespace recorded with this workspace.
+    #[must_use]
+    pub const fn installation_id(&self) -> &InstallationId {
+        &self.installation_id
+    }
+
+    /// Returns the selected compatibility profile.
+    #[must_use]
+    pub const fn devcontainer_profile(&self) -> &ProfileId {
+        &self.devcontainer_profile
     }
 
     /// Returns desired plan fingerprints.

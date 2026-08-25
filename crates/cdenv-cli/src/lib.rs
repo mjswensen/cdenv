@@ -4,6 +4,12 @@
 //! and output envelopes. Host adapters and command workflows are added behind
 //! this boundary without moving parsing or rendering into the executable.
 
+use std::collections::BTreeSet;
+use std::io::Write;
+use std::process::ExitCode;
+
+use serde::Serialize;
+
 mod agent_artifacts;
 mod agent_environment;
 mod agent_provisioning;
@@ -29,6 +35,7 @@ mod output;
 mod paths;
 mod process;
 mod reconciliation;
+mod reporting;
 mod state;
 mod storage;
 mod workspace_registry;
@@ -145,6 +152,12 @@ pub use reconciliation::{
     ReconciliationOutcome, ReconciliationPlanner, ReconciliationRequest, ReconciliationWarning,
     RuntimeReconciliation, reconcile_workspace,
 };
+pub use reporting::{
+    DockerSnapshot, FingerprintReport, ReportingError, ScenarioReport, StatusRequestError,
+    WorkspaceListItem, WorkspaceListReport, WorkspaceStatusReport, collect_live_workspace_reports,
+    correlate_workspace_reports, render_human_list, render_human_status,
+    requested_workspace_status,
+};
 pub use state::{
     ActiveForwarding, ActiveGeneration, ActiveScenario, DeclaredForward, DesiredConfigPath,
     DesiredConfigPathError, ForwardProtocol, LifecycleCheckpoint, LifecycleStage,
@@ -172,6 +185,203 @@ pub use workspace_registry::{
 /// error.
 pub fn invoke(command_line: &CommandLine) -> Result<(), ApplicationError> {
     invoke_with_environment(command_line, &ProcessEnvironment)
+}
+
+/// Executes and renders `list` or `status`, returning `None` for every other command.
+///
+/// Reporting owns its command-specific success payloads here so JSON stdout is
+/// exactly one document. Docker failures remain successful warnings for `list`
+/// and become requested-state failures for `status`.
+#[must_use]
+pub fn render_reporting_application<Stdout, Stderr>(
+    command_line: &CommandLine,
+    stdout: &mut Stdout,
+    stderr: &mut Stderr,
+) -> Option<ExitCode>
+where
+    Stdout: Write + ?Sized,
+    Stderr: Write + ?Sized,
+{
+    if !matches!(
+        command_line.command(),
+        CliCommand::List(_) | CliCommand::Status(_)
+    ) {
+        return None;
+    }
+    let format = command_line.output_format();
+    let root = match CdenvRoot::resolve(command_line.root(), &ProcessEnvironment) {
+        Ok(root) => root,
+        Err(error) => {
+            return Some(render_application_result(
+                format,
+                Err(ApplicationError::RootResolution(error)),
+                stdout,
+                stderr,
+            ));
+        }
+    };
+    let (entries, docker) = match collect_live_workspace_reports(&root) {
+        Ok(result) => result,
+        Err(error) => {
+            let application_error = match command_line.command() {
+                CliCommand::List(_) => ApplicationError::ListFailed {
+                    message: error.to_string(),
+                },
+                CliCommand::Status(_) => ApplicationError::StatusFailed {
+                    message: error.to_string(),
+                },
+                _ => unreachable!("reporting commands were checked above"),
+            };
+            return Some(render_application_result(
+                format,
+                Err(application_error),
+                stdout,
+                stderr,
+            ));
+        }
+    };
+
+    match command_line.command() {
+        CliCommand::List(_) => {
+            let report = correlate_workspace_reports(&root, &entries, &docker);
+            Some(render_list_result(format, &report, stdout, stderr))
+        }
+        CliCommand::Status(arguments) => {
+            let report = requested_workspace_status(&root, &entries, &docker, &arguments.name);
+            Some(render_status_result(format, report, stdout, stderr))
+        }
+        _ => None,
+    }
+}
+
+fn render_list_result(
+    format: OutputFormat,
+    report: &WorkspaceListReport,
+    stdout: &mut (impl Write + ?Sized),
+    stderr: &mut (impl Write + ?Sized),
+) -> ExitCode {
+    let mut warnings = report_warnings(
+        report
+            .workspaces()
+            .iter()
+            .flat_map(|workspace| workspace.status().facts()),
+    );
+    if let Some(message) = report.docker_warning()
+        && !warnings
+            .iter()
+            .any(|warning| warning.code() == "docker_unavailable")
+    {
+        warnings.push(OutputWarning::new(
+            "docker_unavailable",
+            format!("Docker unavailable: {message}"),
+        ));
+    }
+    match format {
+        OutputFormat::Json => {
+            let envelope = SuccessEnvelope::with_warnings(report, warnings);
+            render_json_success(stdout, &envelope).map_or_else(
+                |error| output_failure(stderr, &error),
+                |()| ExitCode::SUCCESS,
+            )
+        }
+        OutputFormat::Human => match render_human_list(stdout, report) {
+            Ok(()) => {
+                for warning in warnings {
+                    let _ = writeln!(stderr, "cdenv: warning: {}", warning.message());
+                }
+                ExitCode::SUCCESS
+            }
+            Err(error) => output_failure(stderr, &error),
+        },
+    }
+}
+
+#[derive(Serialize)]
+struct StatusPayload<'a> {
+    workspace: &'a WorkspaceStatusReport,
+}
+
+fn render_status_result(
+    format: OutputFormat,
+    report: Result<WorkspaceStatusReport, StatusRequestError>,
+    stdout: &mut (impl Write + ?Sized),
+    stderr: &mut (impl Write + ?Sized),
+) -> ExitCode {
+    let report = match report {
+        Ok(report) => report,
+        Err(error) => {
+            return render_application_result(
+                format,
+                Err(ApplicationError::StatusFailed {
+                    message: error.to_string(),
+                }),
+                stdout,
+                stderr,
+            );
+        }
+    };
+    let warnings = report_warnings(report.status().facts());
+    if report.is_requested_state_failure() {
+        let error = ApplicationError::StatusFailed {
+            message: format!(
+                "workspace `{}` has an unavailable or unhealthy requested state",
+                report.name()
+            ),
+        };
+        return match format {
+            OutputFormat::Json => {
+                let envelope = ErrorEnvelope::with_warnings(
+                    ErrorDetail::from_application_error(&error),
+                    warnings,
+                );
+                render_json_error(stdout, &envelope).map_or_else(
+                    |render_error| output_failure(stderr, &render_error),
+                    |()| error.exit_code(),
+                )
+            }
+            OutputFormat::Human => match render_human_status(stdout, &report) {
+                Ok(()) => {
+                    let _ = writeln!(stderr, "cdenv: {error}");
+                    error.exit_code()
+                }
+                Err(render_error) => output_failure(stderr, &render_error),
+            },
+        };
+    }
+    match format {
+        OutputFormat::Json => {
+            let envelope =
+                SuccessEnvelope::with_warnings(StatusPayload { workspace: &report }, warnings);
+            render_json_success(stdout, &envelope).map_or_else(
+                |error| output_failure(stderr, &error),
+                |()| ExitCode::SUCCESS,
+            )
+        }
+        OutputFormat::Human => render_human_status(stdout, &report).map_or_else(
+            |error| output_failure(stderr, &error),
+            |()| ExitCode::SUCCESS,
+        ),
+    }
+}
+
+fn report_warnings<'a>(
+    facts: impl IntoIterator<Item = &'a cdenv_core::StatusFact>,
+) -> Vec<OutputWarning> {
+    let mut seen = BTreeSet::new();
+    facts
+        .into_iter()
+        .filter(|fact| fact.severity() == cdenv_core::StatusFactSeverity::Warning)
+        .filter_map(|fact| {
+            let code = serde_json::to_value(fact.code()).ok()?.as_str()?.to_owned();
+            seen.insert(code.clone())
+                .then(|| OutputWarning::new(code.clone(), code.replace('_', " ")))
+        })
+        .collect()
+}
+
+fn output_failure(stderr: &mut (impl Write + ?Sized), error: &impl std::fmt::Display) -> ExitCode {
+    let _ = writeln!(stderr, "cdenv: {error}");
+    ExitCode::FAILURE
 }
 
 /// Resolves the root once through an injectable environment and invokes the

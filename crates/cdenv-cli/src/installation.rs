@@ -245,6 +245,35 @@ pub struct Installation {
 }
 
 impl Installation {
+    /// Loads only the installation record without creating or tightening files.
+    ///
+    /// This boundary is intended for read-only reporting commands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`InstallationError`] when the record is absent, unsafe, unreadable,
+    /// malformed, or from an unsupported schema.
+    pub fn load_record_read_only(
+        root: &CdenvRoot,
+    ) -> Result<InstallationRecord, InstallationError> {
+        let installation_path = root.installation_file();
+        let bytes = read_managed_file(&installation_path)?
+            .ok_or_else(|| InstallationError::MissingRecord(installation_path.clone()))?;
+        let record: InstallationRecord =
+            serde_json::from_slice(&bytes).map_err(|source| InstallationError::Parse {
+                path: installation_path.clone(),
+                source,
+            })?;
+        if record.schema_version != INSTALLATION_SCHEMA_VERSION {
+            return Err(InstallationError::UnsupportedSchema {
+                path: installation_path,
+                found: record.schema_version,
+                supported: INSTALLATION_SCHEMA_VERSION,
+            });
+        }
+        Ok(record)
+    }
+
     /// Creates a new installation or securely reopens an existing one.
     ///
     /// A missing or replaced key on an existing installation is not silently

@@ -41,6 +41,12 @@ pub enum ApplicationError {
         /// Safe read-only reporting diagnostic.
         message: String,
     },
+    /// Managed SSH identity, configuration, or Include setup failed.
+    #[error("SSH setup failed: {message}")]
+    SshSetupFailed {
+        /// Credential-safe setup failure summary.
+        message: String,
+    },
     /// Parsing exists, but this implementation stage has no command workflow.
     #[error("command `{command}` is not implemented in this build")]
     CommandUnavailable {
@@ -59,6 +65,7 @@ impl ApplicationError {
             Self::LockFailed { .. } => "lock_failed",
             Self::ListFailed { .. } => "list_failed",
             Self::StatusFailed { .. } => "status_failed",
+            Self::SshSetupFailed { .. } => "ssh_setup_failed",
             Self::CommandUnavailable { .. } => "command_unavailable",
         }
     }
@@ -72,6 +79,7 @@ impl ApplicationError {
             | Self::LockFailed { .. }
             | Self::ListFailed { .. }
             | Self::StatusFailed { .. }
+            | Self::SshSetupFailed { .. }
             | Self::CommandUnavailable { .. } => ExitCode::FAILURE,
         }
     }

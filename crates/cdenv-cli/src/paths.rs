@@ -335,6 +335,21 @@ impl SshPaths<'_> {
     pub fn host_keys_dir(&self) -> PathBuf {
         self.root().join("host_keys")
     }
+    /// Returns the private lock serializing identity and generated-config replacement.
+    #[must_use]
+    pub fn setup_lock(&self) -> PathBuf {
+        self.root().join(".setup.lock")
+    }
+    /// Returns one workspace's persistent host private key.
+    #[must_use]
+    pub fn host_private_key(&self, name: &WorkspaceName) -> PathBuf {
+        self.host_keys_dir().join(name.as_str())
+    }
+    /// Returns one workspace's host public key.
+    #[must_use]
+    pub fn host_public_key(&self, name: &WorkspaceName) -> PathBuf {
+        self.host_keys_dir().join(format!("{}.pub", name.as_str()))
+    }
 }
 
 /// Managed Dev Container cache paths.

@@ -38,6 +38,10 @@ mod paths;
 mod process;
 mod reconciliation;
 mod reporting;
+mod ssh_command;
+mod ssh_config;
+mod ssh_consent;
+mod ssh_identity;
 mod state;
 mod storage;
 mod workspace_registry;
@@ -171,6 +175,19 @@ pub use reporting::{
     WorkspaceListItem, WorkspaceListReport, WorkspaceStatusReport, collect_live_workspace_reports,
     correlate_workspace_reports, render_human_list, render_human_status,
     requested_workspace_status,
+};
+pub use ssh_command::{SystemSshError, run_system_ssh};
+pub use ssh_config::{
+    ExecutableResolutionError, SshConfigError, regenerate_managed_ssh, render_managed_config,
+    resolve_current_executable, resolve_invoked_executable, system_ssh_arguments,
+};
+pub use ssh_consent::{
+    ProcessSshConsentInteraction, SshConsentError, SshConsentInteraction, SshIncludeOutcome,
+    apply_ssh_include_consent,
+};
+pub use ssh_identity::{
+    SshIdentityError, WorkspaceHostIdentity, WorkspaceSshAssets, ensure_workspace_ssh_identity,
+    load_workspace_ssh_assets,
 };
 pub use state::{
     ActiveForwarding, ActiveGeneration, ActiveScenario, DeclaredForward, DesiredConfigPath,

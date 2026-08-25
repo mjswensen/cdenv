@@ -554,7 +554,7 @@ mod tests {
         persist_workspace_state(&paths.state_file(), &state).expect("initial state");
 
         let planner = FakePlanner {
-            fingerprints: fingerprints(['9', '2', '5']),
+            fingerprints: fingerprints(['1', '9', '5']),
             policies: Arc::new(Mutex::new(Vec::new())),
         };
         let environment = FakeEnvironment {
@@ -598,7 +598,7 @@ mod tests {
         .await
         .expect("idempotent up");
 
-        assert_eq!(first.warnings, vec![ReconciliationWarning::BuildDrift]);
+        assert_eq!(first.warnings, vec![ReconciliationWarning::CreateDrift]);
         assert_eq!(second.runtime, RuntimeReconciliation::Current);
         assert_eq!(
             *planner.policies.lock().expect("policies"),
@@ -608,13 +608,13 @@ mod tests {
             *environment.calls.lock().expect("calls"),
             vec![
                 CategoryDrift {
-                    build: true,
-                    create: false,
+                    build: false,
+                    create: true,
                     runtime: true,
                 },
                 CategoryDrift {
-                    build: true,
-                    create: false,
+                    build: false,
+                    create: true,
                     runtime: false,
                 },
             ]
@@ -623,6 +623,7 @@ mod tests {
         let active = persisted.state().active().expect("active generation");
         assert_eq!(active.generation().get(), 3);
         assert_eq!(active.fingerprints().build(), &digest('1'));
+        assert_eq!(active.fingerprints().create(), &digest('2'));
         assert_eq!(active.fingerprints().runtime(), &digest('5'));
     }
 }

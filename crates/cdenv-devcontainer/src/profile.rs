@@ -170,8 +170,6 @@ pub struct NonComposeOptions {
     /// Validated raw property value.
     pub workspace_mount: Option<String>,
     /// Validated raw property value.
-    pub app_ports: Vec<AppPort>,
-    /// Validated raw property value.
     pub run_args: Vec<String>,
     /// Validated raw property value.
     pub shutdown_action: Option<ShutdownAction>,
@@ -209,6 +207,8 @@ pub struct RawCommon {
     pub security_opt: Vec<String>,
     /// Validated raw property value.
     pub mounts: Vec<RawMount>,
+    /// Validated create-time port publications.
+    pub app_ports: Vec<AppPort>,
     /// Validated raw property value.
     pub forward_ports: Vec<ForwardPort>,
     /// Validated raw property value.
@@ -662,6 +662,7 @@ impl Validator<'_> {
                 .string_array(root.get("securityOpt"), "$.securityOpt")?
                 .unwrap_or_default(),
             mounts: self.mounts(root.get("mounts"))?,
+            app_ports: self.app_ports(root.get("appPort"))?,
             forward_ports: self.forward_ports(root.get("forwardPorts"))?,
             ports_attributes: self
                 .port_attributes_map(root.get("portsAttributes"), "$.portsAttributes")?,
@@ -748,7 +749,6 @@ impl Validator<'_> {
         Ok(NonComposeOptions {
             workspace_folder: self.optional_string(root, "workspaceFolder")?,
             workspace_mount: self.optional_string(root, "workspaceMount")?,
-            app_ports: self.app_ports(root.get("appPort"))?,
             run_args: self
                 .string_array(root.get("runArgs"), "$.runArgs")?
                 .unwrap_or_default(),
@@ -817,7 +817,7 @@ impl Validator<'_> {
     fn reject_non_compose_only(&self, root: &Map<String, Value>) -> Result<(), ProfileError> {
         self.reject_present(
             root,
-            &["workspaceMount", "appPort", "runArgs"],
+            &["workspaceMount", "runArgs"],
             "property is not supported for a Compose scenario",
         )
     }

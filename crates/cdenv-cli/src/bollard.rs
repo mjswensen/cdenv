@@ -17,6 +17,7 @@ use cdenv_core::{
     ContainerArchitecture, ContainerId, GenerationId, InstallationId, ProfileId,
     UnsupportedContainerArchitecture, WorkspaceName,
 };
+use cdenv_devcontainer::{PortPlan, PublicationBinding, PublicationProtocol};
 use futures_util::StreamExt;
 use thiserror::Error;
 
@@ -1047,6 +1048,14 @@ pub enum BollardAdapterError {
         /// Docker value, or absence.
         actual: Option<String>,
     },
+    /// Docker's authoritative bindings differ from the validated create plan.
+    #[error("Docker port binding verification mismatch")]
+    PortBindingMismatch {
+        /// Exact validated Docker publication arguments.
+        expected: Vec<String>,
+        /// Typed daemon bindings.
+        actual: Vec<InspectedPortBinding>,
+    },
     /// Compose primary discovery did not produce exactly the claimed container.
     #[error(
         "Compose primary `{project}/{service}` is ambiguous or substituted ({matches} matching containers)"
@@ -1074,6 +1083,70 @@ pub enum BollardAdapterError {
         /// Container deliberately left intact.
         id: ContainerId,
     },
+}
+
+/// Verifies every requested publication against authoritative daemon port bindings.
+///
+/// # Errors
+///
+/// Returns a typed mismatch containing the requested arguments and inspected bindings.
+pub fn verify_port_bindings(
+    inspection: &ContainerInspection,
+    expected: &PortPlan,
+) -> Result<(), BollardAdapterError> {
+    if port_bindings_match(&inspection.ports, expected) {
+        Ok(())
+    } else {
+        Err(BollardAdapterError::PortBindingMismatch {
+            expected: expected
+                .publications
+                .iter()
+                .map(|publication| publication.argument.clone())
+                .collect(),
+            actual: inspection.ports.clone(),
+        })
+    }
+}
+
+fn port_bindings_match(actual: &[InspectedPortBinding], expected: &PortPlan) -> bool {
+    expected.publications.iter().all(|publication| {
+        let protocol = match publication.protocol {
+            PublicationProtocol::Tcp => "tcp",
+            PublicationProtocol::Udp => "udp",
+            PublicationProtocol::Sctp => "sctp",
+        };
+        (publication.container_ports.start.get()..=publication.container_ports.end.get()).all(
+            |port| {
+                let key = format!("{port}/{protocol}");
+                let host_port = publication.host_ports.map(|range| {
+                    range.start.get() + (port - publication.container_ports.start.get())
+                });
+                actual.iter().any(|binding| {
+                    binding.container == key
+                        && binding_ip_matches(binding.host_ip.as_deref(), publication.binding)
+                        && host_port.map_or_else(
+                            || {
+                                binding.host_port.as_deref().is_some_and(|value| {
+                                    value.parse::<u16>().is_ok_and(|value| value > 0)
+                                })
+                            },
+                            |port| binding.host_port.as_deref() == Some(&port.to_string()),
+                        )
+                })
+            },
+        )
+    })
+}
+
+fn binding_ip_matches(actual: Option<&str>, expected: PublicationBinding) -> bool {
+    match expected {
+        PublicationBinding::Loopback(address) | PublicationBinding::NonLoopback(address) => {
+            actual == Some(address.to_string().as_str())
+        }
+        PublicationBinding::AllInterfaces => {
+            matches!(actual, None | Some("" | "0.0.0.0" | "::"))
+        }
+    }
 }
 
 fn map_summary(summary: ContainerSummary) -> Result<DiscoveredContainer, BollardAdapterError> {
@@ -1245,6 +1318,7 @@ mod tests {
         ContainerConfig, ContainerState, ContainerSummaryStateEnum, HostConfig, ImageConfig,
         MountPoint, PortBinding,
     };
+    use cdenv_devcontainer::{PortNumber, PortRange, PublicationRequest};
 
     use super::*;
     use crate::{DockerEnvironment, DockerSocketProbe};
@@ -1445,6 +1519,52 @@ mod tests {
             service: Some("service"),
             running: Some(false),
         }
+    }
+
+    fn publication(binding: PublicationBinding) -> PortPlan {
+        let port = PortNumber::new(3000).expect("fixture port");
+        PortPlan {
+            publications: vec![PublicationRequest {
+                argument: "127.0.0.1:3000:3000".to_owned(),
+                binding,
+                host_ports: Some(PortRange {
+                    start: port,
+                    end: port,
+                }),
+                container_ports: PortRange {
+                    start: port,
+                    end: port,
+                },
+                protocol: PublicationProtocol::Tcp,
+            }],
+            forwards: Vec::new(),
+            warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn port_binding_verification_accepts_exact_loopback_binding() {
+        let inspection = map_container(raw_container(false)).expect("container inspection");
+        let plan = publication(PublicationBinding::Loopback(std::net::IpAddr::from([
+            127, 0, 0, 1,
+        ])));
+
+        verify_port_bindings(&inspection, &plan).expect("exact binding");
+    }
+
+    #[test]
+    fn port_binding_verification_returns_typed_mismatch_for_wrong_interface() {
+        let inspection = map_container(raw_container(false)).expect("container inspection");
+        let plan = publication(PublicationBinding::NonLoopback(std::net::IpAddr::from([
+            0, 0, 0, 0,
+        ])));
+
+        let error = verify_port_bindings(&inspection, &plan).expect_err("binding mismatch");
+
+        assert!(matches!(
+            error,
+            BollardAdapterError::PortBindingMismatch { .. }
+        ));
     }
 
     #[test]

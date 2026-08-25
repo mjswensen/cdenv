@@ -3,6 +3,7 @@
 use std::io::{self, Write};
 use std::process::ExitCode;
 
+use cdenv_devcontainer::{PortPlanningWarning, PortPlanningWarningKind};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -40,6 +41,39 @@ impl OutputWarning {
     pub fn message(&self) -> &str {
         &self.message
     }
+}
+
+/// Converts pure port diagnostics into the warnings used by both JSON envelopes and human output.
+#[must_use]
+pub fn port_output_warnings(warnings: &[PortPlanningWarning]) -> Vec<OutputWarning> {
+    warnings
+        .iter()
+        .map(|warning| {
+            let (code, message) = match warning.kind {
+                PortPlanningWarningKind::NonLoopbackPublication => (
+                    "non_loopback_publication",
+                    "publishes a container port beyond host loopback; the service may be reachable from other hosts",
+                ),
+                PortPlanningWarningKind::DeferredDiscovery => (
+                    "port_discovery_deferred",
+                    "requires automatic process, range, or regular-expression port discovery, which is not available in V1",
+                ),
+                PortPlanningWarningKind::ExplicitForwardOverridesIgnore => (
+                    "explicit_forward_overrides_ignore",
+                    "is explicitly forwarded, so onAutoForward=ignore does not suppress it",
+                ),
+                PortPlanningWarningKind::BrowserLaunchSuppressed => (
+                    "browser_launch_suppressed",
+                    "requests a browser; cdenv reports the endpoint URL without launching UI",
+                ),
+                PortPlanningWarningKind::EmbeddedPreviewUnsupported => (
+                    "embedded_preview_unsupported",
+                    "requests an embedded preview, which cdenv does not provide; no UI was launched",
+                ),
+            };
+            OutputWarning::new(code, format!("{} {message}", warning.property_path))
+        })
+        .collect()
 }
 
 /// A versioned successful JSON response.

@@ -172,6 +172,10 @@ pub enum PortPlanningWarningKind {
     DeferredDiscovery,
     /// An explicit `forwardPorts` entry overrides `onAutoForward: ignore`.
     ExplicitForwardOverridesIgnore,
+    /// Browser launch was requested; cdenv reports the URL without launching UI.
+    BrowserLaunchSuppressed,
+    /// Embedded preview was requested, but cdenv has no embedded preview UI.
+    EmbeddedPreviewUnsupported,
 }
 
 /// Complete requested port plan.
@@ -198,6 +202,15 @@ impl PortPlan {
                 target_port: forward.target_port,
                 label: forward.attributes.label.clone(),
                 protocol: forward.attributes.protocol,
+                url: forward.assigned_local.and_then(|assigned| {
+                    forward.attributes.protocol.map(|protocol| {
+                        let scheme = match protocol {
+                            PortProtocol::Http => "http",
+                            PortProtocol::Https => "https",
+                        };
+                        format!("{scheme}://127.0.0.1:{}", assigned.get())
+                    })
+                }),
             })
             .collect()
     }
@@ -219,6 +232,8 @@ pub struct ForwardingRenderInput {
     pub label: Option<String>,
     /// Optional URL protocol.
     pub protocol: Option<PortProtocol>,
+    /// Resolved assigned endpoint URL, once a listener has been assigned.
+    pub url: Option<String>,
 }
 
 /// Plans publications and forwards without Docker, sockets, or process discovery.
@@ -237,31 +252,30 @@ pub fn plan_ports(
 ) -> Result<PortPlan, PortPlanningError> {
     let mut publications = Vec::new();
     let mut warnings = Vec::new();
-    if let Some(app_ports) = non_compose_app_ports(profile) {
-        for (index, app_port) in app_ports.iter().enumerate() {
-            let property = app_port_path(app_ports.len(), index);
-            let publication = match app_port {
-                AppPort::Number(port) => numeric_publication(*port, &property)?,
-                AppPort::DockerArgument(argument) => parse_publication(argument, &property)?,
-            };
-            if publication.binding.may_expose_non_loopback() {
-                warnings.push(PortPlanningWarning {
-                    property_path: property.clone(),
-                    kind: PortPlanningWarningKind::NonLoopbackPublication,
-                });
-            }
-            if publications
-                .iter()
-                .any(|existing| publications_conflict(existing, &publication))
-            {
-                return Err(PortPlanningError::new(
-                    property,
-                    PortPlanningErrorKind::PublicationConflict,
-                    "publication conflicts with an earlier fixed host binding",
-                ));
-            }
-            publications.push(publication);
+    let app_ports = &profile.common.app_ports;
+    for (index, app_port) in app_ports.iter().enumerate() {
+        let property = app_port_path(app_ports.len(), index);
+        let publication = match app_port {
+            AppPort::Number(port) => numeric_publication(*port, &property)?,
+            AppPort::DockerArgument(argument) => parse_publication(argument, &property)?,
+        };
+        if publication.binding.may_expose_non_loopback() {
+            warnings.push(PortPlanningWarning {
+                property_path: property.clone(),
+                kind: PortPlanningWarningKind::NonLoopbackPublication,
+            });
         }
+        if publications
+            .iter()
+            .any(|existing| publications_conflict(existing, &publication))
+        {
+            return Err(PortPlanningError::new(
+                property,
+                PortPlanningErrorKind::PublicationConflict,
+                "publication conflicts with an earlier fixed host binding",
+            ));
+        }
+        publications.push(publication);
     }
 
     for key in effective.ports_attributes.keys() {
@@ -335,11 +349,22 @@ pub fn plan_ports(
                 EffectivePortAttributes::default,
                 EffectivePortAttributes::from,
             );
-        if attributes.on_auto_forward == AutoForwardAction::Ignore {
-            warnings.push(PortPlanningWarning {
+        match attributes.on_auto_forward {
+            AutoForwardAction::Ignore => warnings.push(PortPlanningWarning {
                 property_path: property.clone(),
                 kind: PortPlanningWarningKind::ExplicitForwardOverridesIgnore,
-            });
+            }),
+            AutoForwardAction::OpenBrowser | AutoForwardAction::OpenBrowserOnce => {
+                warnings.push(PortPlanningWarning {
+                    property_path: property.clone(),
+                    kind: PortPlanningWarningKind::BrowserLaunchSuppressed,
+                });
+            }
+            AutoForwardAction::OpenPreview => warnings.push(PortPlanningWarning {
+                property_path: property.clone(),
+                kind: PortPlanningWarningKind::EmbeddedPreviewUnsupported,
+            }),
+            AutoForwardAction::Notify | AutoForwardAction::Silent => {}
         }
         forwards.push(ForwardRequest {
             requested_local: port,
@@ -377,14 +402,6 @@ impl From<&PortAttributes> for EffectivePortAttributes {
             require_local_port: value.require_local_port.unwrap_or(false),
             protocol: value.protocol,
         }
-    }
-}
-
-fn non_compose_app_ports(profile: &RawProfile) -> Option<&[AppPort]> {
-    match &profile.scenario {
-        RawScenario::Image(value) => Some(&value.options.app_ports),
-        RawScenario::Dockerfile(value) => Some(&value.options.app_ports),
-        RawScenario::Compose(_) => None,
     }
 }
 

@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 
 use cdenv_core::ContainerId;
+use cdenv_devcontainer::PortPlan;
 use thiserror::Error;
 
 use crate::bollard::{
@@ -14,7 +15,7 @@ use crate::{
     BollardAdapter, BollardAdapterError, CancellationToken, ComposeAdapter, ComposeAdapterError,
     ComposePrimaryExpectation, ComposeStopRequest, ComposeUpClaim, ComposeUpRequest,
     ContainerDiscoveryScope, ContainerInspection, DiscoveredContainer, DockerResourceIdentity,
-    ImageId,
+    ImageId, verify_port_bindings,
 };
 
 /// Static Compose seam kept narrow enough for deterministic component tests.
@@ -132,6 +133,8 @@ pub struct CreateComposeRequest<'a> {
     pub identity: DockerResourceIdentity<'a>,
     /// Expected final primary image.
     pub primary_image: &'a ImageId,
+    /// Validated create-time primary-service publications.
+    pub ports: &'a PortPlan,
 }
 
 /// Verified Compose facts safe to persist as the active generation.
@@ -281,7 +284,8 @@ impl<C: ComposeLifecycleCli, E: ComposeLifecycleEngine> ComposeLifecycleOrchestr
             return Err(ComposeLifecycleError::ClaimSetMismatch);
         }
         check_cancelled(cancellation, &[])?;
-        self.engine
+        let primary_inspection = self
+            .engine
             .verify_primary(ComposePrimaryExpectation {
                 id: &claim.primary,
                 image_id: request.primary_image,
@@ -298,6 +302,12 @@ impl<C: ComposeLifecycleCli, E: ComposeLifecycleEngine> ComposeLifecycleOrchestr
                 operation: "verify Compose primary",
                 source,
             })?;
+        verify_port_bindings(&primary_inspection, request.ports).map_err(|source| {
+            ComposeLifecycleError::Docker {
+                operation: "verify Compose primary port bindings",
+                source,
+            }
+        })?;
         for (service, id) in &claim.managed {
             check_cancelled(cancellation, &[])?;
             let inspection =

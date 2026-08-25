@@ -6,7 +6,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
-use crate::{ComposeScenario, MountKind, PlannedMount, RuntimePlan};
+use crate::{ComposeScenario, MountKind, PlannedMount, PortPlan, RuntimePlan};
 
 /// Maximum Compose project-name length used by cdenv.
 pub const MAXIMUM_COMPOSE_PROJECT_NAME_LENGTH: usize = 63;
@@ -83,6 +83,8 @@ pub struct ComposePlanningInputs<'a> {
     pub identity: ComposeIdentity<'a>,
     /// Effective pure runtime settings for the primary service.
     pub runtime: &'a RuntimePlan,
+    /// Validated create-time publications for the primary service.
+    pub ports: &'a PortPlan,
     /// Optional final image/command enrichment.
     pub primary_override: ComposePrimaryOverride<'a>,
 }
@@ -284,6 +286,8 @@ struct ServiceOverride {
     volumes: Vec<MountOverride>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     environment: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ports: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     user: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -366,6 +370,12 @@ fn render_override(
         .container()
         .iter()
         .map(|(name, value)| (name.clone(), value.expose().to_owned()))
+        .collect();
+    service.ports = inputs
+        .ports
+        .publications
+        .iter()
+        .map(|publication| publication.argument.clone())
         .collect();
     service.user = Some(inputs.runtime.container_user.as_str().to_owned());
     service.init = inputs.runtime.init.then_some(true);

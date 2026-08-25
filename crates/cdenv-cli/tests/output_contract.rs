@@ -4,8 +4,10 @@ use std::process::ExitCode;
 
 use cdenv_cli::{
     ApplicationError, CommandKind, ErrorEnvelope, OutputFormat, OutputRenderError, SuccessEnvelope,
-    invoke, render_application_result, render_json_error, render_json_success,
+    invoke, port_output_warnings, render_application_result, render_json_error,
+    render_json_success,
 };
+use cdenv_devcontainer::{PortPlanningWarning, PortPlanningWarningKind};
 use clap::Parser;
 use serde::{Serialize, Serializer, ser::Error as _};
 use serde_json::Value;
@@ -40,6 +42,37 @@ fn json_error_envelope_matches_the_reviewed_snapshot() {
     serde_json::from_slice::<Value>(&output).expect("stdout should contain exactly one JSON value");
 
     assert_eq!(output, include_bytes!("snapshots/json-error.txt"));
+}
+
+#[test]
+fn non_loopback_security_warning_is_structured_for_json_and_human_renderers() {
+    let warnings = port_output_warnings(&[PortPlanningWarning {
+        property_path: "$.appPort".to_owned(),
+        kind: PortPlanningWarningKind::NonLoopbackPublication,
+    }]);
+    let envelope = SuccessEnvelope::with_warnings(
+        WorkspaceListPayload {
+            workspaces: Vec::new(),
+        },
+        warnings.clone(),
+    );
+    let mut json = Vec::new();
+
+    render_json_success(&mut json, &envelope).expect("warning envelope");
+    let value: Value = serde_json::from_slice(&json).expect("JSON warning");
+
+    assert_eq!(
+        (
+            warnings[0].code(),
+            warnings[0].message(),
+            value["warnings"][0]["code"].as_str()
+        ),
+        (
+            "non_loopback_publication",
+            "$.appPort publishes a container port beyond host loopback; the service may be reachable from other hosts",
+            Some("non_loopback_publication")
+        )
+    );
 }
 
 #[test]

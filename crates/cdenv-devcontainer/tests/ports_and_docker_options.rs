@@ -4,10 +4,10 @@ use std::collections::BTreeMap;
 
 use cdenv_devcontainer::{
     BuildPlan, ConfigPath, ContainerPath, DockerOptionErrorKind, DockerOptionPlanningInputs,
-    ForwardTargetHost, HostSubstitutionInputs, ImageMetadata, ParseLimits, PortPlanningErrorKind,
-    PortPlanningWarningKind, PublicationBinding, RawProfile, RuntimePlanningInputs,
-    ScenarioMetadata, StableIdentityLabels, merge_image_metadata, parse_jsonc, plan_docker_options,
-    plan_ports, plan_runtime, validate_profile,
+    ForwardTargetHost, HostSubstitutionInputs, ImageMetadata, ParseLimits, PortNumber,
+    PortPlanningErrorKind, PortPlanningWarningKind, PublicationBinding, RawProfile,
+    RuntimePlanningInputs, ScenarioMetadata, StableIdentityLabels, merge_image_metadata,
+    parse_jsonc, plan_docker_options, plan_ports, plan_runtime, validate_profile,
 };
 use serde_json::json;
 
@@ -103,6 +103,47 @@ fn explicit_ipv4_ipv6_and_protocol_publications_are_retained_exactly() {
     assert_eq!(
         plan.warnings[0].kind,
         PortPlanningWarningKind::NonLoopbackPublication
+    );
+}
+
+#[test]
+fn compose_publications_use_the_same_validated_model_and_security_warning() {
+    let profile = repository(
+        r#"{"dockerComposeFile":"compose.yaml","service":"app","workspaceFolder":"/workspace","appPort":[3000,"0.0.0.0:8080:80"]}"#,
+    );
+
+    let plan = plan_ports(&profile, &effective(&profile, &[])).expect("Compose port plan");
+
+    assert_eq!(
+        plan.publications
+            .iter()
+            .map(|publication| publication.argument.as_str())
+            .collect::<Vec<_>>(),
+        ["127.0.0.1:3000:3000", "0.0.0.0:8080:80"]
+    );
+    assert_eq!(
+        plan.warnings[0].kind,
+        PortPlanningWarningKind::NonLoopbackPublication
+    );
+}
+
+#[test]
+fn browser_and_preview_actions_are_diagnostics_without_ui_side_effects() {
+    let profile = repository(
+        r#"{"image":"example.invalid/base","forwardPorts":[3000,4000],"portsAttributes":{"3000":{"onAutoForward":"openBrowser","protocol":"http"},"4000":{"onAutoForward":"openPreview"}}}"#,
+    );
+
+    let plan = plan_ports(&profile, &effective(&profile, &[])).expect("port plan");
+
+    assert_eq!(
+        plan.warnings
+            .iter()
+            .map(|warning| warning.kind)
+            .collect::<Vec<_>>(),
+        [
+            PortPlanningWarningKind::BrowserLaunchSuppressed,
+            PortPlanningWarningKind::EmbeddedPreviewUnsupported
+        ]
     );
 }
 
@@ -227,8 +268,33 @@ fn requested_versus_assigned_rendering_snapshot_never_binds_a_listener() {
             "targetHost": {"kind":"containerLoopback"},
             "targetPort": 3000,
             "label": "Web",
-            "protocol": "https"
+            "protocol": "https",
+            "url": null
         }])
+    );
+}
+
+#[test]
+fn assigned_forward_renders_label_protocol_and_resolved_url() {
+    let profile = repository(
+        r#"{"image":"example.invalid/base","forwardPorts":[3000],"portsAttributes":{"3000":{"label":"Web","protocol":"https"}}}"#,
+    );
+    let mut plan = plan_ports(&profile, &effective(&profile, &[])).expect("port plan");
+    plan.forwards[0].assigned_local = Some(PortNumber::new(33000).expect("assigned port"));
+
+    let rendered = plan.rendering_inputs();
+
+    assert_eq!(
+        (
+            rendered[0].label.as_deref(),
+            rendered[0].protocol,
+            rendered[0].url.as_deref()
+        ),
+        (
+            Some("Web"),
+            Some(cdenv_devcontainer::PortProtocol::Https),
+            Some("https://127.0.0.1:33000")
+        )
     );
 }
 

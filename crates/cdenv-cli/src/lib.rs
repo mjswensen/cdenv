@@ -55,7 +55,7 @@ pub use bollard::{
     CorrelatedContainers, DetachedExec, DiscoveredContainer, ExecCommand, ExecId, ExecInspect,
     ExecStreamError, ImageCleanupExpectation, ImageInspection, InspectedMount,
     InspectedPortBinding, MAXIMUM_EXEC_FRAME_BYTES, WorkspaceCorrelation, correlate_containers,
-    decode_docker_multiplexed,
+    decode_docker_multiplexed, verify_port_bindings,
 };
 pub use command_line::{
     CliCommand, CommandKind, CommandLine, CreateArgs, DoctorArgs, DownArgs, ForwardArgs,
@@ -135,7 +135,8 @@ pub use locking::{
 };
 pub use output::{
     ErrorDetail, ErrorEnvelope, JSON_SCHEMA_VERSION, OutputRenderError, OutputWarning,
-    SuccessEnvelope, render_application_result, render_json_error, render_json_success,
+    SuccessEnvelope, port_output_warnings, render_application_result, render_json_error,
+    render_json_success,
 };
 pub use paths::{
     CDENV_HOME, CachePaths, CdenvRoot, ManagedPathError, ManagedPathKind, ManagedPathState,

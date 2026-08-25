@@ -107,6 +107,23 @@ fn image_dockerfile_and_compose_have_stable_secret_free_summaries() {
 }
 
 #[test]
+fn changing_app_port_changes_only_the_create_category() {
+    let fixture = Fixture::new();
+    let base = fixture
+        .fingerprints(r#"{"image":"example.invalid/base","appPort":3000}"#)
+        .0;
+    let changed = fixture
+        .fingerprints(r#"{"image":"example.invalid/base","appPort":4000}"#)
+        .0;
+
+    assert_eq!(
+        (base.build, base.runtime, base.lifecycle),
+        (changed.build, changed.runtime, changed.lifecycle)
+    );
+    assert_ne!(base.create, changed.create);
+}
+
+#[test]
 fn changing_one_owned_property_changes_only_its_category() {
     let fixture = Fixture::new();
     let base = fixture

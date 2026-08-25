@@ -6,8 +6,8 @@ use cdenv_devcontainer::{
     ComposeIdentity, ComposeModel, ComposePlanningError, ComposePlanningInputs,
     ComposePrimaryOverride, ComposeServiceModel, ConfigPath, ContainerPath, ParseLimits,
     RawProfile, RuntimePlanningInputs, ScenarioMetadata, StableIdentityLabels,
-    compose_project_name, merge_image_metadata, parse_jsonc, plan_compose, plan_runtime,
-    validate_profile,
+    compose_project_name, merge_image_metadata, parse_jsonc, plan_compose, plan_ports,
+    plan_runtime, validate_profile,
 };
 
 fn profile(source: &str) -> RawProfile {
@@ -69,6 +69,7 @@ fn plan_compose_generates_canonical_secret_bearing_final_override() {
           "runServices":["app"],
           "workspaceFolder":"/workspace/demo",
           "containerEnv":{"TOKEN":"secret-value"},
+          "appPort":[3000,"0.0.0.0:8080:80"],
           "containerUser":"developer",
           "init":true
         }"#,
@@ -109,6 +110,7 @@ fn plan_compose_generates_canonical_secret_bearing_final_override() {
                 profile: "cdenv-devcontainer-v1",
             },
             runtime: &runtime,
+            ports: &plan_ports(&profile, &effective).expect("port plan"),
             primary_override: ComposePrimaryOverride {
                 image: Some("cdenv/final@sha256:abc"),
                 entrypoint: Some(&final_entrypoint),
@@ -120,7 +122,7 @@ fn plan_compose_generates_canonical_secret_bearing_final_override() {
 
     assert_eq!(
         std::str::from_utf8(plan.override_json()).expect("UTF-8 JSON"),
-        r#"{"services":{"app":{"labels":{"cdenv.generation":"2","cdenv.installation":"installation","cdenv.profile":"cdenv-devcontainer-v1","cdenv.workspace":"workspace"},"image":"cdenv/final@sha256:abc","build":null,"pull_policy":"never","working_dir":"/workspace/demo","volumes":[{"type":"bind","source":"/outside/checkout","target":"/workspace/demo"}],"environment":{"TOKEN":"secret-value"},"user":"developer","init":true,"entrypoint":["/opt/cdenv/entrypoint"],"command":["sleep","infinity"]},"db":{"labels":{"cdenv.generation":"2","cdenv.installation":"installation","cdenv.profile":"cdenv-devcontainer-v1","cdenv.workspace":"workspace"}}}}"#
+        r#"{"services":{"app":{"labels":{"cdenv.generation":"2","cdenv.installation":"installation","cdenv.profile":"cdenv-devcontainer-v1","cdenv.workspace":"workspace"},"image":"cdenv/final@sha256:abc","build":null,"pull_policy":"never","working_dir":"/workspace/demo","volumes":[{"type":"bind","source":"/outside/checkout","target":"/workspace/demo"}],"environment":{"TOKEN":"secret-value"},"ports":["127.0.0.1:3000:3000","0.0.0.0:8080:80"],"user":"developer","init":true,"entrypoint":["/opt/cdenv/entrypoint"],"command":["sleep","infinity"]},"db":{"labels":{"cdenv.generation":"2","cdenv.installation":"installation","cdenv.profile":"cdenv-devcontainer-v1","cdenv.workspace":"workspace"}}}}"#
     );
 }
 
@@ -160,6 +162,7 @@ fn plan_compose_includes_transitive_dependencies_in_managed_set() {
                 profile: "profile",
             },
             runtime: &runtime,
+            ports: &plan_ports(&profile, &effective).expect("port plan"),
             primary_override: ComposePrimaryOverride::default(),
         },
     )
@@ -204,6 +207,7 @@ fn plan_compose_rejects_an_unknown_run_service() {
                 profile: "profile",
             },
             runtime: &runtime,
+            ports: &plan_ports(&profile, &effective).expect("port plan"),
             primary_override: ComposePrimaryOverride::default(),
         },
     )

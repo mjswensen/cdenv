@@ -26,6 +26,7 @@ mod error;
 mod feature_lock;
 mod feature_sources;
 mod forwarding;
+mod forwarding_reconciliation;
 mod generated_image;
 mod git;
 mod image_orchestration;
@@ -113,6 +114,11 @@ pub use forwarding::{
     SUPERVISOR_CONTROL_TIMEOUT, SupervisorClaim, SupervisorForward, SupervisorManifest,
     SupervisorState, load_supervisor_state, run_private_supervisor_manifest,
     start_detached_supervisor, stop_supervisor, supervisor_control_token, supervisor_status,
+};
+pub use forwarding_reconciliation::{
+    DeclaredForwardingRuntime, DesiredForwardingPlan, FIRST_UNPRIVILEGED_PORT, ForwardingPlanError,
+    ForwardingReconciliationError, ForwardingReconciliationOutcome, ForwardingRuntimeOutcome,
+    ForwardingRuntimeRequest, ScopedForwardingSupervisor, reconcile_declared_forwarding,
 };
 pub use generated_image::{
     GeneratedFeature, GeneratedImageError, GeneratedImagePlan, GeneratedUidGidUpdate, LinuxAccount,

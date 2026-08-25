@@ -97,6 +97,7 @@ impl ContainerLifecycle for FakeRuntime {
     type Provisioned = &'static str;
     type InitialEnvironment = &'static str;
     type Environment = &'static str;
+    type Forwarding = &'static str;
 
     async fn execute_stage(
         &self,
@@ -158,7 +159,7 @@ impl ContainerLifecycle for FakeRuntime {
         &'a self,
         _: &'a Self::Environment,
         _: &'a CancellationToken,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<Self::Forwarding, Self::Error> {
         self.events
             .lock()
             .expect("events")
@@ -166,7 +167,7 @@ impl ContainerLifecycle for FakeRuntime {
         if self.forwarding_failure {
             Err(FakeError("forwarding unavailable"))
         } else {
-            Ok(())
+            Ok("forwarding-ready")
         }
     }
 

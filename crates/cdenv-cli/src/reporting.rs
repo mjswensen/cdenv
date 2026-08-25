@@ -347,7 +347,7 @@ fn derive_valid_status(
     };
     let configuration = derive_configuration(state.desired_fingerprints(), state.active());
     let lifecycle = derive_lifecycle(state.active());
-    let (forwarding, endpoints) = derive_forwarding(state.active(), paths, environment);
+    let (forwarding, endpoints) = derive_forwarding(state, paths, environment);
     let local_health = derive_local_health(state, operation, correlation);
     let dimensions = StatusDimensions::new(
         environment,
@@ -451,11 +451,11 @@ fn derive_lifecycle(active: Option<&crate::ActiveGeneration>) -> LifecycleStatus
 }
 
 fn derive_forwarding(
-    active: Option<&crate::ActiveGeneration>,
+    workspace: &crate::WorkspaceState,
     paths: &WorkspacePaths<'_>,
     environment: EnvironmentStatus,
 ) -> (ForwardingStatus, Vec<ForwardingEndpointAssignment>) {
-    let Some(active) = active else {
+    let Some(active) = workspace.active() else {
         return (ForwardingStatus::NotConfigured, Vec::new());
     };
     let forwarding = active.forwarding();
@@ -478,10 +478,31 @@ fn derive_forwarding(
     ) {
         return (ForwardingStatus::MissingSupervisor, endpoints);
     }
+    let state = crate::load_supervisor_state(&paths.supervisor_state_file());
+    let identity_matches = state.is_ok_and(|state| {
+        state.installation == *workspace.installation_id()
+            && state.workspace == *workspace.name()
+            && state.generation == active.generation()
+            && state.agent_build_id == *active.provisioned().agent_build_id()
+            && state.agent_protocol == active.provisioned().protocol_version()
+            && forwarding.supervisor_build_id() == Some(&state.host_build_id)
+            && state.listeners.len() == endpoints.len()
+            && state
+                .listeners
+                .iter()
+                .zip(&endpoints)
+                .all(|(listener, endpoint)| {
+                    endpoint.assigned().is_some_and(|assigned| {
+                        listener.ip() == assigned.address()
+                            && listener.port() == assigned.port().get()
+                    })
+                })
+    });
     if endpoints.len() != forwarding.requested().len()
         || endpoints
             .iter()
             .any(|endpoint| endpoint.assigned().is_none())
+        || !identity_matches
     {
         (ForwardingStatus::Degraded, endpoints)
     } else {

@@ -527,6 +527,42 @@ impl DeclaredForward {
             protocol,
         }
     }
+
+    /// Returns the requested loopback listener endpoint.
+    #[must_use]
+    pub const fn requested(&self) -> ForwardingEndpoint {
+        self.requested
+    }
+
+    /// Returns the agent-visible target host.
+    #[must_use]
+    pub fn target_host(&self) -> &str {
+        &self.target_host
+    }
+
+    /// Returns the target TCP port.
+    #[must_use]
+    pub const fn target_port(&self) -> TcpPort {
+        self.target_port
+    }
+
+    /// Returns whether only the requested local port is acceptable.
+    #[must_use]
+    pub const fn require_local_port(&self) -> bool {
+        self.require_local_port
+    }
+
+    /// Returns the optional display label.
+    #[must_use]
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
+    }
+
+    /// Returns the display protocol.
+    #[must_use]
+    pub const fn protocol(&self) -> ForwardProtocol {
+        self.protocol
+    }
 }
 
 /// Requested and last-committed assignments for an active generation.

@@ -103,13 +103,15 @@ pub enum BackgroundReadiness {
 ///
 /// Constructing this value performs no persistence.
 #[derive(Debug)]
-pub struct LifecycleReadiness<P, E> {
+pub struct LifecycleReadiness<P, E, F> {
     /// Verified mutation facts.
     pub mutation: LifecycleMutationOutcome,
     /// Freshly provisioned agent facts.
     pub provisioned: P,
     /// Environment recaptured after the selected readiness boundary.
     pub environment: E,
+    /// Transactionally established forwarding facts for the active-state commit.
+    pub forwarding: F,
     /// Configured stage which established readiness.
     pub completed_through: LifecycleStage,
     /// State of applicable later stages.
@@ -298,6 +300,8 @@ pub trait ContainerLifecycle: Send + Sync {
     type InitialEnvironment;
     /// Post-readiness recaptured environment facts.
     type Environment;
+    /// Complete declared-forwarding facts returned after transactional readiness.
+    type Forwarding;
 
     /// Executes one complete foreground stage.
     fn execute_stage(
@@ -332,7 +336,7 @@ pub trait ContainerLifecycle: Send + Sync {
         &'a self,
         environment: &'a Self::Environment,
         cancellation: &'a CancellationToken,
-    ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
+    ) -> impl Future<Output = Result<Self::Forwarding, Self::Error>> + Send + 'a;
 
     /// Starts or verifies exactly one generation runner for all applicable later stages.
     fn start_or_verify_runner<'a>(
@@ -387,7 +391,7 @@ impl<H: HostLifecycle, M: LifecycleMutation, R: ContainerLifecycle> LifecycleOrc
         request: &LifecycleOrchestrationRequest<'_>,
         cancellation: &CancellationToken,
     ) -> Result<
-        LifecycleReadiness<R::Provisioned, R::Environment>,
+        LifecycleReadiness<R::Provisioned, R::Environment, R::Forwarding>,
         LifecycleOrchestrationError<H::Error, M::Error, R::Error>,
     > {
         self.host
@@ -444,7 +448,8 @@ impl<H: HostLifecycle, M: LifecycleMutation, R: ContainerLifecycle> LifecycleOrc
                 operation: "recapture",
                 source,
             })?;
-        self.runtime
+        let forwarding = self
+            .runtime
             .forwarding_ready(&environment, cancellation)
             .await
             .map_err(|source| LifecycleOrchestrationError::Forwarding { source })?;
@@ -474,6 +479,7 @@ impl<H: HostLifecycle, M: LifecycleMutation, R: ContainerLifecycle> LifecycleOrc
             mutation,
             provisioned,
             environment,
+            forwarding,
             completed_through: request.plan.readiness,
             background,
         })

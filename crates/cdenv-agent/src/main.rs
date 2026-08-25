@@ -10,8 +10,20 @@ use std::time::Duration;
 const MAXIMUM_CAPTURE_REQUEST_BYTES: u64 = 4 * 1024 * 1024;
 const MAXIMUM_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if let [command, host, port, build_id, protocol] = arguments.as_slice()
+        && command == "forwarding-bridge"
+    {
+        return forwarding_bridge(
+            &host.to_string_lossy(),
+            &port.to_string_lossy(),
+            &build_id.to_string_lossy(),
+            &protocol.to_string_lossy(),
+        )
+        .await;
+    }
     if matches!(arguments.as_slice(), [command] if command == "emit-environment") {
         return match cdenv_agent::emit_current_environment() {
             Ok(()) => ExitCode::SUCCESS,
@@ -73,7 +85,7 @@ fn main() -> ExitCode {
                 .map_err(|_| "invalid lifecycle cancellation timeout".to_owned())
                 .and_then(|milliseconds| lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|forwarding-bridge HOST PORT BUILD_ID PROTOCOL>"
                     .to_owned(),
             ),
         });
@@ -82,6 +94,34 @@ fn main() -> ExitCode {
             println!("{output}");
             ExitCode::SUCCESS
         }
+        Err(error) => {
+            eprintln!("cdenv-agent: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn forwarding_bridge(host: &str, port: &str, build_id: &str, protocol: &str) -> ExitCode {
+    let result = async {
+        cdenv_agent::ensure_supported_platform().map_err(|error| error.to_string())?;
+        let port = port
+            .parse::<u16>()
+            .map_err(|_| "invalid forwarding target port".to_owned())?;
+        let protocol = protocol
+            .parse::<u32>()
+            .map_err(|_| "invalid forwarding protocol version".to_owned())?;
+        cdenv_agent::verify_forwarding_identity(build_id, protocol)
+            .map_err(|error| error.to_string())?;
+        let target =
+            cdenv_agent::ForwardTarget::new(host, port).map_err(|error| error.to_string())?;
+        let mut stdio = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+        cdenv_agent::bridge_forwarding_stream(&mut stdio, &target)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("cdenv-agent: {error}");
             ExitCode::FAILURE

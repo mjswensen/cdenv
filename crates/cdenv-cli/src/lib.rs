@@ -25,6 +25,7 @@ mod down;
 mod error;
 mod feature_lock;
 mod feature_sources;
+mod forwarding;
 mod generated_image;
 mod git;
 mod image_orchestration;
@@ -106,6 +107,12 @@ pub use feature_sources::{
     MAX_FEATURE_EXPANSION_RATIO, MAX_FEATURE_EXTRACTED_BYTES, MAX_FEATURE_FILES,
     MAX_FEATURE_METADATA_BYTES, MAX_FEATURE_PATH_BYTES, MAX_FEATURE_REDIRECTS, VerifiedFeature,
     extract_archive,
+};
+pub use forwarding::{
+    FORWARDING_SUPERVISOR_PROTOCOL, ForwardingSupervisorError, MAXIMUM_CONTROL_MESSAGE_BYTES,
+    SUPERVISOR_CONTROL_TIMEOUT, SupervisorClaim, SupervisorForward, SupervisorManifest,
+    SupervisorState, load_supervisor_state, run_private_supervisor_manifest,
+    start_detached_supervisor, stop_supervisor, supervisor_control_token, supervisor_status,
 };
 pub use generated_image::{
     GeneratedFeature, GeneratedImageError, GeneratedImagePlan, GeneratedUidGidUpdate, LinuxAccount,

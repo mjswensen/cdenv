@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 mod environment;
+mod forwarding;
 #[cfg(target_os = "linux")]
 mod lifecycle;
 
@@ -14,6 +15,10 @@ pub use environment::{
     EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError, EnvironmentProbe,
     EnvironmentSnapshot, EnvironmentTemplate, EnvironmentTemplateSegment, capture_environment,
     emit_current_environment, run_with_environment,
+};
+pub use forwarding::{
+    ForwardTarget, ForwardingError, MAXIMUM_FORWARD_HOST_BYTES, bridge_forwarding_stream,
+    verify_forwarding_identity,
 };
 #[cfg(target_os = "linux")]
 pub use lifecycle::{

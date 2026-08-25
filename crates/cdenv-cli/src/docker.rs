@@ -112,7 +112,7 @@ impl DockerEndpoint {
             if !probe.is_unix_socket(&socket) {
                 return Err(DockerEndpointError::ConfiguredSocketUnavailable { path: socket });
             }
-            return Self::from_socket(socket);
+            return Self::from_verified_socket(socket);
         }
         if let Some(context) = environment
             .docker_context()
@@ -123,12 +123,12 @@ impl DockerEndpoint {
 
         let candidates = known_socket_paths(environment);
         if let Some(socket) = candidates.iter().find(|path| probe.is_unix_socket(path)) {
-            return Self::from_socket(socket.clone());
+            return Self::from_verified_socket(socket.clone());
         }
         Err(DockerEndpointError::NoLocalSocket { tried: candidates })
     }
 
-    fn from_socket(socket: PathBuf) -> Result<Self, DockerEndpointError> {
+    pub(crate) fn from_verified_socket(socket: PathBuf) -> Result<Self, DockerEndpointError> {
         if !socket.is_absolute() {
             return Err(DockerEndpointError::RelativeSocket { path: socket });
         }

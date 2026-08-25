@@ -449,6 +449,12 @@ impl LifecycleCheckpoint {
     pub const fn indeterminate(&self) -> bool {
         self.indeterminate
     }
+
+    /// Records that no lifecycle runner remains after a down operation.
+    pub(crate) fn record_runner_stopped(&mut self, indeterminate: bool) {
+        self.running = None;
+        self.indeterminate |= indeterminate;
+    }
 }
 
 /// Forward target protocol used for URL and display behavior.
@@ -581,6 +587,24 @@ impl ActiveGeneration {
         self.generation
     }
 
+    /// Returns the active generation's creation scenario.
+    #[must_use]
+    pub const fn scenario(&self) -> &ActiveScenario {
+        &self.scenario
+    }
+
+    /// Returns the independently verified primary container ID.
+    #[must_use]
+    pub const fn container_id(&self) -> &ContainerId {
+        &self.container_id
+    }
+
+    /// Returns the active generation's exact image identity.
+    #[must_use]
+    pub fn image_id(&self) -> &str {
+        &self.image_id
+    }
+
     /// Returns the active generation's category fingerprints.
     #[must_use]
     pub const fn fingerprints(&self) -> &PlanFingerprints {
@@ -596,6 +620,11 @@ impl ActiveGeneration {
     /// Commits a runtime-only fingerprint after its settings were applied.
     pub(crate) fn commit_runtime_fingerprint(&mut self, runtime: KeyedDigest) {
         self.fingerprints.runtime = runtime;
+    }
+
+    /// Records a definite or indeterminate lifecycle-runner stop result.
+    pub(crate) fn record_lifecycle_stopped(&mut self, indeterminate: bool) {
+        self.lifecycle.record_runner_stopped(indeterminate);
     }
 
     /// Creates a fully provisioned active-generation record.
@@ -721,6 +750,11 @@ impl WorkspaceState {
     #[must_use]
     pub const fn active(&self) -> Option<&ActiveGeneration> {
         self.active.as_ref()
+    }
+
+    /// Returns the active generation mutably to transaction coordinators.
+    pub(crate) const fn active_mut(&mut self) -> Option<&mut ActiveGeneration> {
+        self.active.as_mut()
     }
 
     /// Changes desired selection without modifying active-generation bytes.

@@ -143,6 +143,17 @@ pub struct ComposeLifecycleFacts {
     pub managed: BTreeMap<String, ContainerId>,
 }
 
+/// Idempotent result of stopping a persisted Compose managed service set.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ComposeStopOutcome {
+    /// At least one managed service transitioned to stopped.
+    Stopped(ComposeLifecycleFacts),
+    /// Every verified managed service was already stopped.
+    AlreadyStopped(ComposeLifecycleFacts),
+    /// Every persisted managed service is known missing.
+    Missing,
+}
+
 /// Non-selecting live classification of a persisted Compose service set.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ComposeServiceSetState {
@@ -375,6 +386,54 @@ impl<C: ComposeLifecycleCli, E: ComposeLifecycleEngine> ComposeLifecycleOrchestr
         })
     }
 
+    /// Idempotently stops the persisted set while preserving all project resources.
+    ///
+    /// A complete stopped set is verified without invoking Compose. A completely
+    /// missing set is a known successful absence; partial absence and ambiguity
+    /// remain errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid identity, partial/ambiguous state, inspection, cancellation,
+    /// Compose stop, or post-stop verification failures.
+    pub async fn stop_recorded(
+        &self,
+        recorded: &RecordedComposeRequest<'_>,
+        stop: &ComposeStopRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ComposeStopOutcome, ComposeLifecycleError> {
+        validate_recorded(recorded)?;
+        if stop.project.project_name != recorded.project
+            || stop.managed_services != recorded.managed_services
+        {
+            return Err(ComposeLifecycleError::InvalidManagedSet);
+        }
+        check_cancelled(cancellation, &[])?;
+        let discovered = self.discover(recorded).await?;
+        let (state, managed) = resolve_service_set(recorded, &discovered);
+        if is_completely_missing(&state, recorded.managed_services.len()) {
+            return Ok(ComposeStopOutcome::Missing);
+        }
+        if state == ComposeServiceSetState::CompleteStopped {
+            self.verify_recorded_set(recorded, &managed).await?;
+            return Ok(ComposeStopOutcome::AlreadyStopped(ComposeLifecycleFacts {
+                primary: recorded.primary.clone(),
+                managed,
+            }));
+        }
+        if matches!(
+            state,
+            ComposeServiceSetState::Missing { .. }
+                | ComposeServiceSetState::Ambiguous { .. }
+                | ComposeServiceSetState::PrimarySubstituted { .. }
+        ) {
+            return Err(ComposeLifecycleError::UnsafeServiceSet { state });
+        }
+        self.down(recorded, stop, cancellation)
+            .await
+            .map(ComposeStopOutcome::Stopped)
+    }
+
     /// Stops the persisted set through Compose V2 and preserves all project resources.
     ///
     /// Services outside the persisted set are deliberately ignored.
@@ -440,6 +499,31 @@ impl<C: ComposeLifecycleCli, E: ComposeLifecycleEngine> ComposeLifecycleOrchestr
             primary: recorded.primary.clone(),
             managed,
         })
+    }
+
+    async fn verify_recorded_set(
+        &self,
+        recorded: &RecordedComposeRequest<'_>,
+        managed: &BTreeMap<String, ContainerId>,
+    ) -> Result<(), ComposeLifecycleError> {
+        for service in recorded.managed_services {
+            let container = &managed[service];
+            let inspection = self.engine.inspect(container).await.map_err(|source| {
+                ComposeLifecycleError::Docker {
+                    operation: "inspect recorded Compose service",
+                    source,
+                }
+            })?;
+            verify_service(
+                &inspection,
+                container,
+                service,
+                recorded.project,
+                recorded.identity,
+                None,
+            )?;
+        }
+        Ok(())
     }
 
     async fn discover(
@@ -521,6 +605,17 @@ fn resolve_service_set(
         ComposeServiceSetState::PartiallyRunning { running, stopped }
     };
     (state, managed)
+}
+
+fn is_completely_missing(state: &ComposeServiceSetState, expected: usize) -> bool {
+    matches!(
+        state,
+        ComposeServiceSetState::Missing {
+            missing,
+            running,
+            stopped,
+        } if missing.len() == expected && running.is_empty() && stopped.is_empty()
+    )
 }
 
 fn validate_recorded(request: &RecordedComposeRequest<'_>) -> Result<(), ComposeLifecycleError> {
@@ -798,6 +893,59 @@ mod tests {
         ) -> Result<ContainerInspection, BollardAdapterError> {
             panic!("resume verifies recorded members instead of a reconciliation claim")
         }
+    }
+
+    #[tokio::test]
+    async fn completely_missing_down_is_idempotent_but_duplicate_service_is_unsafe() {
+        let installation = InstallationId::parse("installation").expect("installation");
+        let workspace = WorkspaceName::parse("workspace").expect("workspace");
+        let profile = ProfileId::parse("profile").expect("profile");
+        let primary = ContainerId::parse(APP_ID).expect("primary");
+        let managed = vec!["app".to_owned(), "db".to_owned()];
+        let recorded = RecordedComposeRequest {
+            identity: identity(&installation, &workspace, &profile),
+            project: "project",
+            primary_service: "app",
+            primary: &primary,
+            managed_services: &managed,
+        };
+        let files = Vec::new();
+        let stop = ComposeStopRequest {
+            project: crate::ComposeProject {
+                files: &files,
+                project_name: "project",
+                working_directory: std::path::Path::new("/tmp"),
+            },
+            managed_services: &managed,
+        };
+        let engine = MemoryEngine(Arc::new(Mutex::new(Vec::new())));
+        let orchestrator = ComposeLifecycleOrchestrator::new(NoCompose, engine.clone());
+
+        let missing = orchestrator
+            .stop_recorded(&recorded, &stop, &CancellationToken::default())
+            .await
+            .expect("known missing set");
+        assert_eq!(missing, ComposeStopOutcome::Missing);
+
+        *engine.0.lock().expect("engine state") = vec![
+            service(APP_ID, "app", "running"),
+            service(
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+                "app",
+                "running",
+            ),
+            service(DB_ID, "db", "running"),
+        ];
+        let error = orchestrator
+            .stop_recorded(&recorded, &stop, &CancellationToken::default())
+            .await
+            .expect_err("duplicate service must fail");
+        assert!(matches!(
+            error,
+            ComposeLifecycleError::UnsafeServiceSet {
+                state: ComposeServiceSetState::Ambiguous { .. }
+            }
+        ));
     }
 
     #[tokio::test]

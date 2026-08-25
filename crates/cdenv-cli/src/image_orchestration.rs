@@ -283,6 +283,17 @@ pub fn classify_image_container_matches(
     }
 }
 
+/// Idempotent result of stopping one exact recorded image container.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageContainerStopOutcome {
+    /// The verified running container transitioned to stopped.
+    Stopped,
+    /// The verified recorded container was already stopped.
+    AlreadyStopped,
+    /// No current-generation container exists.
+    Missing,
+}
+
 /// Resource that could not be cleaned after a known operation failure.
 #[derive(Debug)]
 pub enum ImageCleanupFailure {
@@ -433,6 +444,89 @@ impl<D: ImageDockerCli, E: ImageDockerEngine> ImageContainerOrchestrator<D, E> {
                     })
                 }
             }
+        }
+    }
+
+    /// Stops a uniquely resolved recorded image container without removing it.
+    ///
+    /// Missing and already-stopped resources are successful idempotent outcomes.
+    /// Duplicate or externally replaced current-generation resources remain hard errors.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, unsafe discovery, inspect/verification, or stop errors.
+    pub async fn stop_recorded(
+        &self,
+        request: &RecordedContainerRequest<'_>,
+        grace: std::time::Duration,
+        cancellation: &CancellationToken,
+    ) -> Result<ImageContainerStopOutcome, ImageContainerError> {
+        check_cancellation(cancellation)?;
+        let containers = self
+            .engine
+            .discover(request.identity.installation, request.identity.workspace)
+            .await
+            .map_err(|source| ImageContainerError::Bollard {
+                operation: "discovery",
+                source,
+            })?;
+        let correlated = correlate_containers(
+            &containers,
+            &[WorkspaceCorrelation {
+                workspace: request.identity.workspace,
+                generation: request.identity.generation,
+                recorded_container: Some(request.container),
+            }],
+        );
+        match classify_image_container_matches(&correlated[0], Some(request.container)) {
+            ImageContainerMatchState::Missing | ImageContainerMatchState::StaleOnly => {
+                Ok(ImageContainerStopOutcome::Missing)
+            }
+            ImageContainerMatchState::RecordedStopped => {
+                self.inspect_and_verify(
+                    request.container,
+                    request.container_name,
+                    request.image,
+                    request.identity,
+                    request.runtime,
+                    request.ports,
+                    false,
+                )
+                .await?;
+                Ok(ImageContainerStopOutcome::AlreadyStopped)
+            }
+            ImageContainerMatchState::RecordedRunning => {
+                self.inspect_and_verify(
+                    request.container,
+                    request.container_name,
+                    request.image,
+                    request.identity,
+                    request.runtime,
+                    request.ports,
+                    true,
+                )
+                .await?;
+                check_cancellation(cancellation)?;
+                self.engine
+                    .stop(request.container, grace)
+                    .await
+                    .map_err(|source| ImageContainerError::Bollard {
+                        operation: "stop recorded container",
+                        source,
+                    })?;
+                self.inspect_and_verify(
+                    request.container,
+                    request.container_name,
+                    request.image,
+                    request.identity,
+                    request.runtime,
+                    request.ports,
+                    false,
+                )
+                .await?;
+                Ok(ImageContainerStopOutcome::Stopped)
+            }
+            state => Err(ImageContainerError::UnsafeContainerState { state }),
         }
     }
 
@@ -1821,6 +1915,62 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn recorded_running_container_is_verified_stopped_and_repeated_stop_is_safe() {
+        let plans = plans(r#"{"image":"base","appPort":3000}"#);
+        let (installation, workspace, profile, generation) = identities();
+        let container = ContainerId::parse(CONTAINER_ID).expect("container");
+        let image_id = ImageId::parse(IMAGE_ID).expect("image");
+        let request = RecordedContainerRequest {
+            container: &container,
+            container_name: "cdenv-workspace-2",
+            image: &image_id,
+            identity: identity(&installation, &workspace, &profile, generation),
+            runtime: &plans.runtime,
+            ports: &plans.ports,
+        };
+        let engine = FakeEngine::default()
+            .with_discovery(vec![discovered(CONTAINER_ID, "2", true)])
+            .with_containers([
+                inspection(&plans.runtime, &plans.ports, true),
+                inspection(&plans.runtime, &plans.ports, false),
+            ]);
+        let orchestrator = ImageContainerOrchestrator::new(FakeCli::default(), engine.clone());
+
+        let outcome = orchestrator
+            .stop_recorded(
+                &request,
+                std::time::Duration::from_secs(10),
+                &CancellationToken::default(),
+            )
+            .await
+            .expect("stop");
+
+        assert_eq!(outcome, ImageContainerStopOutcome::Stopped);
+        assert_eq!(
+            engine.calls(),
+            ["discover", "inspect-container", "stop", "inspect-container"]
+        );
+
+        engine.state.lock().expect("engine lock").discovered =
+            vec![discovered(CONTAINER_ID, "2", false)];
+        engine
+            .state
+            .lock()
+            .expect("engine lock")
+            .containers
+            .push_back(Ok(inspection(&plans.runtime, &plans.ports, false)));
+        let repeated = orchestrator
+            .stop_recorded(
+                &request,
+                std::time::Duration::from_secs(10),
+                &CancellationToken::default(),
+            )
+            .await
+            .expect("repeated stop");
+        assert_eq!(repeated, ImageContainerStopOutcome::AlreadyStopped);
     }
 
     #[tokio::test]

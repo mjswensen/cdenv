@@ -15,6 +15,7 @@ mod config;
 mod create;
 mod docker;
 mod docker_cli;
+mod down;
 mod error;
 mod feature_lock;
 mod feature_sources;
@@ -61,7 +62,7 @@ pub use compose::{
 };
 pub use compose_lifecycle::{
     ComposeLifecycleError, ComposeLifecycleFacts, ComposeLifecycleOrchestrator,
-    ComposeServiceSetState, CreateComposeRequest, RecordedComposeRequest,
+    ComposeServiceSetState, ComposeStopOutcome, CreateComposeRequest, RecordedComposeRequest,
     classify_compose_service_set,
 };
 pub use config::{ConfigLoadError, ConfigSource, discover_and_read_config};
@@ -82,6 +83,12 @@ pub use docker_cli::{
     DockerPullClaim, DockerResourceIdentity, DockerfileInput, GeneratedContextFile, ImageId,
     build_arguments, create_arguments, pull_arguments,
 };
+pub use down::{
+    CONTAINER_STOP_GRACE, DownError, DownOutcome, DownRequest, DownWarning, EnvironmentStopOutcome,
+    ForwardingStopOutcome, ForwardingSupervisorStop, InterruptedOperationRecovery,
+    LIFECYCLE_STOP_GRACE, LifecycleRunnerStop, LifecycleStopOutcome, ManagedEnvironmentStop,
+    StopFailures, classify_interrupted_operation, down_workspace,
+};
 pub use error::ApplicationError;
 pub use feature_lock::{
     ExistingContainerLockStatus, FEATURE_LOCK_FILE, FeatureLockError, generate_feature_lock,
@@ -100,8 +107,8 @@ pub use generated_image::{
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
 pub use image_orchestration::{
     ImageCleanupFailure, ImageContainerCreateRequest, ImageContainerError, ImageContainerFacts,
-    ImageContainerMatchState, ImageContainerOrchestrator, RecordedContainerRequest,
-    classify_image_container_matches,
+    ImageContainerMatchState, ImageContainerOrchestrator, ImageContainerStopOutcome,
+    RecordedContainerRequest, classify_image_container_matches,
 };
 pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,

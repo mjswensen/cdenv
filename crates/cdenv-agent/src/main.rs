@@ -1,5 +1,6 @@
 //! Thin executable entry point for the cdenv container agent.
 
+use std::ffi::OsString;
 use std::io::Read;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
@@ -13,6 +14,26 @@ const MAXIMUM_MANIFEST_BYTES: u64 = 16 * 1024 * 1024;
 #[tokio::main]
 async fn main() -> ExitCode {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    #[cfg(target_os = "linux")]
+    if let [
+        command,
+        stdio,
+        host_key,
+        authorized_key,
+        environment,
+        workspace,
+    ] = arguments.as_slice()
+        && command == "ssh-server"
+        && stdio == "--stdio"
+    {
+        return ssh_server(
+            Path::new(host_key),
+            Path::new(authorized_key),
+            Path::new(environment),
+            Path::new(workspace),
+        )
+        .await;
+    }
     if let [command, host, port, build_id, protocol] = arguments.as_slice()
         && command == "forwarding-bridge"
     {
@@ -49,9 +70,23 @@ async fn main() -> ExitCode {
         };
     }
 
-    let result = cdenv_agent::ensure_supported_platform()
+    let result = run_machine_command(&arguments);
+    match result {
+        Ok(output) => {
+            println!("{output}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("cdenv-agent: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
+    cdenv_agent::ensure_supported_platform()
         .map_err(|error| error.to_string())
-        .and_then(|()| match arguments.as_slice() {
+        .and_then(|()| match arguments {
             [command] if command == "version" => {
                 serde_json::to_string(&cdenv_agent::version()).map_err(|error| error.to_string())
             }
@@ -69,11 +104,17 @@ async fn main() -> ExitCode {
             }
             [command, manifest] if command == "update-user" => update_user(Path::new(manifest)),
             #[cfg(target_os = "linux")]
-            [command, manifest] if command == "lifecycle-runner" => lifecycle_runner(Path::new(manifest)),
+            [command, manifest] if command == "lifecycle-runner" => {
+                lifecycle_runner(Path::new(manifest))
+            }
             #[cfg(target_os = "linux")]
-            [command, manifest] if command == "lifecycle-start" => lifecycle_start(Path::new(manifest)),
+            [command, manifest] if command == "lifecycle-start" => {
+                lifecycle_start(Path::new(manifest))
+            }
             #[cfg(target_os = "linux")]
-            [command, manifest] if command == "lifecycle-inspect" => lifecycle_inspect(Path::new(manifest)),
+            [command, manifest] if command == "lifecycle-inspect" => {
+                lifecycle_inspect(Path::new(manifest))
+            }
             #[cfg(target_os = "linux")]
             [command, manifest] if command == "lifecycle-cancel" => {
                 lifecycle_cancel(Path::new(manifest), Duration::from_secs(5))
@@ -83,19 +124,40 @@ async fn main() -> ExitCode {
                 .to_string_lossy()
                 .parse::<u64>()
                 .map_err(|_| "invalid lifecycle cancellation timeout".to_owned())
-                .and_then(|milliseconds| lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))),
+                .and_then(|milliseconds| {
+                    lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))
+                }),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|forwarding-bridge HOST PORT BUILD_ID PROTOCOL>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL>"
                     .to_owned(),
             ),
-        });
-    match result {
-        Ok(output) => {
-            println!("{output}");
-            ExitCode::SUCCESS
+        })
+}
+
+#[cfg(target_os = "linux")]
+async fn ssh_server(
+    host_key: &Path,
+    authorized_key: &Path,
+    environment: &Path,
+    workspace: &Path,
+) -> ExitCode {
+    let request = cdenv_agent::SshServerRequest {
+        host_key: host_key.to_path_buf(),
+        authorized_key: authorized_key.to_path_buf(),
+        environment: environment.to_path_buf(),
+        workspace: workspace.to_path_buf(),
+    };
+    let result = match cdenv_agent::SshServerConfig::load(&request) {
+        Ok(config) => {
+            let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+            cdenv_agent::serve_ssh_stream(stream, config).await
         }
+        Err(error) => Err(error),
+    };
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("cdenv-agent: {error}");
+            eprintln!("cdenv-agent: SSH server failed: {error}");
             ExitCode::FAILURE
         }
     }

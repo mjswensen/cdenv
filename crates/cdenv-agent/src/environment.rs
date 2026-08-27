@@ -105,8 +105,18 @@ impl EnvironmentSnapshot {
         command.envs(&self.entries);
     }
 
+    pub(crate) fn apply_to_tokio(&self, command: &mut tokio::process::Command) {
+        command.env_clear();
+        command.envs(&self.entries);
+    }
+
     pub(crate) fn value(&self, name: &OsStr) -> Option<&OsStr> {
         self.entries.get(name).map(OsString::as_os_str)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_entries(entries: BTreeMap<OsString, OsString>) -> Self {
+        Self { entries }
     }
 
     /// Returns the number of effective entries without exposing them.

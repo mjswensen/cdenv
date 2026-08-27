@@ -10,6 +10,8 @@ mod environment;
 mod forwarding;
 #[cfg(target_os = "linux")]
 mod lifecycle;
+#[cfg(target_os = "linux")]
+mod ssh;
 
 pub use environment::{
     EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError, EnvironmentProbe,
@@ -27,6 +29,8 @@ pub use lifecycle::{
     LifecycleValue, LifecycleValueSegment, cancel_lifecycle, execute_lifecycle_command,
     inspect_lifecycle, run_lifecycle,
 };
+#[cfg(target_os = "linux")]
+pub use ssh::{SshServerConfig, SshServerError, SshServerRequest, serve_ssh_stream};
 
 /// The protocol spoken by this agent release.
 pub const PROTOCOL_VERSION: u32 = 1;

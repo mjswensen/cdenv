@@ -36,6 +36,7 @@ mod locking;
 mod output;
 mod paths;
 mod process;
+mod proxy;
 mod reconciliation;
 mod reporting;
 mod ssh_command;
@@ -163,6 +164,9 @@ pub use paths::{
 pub use process::{
     CancellationToken, CapturedOutput, OperationId, ProcessDeadline, ProcessEnvironmentVariable,
     ProcessError, ProcessRequest, ProcessResult, ProcessRunner,
+};
+pub use proxy::{
+    ProxyEngine, ProxyError, ProxyRuntimeError, ProxyTarget, run_proxy_stdio, run_proxy_transport,
 };
 pub use reconciliation::{
     CategoryDrift, EnvironmentReconciler, EnvironmentReconciliationRequest, EnvironmentTransition,

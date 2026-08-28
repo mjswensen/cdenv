@@ -6,10 +6,11 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cdenv_cli::{
-    ApplicationError, CdenvRoot, CliCommand, CommandLine, Installation, ProcessEnvironment,
-    ProcessSshConsentInteraction, apply_ssh_include_consent, enumerate_workspaces, invoke,
-    regenerate_managed_ssh, render_application_result, render_reporting_application,
-    resolve_current_executable, run_private_supervisor_manifest, run_system_ssh,
+    ApplicationError, CancellationToken, CdenvRoot, CliCommand, CommandLine, Installation,
+    ProcessEnvironment, ProcessSshConsentInteraction, apply_ssh_include_consent,
+    enumerate_workspaces, invoke, regenerate_managed_ssh, render_application_result,
+    render_reporting_application, resolve_current_executable, run_private_supervisor_manifest,
+    run_proxy_stdio, run_system_ssh,
 };
 use clap::Parser;
 
@@ -38,6 +39,16 @@ fn main() -> ExitCode {
     }
     let command_line = CommandLine::parse();
     let output_format = command_line.output_format();
+    if let CliCommand::Proxy(proxy_arguments) = command_line.command() {
+        let root = match CdenvRoot::resolve(command_line.root(), &ProcessEnvironment) {
+            Ok(root) => root,
+            Err(error) => {
+                eprintln!("cdenv: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return proxy_exit(&root, proxy_arguments.workspace.workspace_name());
+    }
     if let CliCommand::Ssh(ssh_arguments) = command_line.command() {
         let root = match CdenvRoot::resolve(command_line.root(), &ProcessEnvironment) {
             Ok(root) => root,
@@ -75,6 +86,37 @@ fn main() -> ExitCode {
     }
 
     render_application_result(output_format, result, &mut stdout, &mut stderr)
+}
+
+fn proxy_exit(root: &CdenvRoot, workspace: &cdenv_core::WorkspaceName) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("cdenv: cannot start proxy runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let cancellation = CancellationToken::default();
+    let signal_cancellation = cancellation.clone();
+    runtime.block_on(async {
+        let signal = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                signal_cancellation.cancel();
+            }
+        });
+        let result = run_proxy_stdio(root, workspace, &cancellation).await;
+        signal.abort();
+        match result {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("cdenv: {error}");
+                ExitCode::FAILURE
+            }
+        }
+    })
 }
 
 fn complete_ssh_setup(command_line: &CommandLine, argv0: &OsStr) -> Result<(), ApplicationError> {

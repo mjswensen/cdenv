@@ -9,7 +9,7 @@ use cdenv_agent::{
     BUILD_ID, EnvironmentCaptureRequest, EnvironmentProbe, LifecycleCommand, LifecyclePhase,
     LifecycleProcess, LifecycleRunRequest, LifecycleStage, LifecycleStagePlan, LifecycleValue,
     LifecycleValueSegment, PROTOCOL_VERSION, cancel_lifecycle, capture_environment,
-    inspect_lifecycle, run_lifecycle,
+    inspect_lifecycle, run_lifecycle, run_post_attach,
 };
 use tempfile::TempDir;
 
@@ -240,6 +240,80 @@ fn long_running_later_stage_is_reported_active_and_cancels_definitely() {
 
     assert!(!inspection.runner_active);
     assert_eq!(state.phase, LifecyclePhase::Cancelled);
+}
+
+#[test]
+fn post_attach_retries_after_failure_and_serializes_concurrent_transports() {
+    let directory = TempDir::new().expect("temporary directory");
+    let failed = request(
+        &directory,
+        "attach",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostAttach,
+            commands: vec![shell("exit 7")],
+        }],
+    );
+    assert!(run_post_attach(&failed).is_err());
+
+    let successful = LifecycleRunRequest {
+        stages: vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostAttach,
+            commands: vec![shell(
+                "if mkdir attach-active 2>/dev/null; then sleep 0.1; rmdir attach-active; printf x >> attach-count; else touch attach-overlap; exit 9; fi",
+            )],
+        }],
+        ..failed
+    };
+    let second = successful.clone();
+    let first = std::thread::spawn(move || run_post_attach(&successful));
+    let second = std::thread::spawn(move || run_post_attach(&second));
+
+    first.join().expect("first thread").expect("first attach");
+    second
+        .join()
+        .expect("second thread")
+        .expect("second attach");
+    assert_eq!(
+        fs::read_to_string(directory.path().join("attach-count")).expect("attach count"),
+        "xx"
+    );
+    assert!(!directory.path().join("attach-overlap").exists());
+    let state: serde_json::Value = serde_json::from_slice(
+        &fs::read(directory.path().join(".cdenv-attach-attach.json")).expect("attach state"),
+    )
+    .expect("attach state JSON");
+    assert_eq!(state["successful"], true);
+}
+
+#[test]
+fn post_attach_binary_keeps_protocol_stdout_empty() {
+    let directory = TempDir::new().expect("temporary directory");
+    let request = request(
+        &directory,
+        "attach-stdio",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostAttach,
+            commands: vec![shell("printf stdout-hook; printf stderr-hook >&2")],
+        }],
+    );
+    let manifest = directory.path().join("attach.json");
+    fs::write(
+        &manifest,
+        serde_json::to_vec(&request).expect("manifest encoding"),
+    )
+    .expect("manifest");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cdenv-agent"))
+        .arg("post-attach")
+        .arg(&manifest)
+        .output()
+        .expect("agent command");
+
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("stdout-hook"));
+    assert!(stderr.contains("stderr-hook"));
 }
 
 #[test]

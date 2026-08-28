@@ -640,6 +640,18 @@ impl ProvisionedState {
         self.container_architecture
     }
 
+    /// Returns the container-side effective environment snapshot path.
+    #[must_use]
+    pub fn environment_path(&self) -> &str {
+        &self.environment_path
+    }
+
+    /// Returns the provisioned agent executable path.
+    #[must_use]
+    pub fn agent_path(&self) -> &str {
+        &self.agent_path
+    }
+
     /// Returns the provisioned agent build identity.
     #[must_use]
     pub const fn agent_build_id(&self) -> &AgentBuildId {

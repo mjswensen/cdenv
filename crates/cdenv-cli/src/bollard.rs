@@ -163,6 +163,50 @@ pub fn correlate_containers(
         .collect()
 }
 
+/// Verifies every expected container identity field and state without requiring an adapter value.
+///
+/// # Errors
+///
+/// Returns the first exact identity, label, Compose, image, name, or state mismatch.
+pub fn verify_container(
+    inspection: &ContainerInspection,
+    expected: ContainerExpectation<'_>,
+) -> Result<(), BollardAdapterError> {
+    verify_value("container ID", expected.id.as_str(), inspection.id.as_str())?;
+    verify_value("container name", expected.name, &inspection.name)?;
+    verify_value(
+        "image ID",
+        expected.image_id.as_str(),
+        inspection.image_id.as_str(),
+    )?;
+    verify_label(
+        &inspection.labels,
+        INSTALLATION_LABEL,
+        expected.installation.as_str(),
+    )?;
+    verify_label(
+        &inspection.labels,
+        WORKSPACE_LABEL,
+        expected.workspace.as_str(),
+    )?;
+    verify_label(
+        &inspection.labels,
+        GENERATION_LABEL,
+        &expected.generation.to_string(),
+    )?;
+    verify_label(&inspection.labels, PROFILE_LABEL, expected.profile.as_str())?;
+    verify_optional_label(&inspection.labels, COMPOSE_PROJECT_LABEL, expected.project)?;
+    verify_optional_label(&inspection.labels, COMPOSE_SERVICE_LABEL, expected.service)?;
+    if let Some(running) = expected.running {
+        verify_value(
+            "running state",
+            &running.to_string(),
+            &inspection.running.to_string(),
+        )?;
+    }
+    Ok(())
+}
+
 /// One Docker-inspected container mount.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct InspectedMount {
@@ -712,39 +756,7 @@ impl<A: BollardApi> BollardAdapter<A> {
         inspection: &ContainerInspection,
         expected: ContainerExpectation<'_>,
     ) -> Result<(), BollardAdapterError> {
-        verify_value("container ID", expected.id.as_str(), inspection.id.as_str())?;
-        verify_value("container name", expected.name, &inspection.name)?;
-        verify_value(
-            "image ID",
-            expected.image_id.as_str(),
-            inspection.image_id.as_str(),
-        )?;
-        verify_label(
-            &inspection.labels,
-            INSTALLATION_LABEL,
-            expected.installation.as_str(),
-        )?;
-        verify_label(
-            &inspection.labels,
-            WORKSPACE_LABEL,
-            expected.workspace.as_str(),
-        )?;
-        verify_label(
-            &inspection.labels,
-            GENERATION_LABEL,
-            &expected.generation.to_string(),
-        )?;
-        verify_label(&inspection.labels, PROFILE_LABEL, expected.profile.as_str())?;
-        verify_optional_label(&inspection.labels, COMPOSE_PROJECT_LABEL, expected.project)?;
-        verify_optional_label(&inspection.labels, COMPOSE_SERVICE_LABEL, expected.service)?;
-        if let Some(running) = expected.running {
-            verify_value(
-                "running state",
-                &running.to_string(),
-                &inspection.running.to_string(),
-            )?;
-        }
-        Ok(())
+        verify_container(inspection, expected)
     }
 
     /// Verifies a Compose primary claim and rejects any second matching primary container.

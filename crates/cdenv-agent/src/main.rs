@@ -34,6 +34,18 @@ async fn main() -> ExitCode {
         )
         .await;
     }
+    #[cfg(target_os = "linux")]
+    if let [command, manifest] = arguments.as_slice()
+        && command == "post-attach"
+    {
+        return match post_attach(Path::new(manifest)) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("cdenv-agent: postAttachCommand failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if let [command, host, port, build_id, protocol] = arguments.as_slice()
         && command == "forwarding-bridge"
     {
@@ -128,7 +140,7 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
                     lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))
                 }),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL>"
                     .to_owned(),
             ),
         })
@@ -227,6 +239,11 @@ fn update_user(manifest: &Path) -> Result<String, String> {
 fn lifecycle_request(path: &Path) -> Result<cdenv_agent::LifecycleRunRequest, String> {
     let contents = read_manifest(path, "lifecycle")?;
     serde_json::from_slice(&contents).map_err(|_| "invalid lifecycle manifest".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn post_attach(path: &Path) -> Result<(), String> {
+    cdenv_agent::run_post_attach(&lifecycle_request(path)?).map_err(|error| error.to_string())
 }
 
 #[cfg(target_os = "linux")]

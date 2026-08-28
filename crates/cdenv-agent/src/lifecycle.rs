@@ -109,11 +109,13 @@ pub enum LifecycleStage {
     PostCreate,
     /// Actual-start hook.
     PostStart,
+    /// Per-transport attach hook.
+    PostAttach,
 }
 
 impl LifecycleStage {
     const fn is_one_time(self) -> bool {
-        !matches!(self, Self::PostStart)
+        !matches!(self, Self::PostStart | Self::PostAttach)
     }
 }
 
@@ -334,6 +336,7 @@ pub fn run_lifecycle(
                 &environment,
                 LifecycleStdin::Closed,
                 &paths,
+                false,
             );
             match result {
                 Ok(()) => {
@@ -397,16 +400,16 @@ pub fn execute_lifecycle_command(
     let paths = RunnerPaths::new(request)?;
     let environment = EnvironmentSnapshot::load(Path::new(&request.environment_path))
         .map_err(|source| LifecycleError::Environment { source })?;
-    execute_command(command, request, &environment, stdin, &paths).map_err(
-        |failure| match failure {
+    execute_command(command, request, &environment, stdin, &paths, false).map_err(|failure| {
+        match failure {
             ExecutionFailure::Cancelled => LifecycleError::Child {
                 source: std::io::Error::new(std::io::ErrorKind::Interrupted, "lifecycle cancelled"),
             },
             ExecutionFailure::Error(message) => LifecycleError::Child {
                 source: std::io::Error::other(message),
             },
-        },
-    )
+        }
+    })
 }
 
 /// Inspects and verifies existing runner state against an immutable request.
@@ -477,6 +480,52 @@ pub fn cancel_lifecycle(
     }
 }
 
+/// Runs the immutable `postAttachCommand` once for a newly established transport.
+///
+/// Invocations serialize on a generation-scoped container lock. Command output is written only
+/// to the restricted lifecycle log, and every command receives closed standard input so SSH
+/// protocol bytes remain untouched.
+///
+/// # Errors
+///
+/// Returns request, identity, environment, state, locking, child, or command failures.
+pub fn run_post_attach(request: &LifecycleRunRequest) -> Result<(), LifecycleError> {
+    validate_request(request)?;
+    if request.stages.len() != 1 || request.stages[0].stage != LifecycleStage::PostAttach {
+        return Err(LifecycleError::InvalidRequest {
+            field: "postAttach stage",
+        });
+    }
+    let paths = RunnerPaths::new_attach(request)?;
+    let lock_file = open_lock(&paths.lock)?;
+    let _lock = Flock::lock(lock_file, FlockArg::LockExclusive).map_err(|(_, source)| {
+        LifecycleError::StateIo {
+            source: source.into(),
+        }
+    })?;
+    let environment = EnvironmentSnapshot::load(Path::new(&request.environment_path))
+        .map_err(|source| LifecycleError::Environment { source })?;
+    for (command_index, command) in request.stages[0].commands.iter().enumerate() {
+        if execute_command(
+            command,
+            request,
+            &environment,
+            LifecycleStdin::Closed,
+            &paths,
+            true,
+        )
+        .is_err()
+        {
+            store_attach_state(&paths, request, false)?;
+            return Err(LifecycleError::CommandFailed {
+                stage: LifecycleStage::PostAttach,
+                command_index,
+            });
+        }
+    }
+    store_attach_state(&paths, request, true)
+}
+
 fn validate_request(request: &LifecycleRunRequest) -> Result<(), LifecycleError> {
     if request.build_id != BUILD_ID {
         return Err(LifecycleError::IdentityMismatch { field: "buildId" });
@@ -520,6 +569,7 @@ const fn stage_rank(stage: LifecycleStage) -> u8 {
         LifecycleStage::UpdateContent => 1,
         LifecycleStage::PostCreate => 2,
         LifecycleStage::PostStart => 3,
+        LifecycleStage::PostAttach => 4,
     }
 }
 
@@ -553,9 +603,16 @@ struct RunnerPaths {
 
 impl RunnerPaths {
     fn new(request: &LifecycleRunRequest) -> Result<Self, LifecycleError> {
+        Self::with_stem(request, &format!(".cdenv-lifecycle-{}", request.generation))
+    }
+
+    fn new_attach(request: &LifecycleRunRequest) -> Result<Self, LifecycleError> {
+        Self::with_stem(request, &format!(".cdenv-attach-{}", request.generation))
+    }
+
+    fn with_stem(request: &LifecycleRunRequest, stem: &str) -> Result<Self, LifecycleError> {
         let directory = PathBuf::from(&request.state_directory);
         prepare_directory(&directory)?;
-        let stem = format!(".cdenv-lifecycle-{}", request.generation);
         Ok(Self {
             state: directory.join(format!("{stem}.json")),
             lock: directory.join(format!("{stem}.lock")),
@@ -613,6 +670,26 @@ fn open_lock(path: &Path) -> Result<File, LifecycleError> {
     file.set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|source| LifecycleError::StateIo { source })?;
     Ok(file)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachState<'a> {
+    generation: &'a str,
+    successful: bool,
+}
+
+fn store_attach_state(
+    paths: &RunnerPaths,
+    request: &LifecycleRunRequest,
+    successful: bool,
+) -> Result<(), LifecycleError> {
+    let bytes = serde_json::to_vec(&AttachState {
+        generation: &request.generation,
+        successful,
+    })
+    .map_err(|_| LifecycleError::UnsafeState)?;
+    atomic_write_in(&paths.directory, &paths.state, &bytes)
 }
 
 fn load_or_create(
@@ -716,6 +793,7 @@ fn execute_command(
     environment: &EnvironmentSnapshot,
     stdin: LifecycleStdin,
     paths: &RunnerPaths,
+    stdout_to_stderr: bool,
 ) -> Result<(), ExecutionFailure> {
     let log = Arc::new(Mutex::new(
         open_log(&paths.log).map_err(|error| ExecutionFailure::Error(error.to_string()))?,
@@ -724,8 +802,15 @@ fn execute_command(
     let mut readers = Vec::new();
     match command {
         LifecycleCommand::Process { process } => {
-            let (child, mut spawned_readers) =
-                spawn_process(process, None, request, environment, stdin, Arc::clone(&log))?;
+            let (child, mut spawned_readers) = spawn_process(
+                process,
+                None,
+                request,
+                environment,
+                stdin,
+                Arc::clone(&log),
+                stdout_to_stderr,
+            )?;
             children.push(OwnedChild {
                 child,
                 status: None,
@@ -741,6 +826,7 @@ fn execute_command(
                     environment,
                     LifecycleStdin::Closed,
                     Arc::clone(&log),
+                    stdout_to_stderr,
                 ) {
                     Ok((child, mut spawned_readers)) => {
                         children.push(OwnedChild {
@@ -770,6 +856,7 @@ fn spawn_process(
     environment: &EnvironmentSnapshot,
     stdin: LifecycleStdin,
     log: Arc<Mutex<BoundedLog>>,
+    stdout_to_stderr: bool,
 ) -> Result<(Child, Vec<thread::JoinHandle<()>>), ExecutionFailure> {
     let mut command = match process {
         LifecycleProcess::Shell { command } => {
@@ -801,7 +888,12 @@ fn spawn_process(
         .map_err(|error| ExecutionFailure::Error(error.to_string()))?;
     let mut readers = Vec::new();
     if let Some(stdout) = child.stdout.take() {
-        readers.push(stream_reader(stdout, key.clone(), false, Arc::clone(&log)));
+        readers.push(stream_reader(
+            stdout,
+            key.clone(),
+            stdout_to_stderr,
+            Arc::clone(&log),
+        ));
     }
     if let Some(stderr) = child.stderr.take() {
         readers.push(stream_reader(stderr, key, true, log));

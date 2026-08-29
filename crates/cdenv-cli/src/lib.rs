@@ -25,6 +25,7 @@ mod down;
 mod error;
 mod feature_lock;
 mod feature_sources;
+mod forward_command;
 mod forwarding;
 mod forwarding_reconciliation;
 mod generated_image;
@@ -113,6 +114,10 @@ pub use feature_sources::{
     MAX_FEATURE_EXPANSION_RATIO, MAX_FEATURE_EXTRACTED_BYTES, MAX_FEATURE_FILES,
     MAX_FEATURE_METADATA_BYTES, MAX_FEATURE_PATH_BYTES, MAX_FEATURE_REDIRECTS, VerifiedFeature,
     extract_archive,
+};
+pub use forward_command::{
+    ForwardPreflightError, SystemForwardError, preflight_forward, run_system_forward,
+    system_forward_arguments,
 };
 pub use forwarding::{
     FORWARDING_SUPERVISOR_PROTOCOL, ForwardingSupervisorError, MAXIMUM_CONTROL_MESSAGE_BYTES,

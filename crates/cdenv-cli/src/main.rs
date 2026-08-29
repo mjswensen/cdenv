@@ -8,9 +8,9 @@ use std::process::ExitCode;
 use cdenv_cli::{
     ApplicationError, CancellationToken, CdenvRoot, CliCommand, CommandLine, Installation,
     ProcessEnvironment, ProcessSshConsentInteraction, apply_ssh_include_consent,
-    enumerate_workspaces, invoke, regenerate_managed_ssh, render_application_result,
-    render_reporting_application, resolve_current_executable, run_private_supervisor_manifest,
-    run_proxy_stdio, run_system_ssh,
+    enumerate_workspaces, invoke, preflight_forward, regenerate_managed_ssh,
+    render_application_result, render_reporting_application, resolve_current_executable,
+    run_private_supervisor_manifest, run_proxy_stdio, run_system_forward, run_system_ssh,
 };
 use clap::Parser;
 
@@ -58,6 +58,32 @@ fn main() -> ExitCode {
             }
         };
         return match run_system_ssh(&root, ssh_arguments) {
+            Ok(status) => ssh_exit_code(status),
+            Err(error) => {
+                eprintln!("cdenv: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if let CliCommand::Forward(forward_arguments) = command_line.command() {
+        let root = match CdenvRoot::resolve(command_line.root(), &ProcessEnvironment) {
+            Ok(root) => root,
+            Err(error) => {
+                eprintln!("cdenv: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        if let Err(error) = preflight_forward(&root, forward_arguments) {
+            eprintln!("cdenv: {error}");
+            return ExitCode::FAILURE;
+        }
+        if !forward_arguments.bind.is_loopback() {
+            eprintln!(
+                "cdenv: warning: forwarding is exposed on non-loopback address {}; connections may be reachable by other hosts",
+                forward_arguments.bind
+            );
+        }
+        return match run_system_forward(&root, forward_arguments) {
             Ok(status) => ssh_exit_code(status),
             Err(error) => {
                 eprintln!("cdenv: {error}");

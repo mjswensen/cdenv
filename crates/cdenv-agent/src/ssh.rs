@@ -18,6 +18,7 @@ use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId, ChannelMsg, MethodKind, Sig};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpStream;
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
 use tokio::sync::mpsc;
 
@@ -233,14 +234,7 @@ where
 enum ChannelState {
     Pending(PendingChannel),
     RunningProcess,
-    RunningPty {
-        resize: mpsc::Sender<PtyRequest>,
-    },
-    #[expect(
-        dead_code,
-        reason = "reserved runtime state for the following direct-tcpip implementation chunk"
-    )]
-    Forwarding,
+    RunningPty { resize: mpsc::Sender<PtyRequest> },
 }
 
 struct PendingChannel {
@@ -327,6 +321,38 @@ impl russh::server::Handler for SshHandler {
                 .await;
         } else {
             reply.accept().await;
+        }
+        Ok(())
+    }
+
+    async fn channel_open_direct_tcpip(
+        &mut self,
+        channel: Channel<Msg>,
+        host_to_connect: &str,
+        port_to_connect: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::server::ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let Ok(port) = u16::try_from(port_to_connect) else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        let Some(target) = direct_target(host_to_connect, port) else {
+            reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+            return Ok(());
+        };
+        match TcpStream::connect((target.as_str(), port)).await {
+            Ok(stream) => {
+                reply.accept().await;
+                tokio::spawn(async move {
+                    if let Err(error) = run_direct_tcpip_channel(channel, stream).await {
+                        eprintln!("cdenv-agent: SSH direct-tcpip channel failed: {error}");
+                    }
+                });
+            }
+            Err(_) => reply.reject(russh::ChannelOpenFailure::ConnectFailed).await,
         }
         Ok(())
     }
@@ -518,6 +544,55 @@ impl russh::server::Handler for SshHandler {
         }
         Ok(())
     }
+}
+
+fn direct_target(host: &str, port: u16) -> Option<String> {
+    (port != 0
+        && !host.is_empty()
+        && host.len() <= 253
+        && !host
+            .bytes()
+            .any(|byte| byte == 0 || byte.is_ascii_whitespace()))
+    .then(|| host.to_owned())
+}
+
+async fn run_direct_tcpip_channel(
+    channel: Channel<Msg>,
+    stream: TcpStream,
+) -> Result<(), SshServerError> {
+    let (mut channel_read, channel_write) = channel.split();
+    let (mut target_read, mut target_write) = stream.into_split();
+    let mut channel_output = channel_write.make_writer();
+    let mut output =
+        tokio::spawn(async move { tokio::io::copy(&mut target_read, &mut channel_output).await });
+    let mut input = tokio::spawn(async move {
+        while let Some(message) = channel_read.wait().await {
+            match message {
+                ChannelMsg::Data { data } => target_write.write_all(&data).await?,
+                ChannelMsg::Eof => {
+                    target_write.shutdown().await?;
+                    break;
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        std::io::Result::Ok(())
+    });
+    tokio::select! {
+        result = &mut input => {
+            result.map_err(std::io::Error::other)??;
+            output.await.map_err(std::io::Error::other)??;
+        }
+        result = &mut output => {
+            result.map_err(std::io::Error::other)??;
+            input.abort();
+            let _ = input.await;
+        }
+    }
+    channel_write.eof().await?;
+    channel_write.close().await?;
+    Ok(())
 }
 
 fn channel_states(
@@ -1352,6 +1427,61 @@ mod tests {
         assert_eq!(first.stdout, b"channel-one\0");
         assert_eq!(second.stdout, b"channel-two\xff");
         connection.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn direct_tcpip_forwards_binary_data_and_eof_over_concurrent_channels() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.expect("listener");
+        let port = listener.local_addr().expect("listener address").port();
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("connection");
+                tokio::spawn(async move {
+                    let mut bytes = Vec::new();
+                    stream.read_to_end(&mut bytes).await.expect("input EOF");
+                    stream.write_all(&bytes).await.expect("echo output");
+                });
+            }
+        });
+        let temporary = tempfile::tempdir().expect("temporary workspace");
+        let host = key(32);
+        let allowed = key(33);
+        let mut connection = connect(
+            test_config(temporary.path(), &host, &allowed),
+            host.public_key().clone(),
+        )
+        .await;
+        assert!(authenticate(&mut connection, SSH_USERNAME, &allowed).await);
+        let (first, second) = tokio::join!(
+            direct_tcpip(&connection, port, b"first\0channel"),
+            direct_tcpip(&connection, port, b"second\xffchannel"),
+        );
+        assert_eq!(first, b"first\0channel");
+        assert_eq!(second, b"second\xffchannel");
+        server.await.expect("server");
+        connection.disconnect().await;
+    }
+
+    async fn direct_tcpip(connection: &TestConnection, port: u16, input: &[u8]) -> Vec<u8> {
+        let mut channel = connection
+            .client
+            .channel_open_direct_tcpip("127.0.0.1", u32::from(port), "127.0.0.1", 1234)
+            .await
+            .expect("direct channel");
+        channel.data_bytes(input.to_vec()).await.expect("input");
+        channel.eof().await.expect("input EOF");
+        let mut output = Vec::new();
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        output
     }
 
     #[tokio::test]

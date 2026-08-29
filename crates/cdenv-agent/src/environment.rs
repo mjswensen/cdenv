@@ -114,6 +114,10 @@ impl EnvironmentSnapshot {
         self.entries.get(name).map(OsString::as_os_str)
     }
 
+    pub(crate) fn entries(&self) -> &BTreeMap<OsString, OsString> {
+        &self.entries
+    }
+
     #[cfg(test)]
     pub(crate) fn from_entries(entries: BTreeMap<OsString, OsString>) -> Self {
         Self { entries }

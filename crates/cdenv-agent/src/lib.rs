@@ -11,6 +11,8 @@ mod forwarding;
 #[cfg(target_os = "linux")]
 mod lifecycle;
 #[cfg(target_os = "linux")]
+mod pty_linux;
+#[cfg(target_os = "linux")]
 mod ssh;
 
 pub use environment::{

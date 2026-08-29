@@ -19,7 +19,9 @@ use russh::{Channel, ChannelId, ChannelMsg, MethodKind, Sig};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::process::{Child, ChildStderr, ChildStdin, ChildStdout};
+use tokio::sync::mpsc;
 
+use crate::pty_linux::{self, PtyRequest};
 use crate::{EnvironmentError, EnvironmentSnapshot};
 
 const SSH_USERNAME: &str = "cdenv";
@@ -231,6 +233,9 @@ where
 enum ChannelState {
     Pending(PendingChannel),
     RunningProcess,
+    RunningPty {
+        resize: mpsc::Sender<PtyRequest>,
+    },
     #[expect(
         dead_code,
         reason = "reserved runtime state for the following direct-tcpip implementation chunk"
@@ -241,6 +246,7 @@ enum ChannelState {
 struct PendingChannel {
     channel: Channel<Msg>,
     environment: BTreeMap<String, String>,
+    pty: Option<PtyRequest>,
 }
 
 impl std::fmt::Debug for PendingChannel {
@@ -249,6 +255,7 @@ impl std::fmt::Debug for PendingChannel {
             .debug_struct("PendingChannel")
             .field("channel", &self.channel.id())
             .field("environment", &self.environment.keys())
+            .field("pty", &self.pty)
             .finish()
     }
 }
@@ -310,6 +317,7 @@ impl russh::server::Handler for SshHandler {
                 ChannelState::Pending(PendingChannel {
                     channel,
                     environment: BTreeMap::new(),
+                    pty: None,
                 }),
             )
             .is_some()
@@ -363,15 +371,36 @@ impl russh::server::Handler for SshHandler {
     async fn pty_request(
         &mut self,
         channel: ChannelId,
-        _term: &str,
-        _col_width: u32,
-        _row_height: u32,
-        _pix_width: u32,
-        _pix_height: u32,
-        _modes: &[(russh::Pty, u32)],
+        term: &str,
+        col_width: u32,
+        row_height: u32,
+        pix_width: u32,
+        pix_height: u32,
+        modes: &[(russh::Pty, u32)],
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.channel_failure(channel)?;
+        let accepted = channel_states(&self.channels)
+            .get_mut(&channel)
+            .and_then(|state| match state {
+                ChannelState::Pending(pending) if pending.pty.is_none() => {
+                    pending.pty = Some(PtyRequest {
+                        term: term.to_owned(),
+                        columns: col_width,
+                        rows: row_height,
+                        pixels_width: pix_width,
+                        pixels_height: pix_height,
+                        modes: modes.to_vec(),
+                    });
+                    Some(())
+                }
+                _ => None,
+            })
+            .is_some();
+        if accepted {
+            session.channel_success(channel)?;
+        } else {
+            session.channel_failure(channel)?;
+        }
         Ok(())
     }
 
@@ -380,7 +409,35 @@ impl russh::server::Handler for SshHandler {
         channel: ChannelId,
         session: &mut Session,
     ) -> Result<(), Self::Error> {
-        session.channel_failure(channel)?;
+        let Some(ChannelState::Pending(pending)) = channel_states(&self.channels).remove(&channel)
+        else {
+            session.channel_failure(channel)?;
+            return Ok(());
+        };
+        let Some(pty) = pending.pty.clone() else {
+            channel_states(&self.channels).insert(channel, ChannelState::Pending(pending));
+            session.channel_failure(channel)?;
+            return Ok(());
+        };
+        match spawn_pty_process(
+            pending,
+            &pty,
+            None,
+            &self.environment,
+            &self.workspace,
+            &self.shell,
+            session.handle(),
+            Arc::clone(&self.channels),
+        ) {
+            Ok(resize) => {
+                channel_states(&self.channels).insert(channel, ChannelState::RunningPty { resize });
+                session.channel_success(channel)?;
+            }
+            Err(error) => {
+                session.channel_failure(channel)?;
+                eprintln!("cdenv-agent: cannot start SSH PTY shell: {error}");
+            }
+        }
         Ok(())
     }
 
@@ -395,22 +452,69 @@ impl russh::server::Handler for SshHandler {
             session.channel_failure(channel)?;
             return Ok(());
         };
-        channel_states(&self.channels).insert(channel, ChannelState::RunningProcess);
-        match spawn_exec_process(
-            pending,
-            command,
-            &self.environment,
-            &self.workspace,
-            &self.shell,
-            session.handle(),
-            Arc::clone(&self.channels),
-        ) {
-            Ok(()) => session.channel_success(channel)?,
-            Err(error) => {
-                channel_states(&self.channels).remove(&channel);
-                session.channel_failure(channel)?;
-                eprintln!("cdenv-agent: cannot start SSH exec channel: {error}");
+        if let Some(pty) = pending.pty.clone() {
+            match spawn_pty_process(
+                pending,
+                &pty,
+                Some(command),
+                &self.environment,
+                &self.workspace,
+                &self.shell,
+                session.handle(),
+                Arc::clone(&self.channels),
+            ) {
+                Ok(resize) => {
+                    channel_states(&self.channels)
+                        .insert(channel, ChannelState::RunningPty { resize });
+                    session.channel_success(channel)?;
+                }
+                Err(error) => {
+                    session.channel_failure(channel)?;
+                    eprintln!("cdenv-agent: cannot start SSH PTY exec channel: {error}");
+                }
             }
+        } else {
+            channel_states(&self.channels).insert(channel, ChannelState::RunningProcess);
+            match spawn_exec_process(
+                pending,
+                command,
+                &self.environment,
+                &self.workspace,
+                &self.shell,
+                session.handle(),
+                Arc::clone(&self.channels),
+            ) {
+                Ok(()) => session.channel_success(channel)?,
+                Err(error) => {
+                    channel_states(&self.channels).remove(&channel);
+                    session.channel_failure(channel)?;
+                    eprintln!("cdenv-agent: cannot start SSH exec channel: {error}");
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn window_change_request(
+        &mut self,
+        channel: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        pix_width: u32,
+        pix_height: u32,
+        _session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if let Some(ChannelState::RunningPty { resize }) =
+            channel_states(&self.channels).get(&channel)
+        {
+            let _ = resize.try_send(PtyRequest {
+                term: String::new(),
+                columns: col_width,
+                rows: row_height,
+                pixels_width: pix_width,
+                pixels_height: pix_height,
+                modes: Vec::new(),
+            });
         }
         Ok(())
     }
@@ -521,6 +625,101 @@ fn spawn_exec_process(
             eprintln!("cdenv-agent: SSH exec channel failed: {error}");
         }
     });
+    Ok(())
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "SSH channel launch dependencies are explicit"
+)]
+fn spawn_pty_process(
+    pending: PendingChannel,
+    request: &PtyRequest,
+    command: Option<&[u8]>,
+    environment: &EnvironmentSnapshot,
+    workspace: &Path,
+    shell: &OsStr,
+    handle: russh::server::Handle,
+    channels: Arc<Mutex<HashMap<ChannelId, ChannelState>>>,
+) -> Result<mpsc::Sender<PtyRequest>, SshServerError> {
+    let (arguments, login_argv0, original_command) = if let Some(command) = command {
+        let command = OsString::from_vec(command.to_vec());
+        (
+            vec![OsString::from("-c"), command.clone()],
+            None,
+            Some(command),
+        )
+    } else {
+        let name = Path::new(shell).file_name().unwrap_or(shell);
+        let mut login = OsString::from("-");
+        login.push(name);
+        (Vec::new(), Some(login), None)
+    };
+    let mut client_environment = pending.environment;
+    client_environment.insert("TERM".to_owned(), request.term.clone());
+    let process = pty_linux::spawn(
+        shell,
+        &arguments,
+        login_argv0,
+        environment.entries(),
+        &client_environment,
+        original_command.as_deref(),
+        workspace,
+        request,
+    )?;
+    let channel_id = pending.channel.id();
+    let (resize, resize_receive) = mpsc::channel(8);
+    tokio::spawn(async move {
+        let result = run_pty_channel(pending.channel, process, resize_receive, handle).await;
+        channel_states(&channels).remove(&channel_id);
+        if let Err(error) = result {
+            eprintln!("cdenv-agent: SSH PTY channel failed: {error}");
+        }
+    });
+    Ok(resize)
+}
+
+async fn run_pty_channel(
+    channel: Channel<Msg>,
+    mut process: pty_linux::PtyProcess,
+    mut resize: mpsc::Receiver<PtyRequest>,
+    handle: russh::server::Handle,
+) -> Result<(), SshServerError> {
+    let channel_id = channel.id();
+    let process_group = process
+        .child
+        .id()
+        .map(|id| Pid::from_raw(id.cast_signed()))
+        .ok_or_else(|| std::io::Error::other("spawned SSH PTY has no process id"))?;
+    let (mut channel_read, channel_write) = channel.split();
+    let (mut pty_read, mut pty_write) = process.pty.into_split();
+    let mut output = channel_write.make_writer();
+    let output_task =
+        tokio::spawn(async move { tokio::io::copy(&mut pty_read, &mut output).await });
+    let (disconnect_send, mut disconnect_receive) = tokio::sync::oneshot::channel();
+    let input_task = tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                message = channel_read.wait() => match message {
+                    Some(ChannelMsg::Data { data }) => if pty_write.write_all(&data).await.is_err() { break; },
+                    Some(ChannelMsg::Close) | None => { let _ = disconnect_send.send(()); break; },
+                    Some(ChannelMsg::Signal { signal }) => if let Some(signal) = client_signal(&signal) { let _ = killpg(process_group, signal); },
+                    _ => {}
+                },
+                Some(next) = resize.recv() => { let _ = pty_write.resize(pty_linux::size(&next)); },
+            }
+        }
+    });
+    let status = tokio::select! {
+        status = process.child.wait() => status?,
+        disconnected = &mut disconnect_receive => { if disconnected.is_ok() { terminate_process_group(process_group).await; } process.child.wait().await? }
+    };
+    input_task.abort();
+    let _ = input_task.await;
+    let _ = output_task.await;
+    report_exit(&handle, channel_id, &channel_write, status).await?;
+    channel_write.eof().await?;
+    channel_write.close().await?;
     Ok(())
 }
 
@@ -1054,6 +1253,63 @@ mod tests {
         channel.eof().await.expect("EOF");
         while !matches!(channel.wait().await, Some(ChannelMsg::Close) | None) {}
 
+        connection.disconnect().await;
+    }
+
+    #[tokio::test]
+    async fn pty_exec_exposes_tty_applies_modes_and_resizes() {
+        let temporary = tempfile::tempdir().expect("temporary workspace");
+        let host = key(30);
+        let allowed = key(31);
+        let mut connection = connect(
+            test_config(temporary.path(), &host, &allowed),
+            host.public_key().clone(),
+        )
+        .await;
+        assert!(authenticate(&mut connection, SSH_USERNAME, &allowed).await);
+        let mut channel = connection
+            .client
+            .channel_open_session()
+            .await
+            .expect("session channel");
+        channel
+            .request_pty(
+                true,
+                "xterm-256color",
+                80,
+                24,
+                0,
+                0,
+                &[(russh::Pty::ECHO, 0)],
+            )
+            .await
+            .expect("PTY request");
+        assert!(matches!(channel.wait().await, Some(ChannelMsg::Success)));
+        channel
+            .exec(
+                true,
+                b"printf '%s ' \"$SSH_TTY\"; sleep 0.05; stty size; stty -a | grep -o -- '-echo'"
+                    .to_vec(),
+            )
+            .await
+            .expect("exec request");
+        assert!(matches!(channel.wait().await, Some(ChannelMsg::Success)));
+        channel
+            .window_change(100, 40, 0, 0)
+            .await
+            .expect("window change");
+        let mut output = Vec::new();
+        while let Some(message) = channel.wait().await {
+            match message {
+                ChannelMsg::Data { data } => output.extend_from_slice(&data),
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        let output = String::from_utf8(output).expect("terminal output");
+        assert!(output.contains("/dev/pts/"));
+        assert!(output.contains("40 100"));
+        assert!(output.contains("-echo"));
         connection.disconnect().await;
     }
 

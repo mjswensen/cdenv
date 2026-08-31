@@ -4,7 +4,7 @@
 
 ## Workspace
 
-The Rust workspace contains platform-neutral core types, pure Dev Container profile logic, the host CLI, the Linux-targeted agent, `xtask`, and a non-published integration-test package. The disposable feasibility spike under `spikes/feasibility/` is intentionally excluded.
+The Rust workspace contains platform-neutral core types, pure Dev Container profile logic, the host CLI, the Linux-targeted agent, `xtask`, and a non-published integration-test package. The disposable feasibility spike under `spikes/feasibility/` is intentionally excluded. Installation, trust, recovery, forwarding, and macOS smoke-test guidance is in the [operations guide](docs/operations.md).
 
 ## Development
 
@@ -19,6 +19,12 @@ Then run the complete local gate:
 
 ```bash
 cargo xtask check
+```
+
+Build a locally verifiable release archive after Docker Buildx has produced both static Linux agents:
+
+```bash
+cargo xtask dist
 ```
 
 `cargo xtask check` runs the same baseline commands used by CI:

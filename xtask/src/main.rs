@@ -3,9 +3,12 @@
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use sha2::{Digest, Sha256};
 
 const QUALITY_COMMANDS: &[&[&str]] = &[
     &["fmt", "--check"],
@@ -67,13 +70,13 @@ fn main() -> ExitCode {
 
     match command.to_str() {
         Some("check") if arguments.next().is_none() => run_quality_gate(),
-        Some("build") if arguments.next().is_none() => build_distribution(),
+        Some("build" | "dist") if arguments.next().is_none() => build_distribution(),
         Some("test-integration") => run_integration(arguments),
         Some("help" | "--help" | "-h") if arguments.next().is_none() => {
             print_help();
             ExitCode::SUCCESS
         }
-        Some("build" | "check" | "help" | "--help" | "-h") => {
+        Some("build" | "dist" | "check" | "help" | "--help" | "-h") => {
             eprintln!("xtask: unexpected additional arguments");
             print_help();
             ExitCode::FAILURE
@@ -187,16 +190,67 @@ fn build_distribution() -> ExitCode {
         .env("CDENV_BUILD_ID", &build_id)
         .status()
     {
-        Ok(status) if status.success() => {
-            eprintln!("xtask: staged host and agents with build ID {build_id}");
-            ExitCode::SUCCESS
-        }
+        Ok(status) if status.success() => match package_distribution(&root, &build_id) {
+            Ok(archive) => {
+                eprintln!(
+                    "xtask: staged host and agents with build ID {build_id}; packaged {}",
+                    archive.display()
+                );
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("xtask: cannot package distribution: {error}");
+                ExitCode::FAILURE
+            }
+        },
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
         Err(error) => {
             eprintln!("xtask: failed to build host: {error}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn package_distribution(root: &Path, build_id: &str) -> std::io::Result<PathBuf> {
+    let host = root.join("target/release/cdenv");
+    let metadata = fs::metadata(&host)?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(std::io::Error::other(
+            "release host binary is missing or empty",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o111 == 0 {
+            return Err(std::io::Error::other(
+                "release host binary is not executable",
+            ));
+        }
+    }
+    let platform = format!("{}-{}", env::consts::OS, env::consts::ARCH);
+    let destination = root.join("target/dist");
+    fs::create_dir_all(&destination)?;
+    let archive = destination.join(format!("cdenv-{platform}-{build_id}.tar"));
+    let file = fs::File::create(&archive)?;
+    let mut tar = tar::Builder::new(file);
+    tar.append_path_with_name(&host, "cdenv")?;
+    tar.finish()?;
+    let bytes = fs::read(&archive)?;
+    let checksum = format!(
+        "{:x}  {}\n",
+        Sha256::digest(&bytes),
+        archive.file_name().unwrap_or_default().to_string_lossy()
+    );
+    let checksum_path = archive.with_extension("tar.sha256");
+    fs::File::create(&checksum_path)?.write_all(checksum.as_bytes())?;
+    let recorded = fs::read_to_string(&checksum_path)?;
+    if !recorded.starts_with(&format!("{:x}", Sha256::digest(fs::read(&archive)?))) {
+        return Err(std::io::Error::other(
+            "distribution checksum verification failed",
+        ));
+    }
+    Ok(archive)
 }
 
 fn validate_static_elf(bytes: &[u8], machine: u16) -> Result<(), ()> {
@@ -459,7 +513,7 @@ fn print_command(cargo: &OsStr, arguments: &[&str]) {
 
 fn print_help() {
     eprintln!(
-        "Usage:\n  cargo xtask check\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing dependencies never skip the suite."
+        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing dependencies never skip the suite."
     );
 }
 
@@ -478,5 +532,32 @@ mod tests {
             Ok(IntegrationSuite::Openssh)
         );
         assert!(IntegrationSuite::parse("unknown").is_err());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn distribution_archive_contains_only_the_executable_and_verified_checksum() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let release = temporary.path().join("target/release");
+        fs::create_dir_all(&release).expect("release directory");
+        let host = release.join("cdenv");
+        fs::write(&host, b"host-binary").expect("host binary");
+        fs::set_permissions(&host, fs::Permissions::from_mode(0o755)).expect("executable mode");
+
+        let archive = package_distribution(temporary.path(), "test-build").expect("package");
+        let mut entries = tar::Archive::new(fs::File::open(&archive).expect("archive"));
+        let names = entries
+            .entries()
+            .expect("entries")
+            .map(|entry| entry.expect("entry").path().expect("path").into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, [PathBuf::from("cdenv")]);
+        let checksum = fs::read_to_string(archive.with_extension("tar.sha256")).expect("checksum");
+        assert!(checksum.starts_with(&format!(
+            "{:x}",
+            Sha256::digest(fs::read(archive).expect("archive bytes"))
+        )));
     }
 }

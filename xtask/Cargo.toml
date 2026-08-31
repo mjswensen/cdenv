@@ -8,5 +8,12 @@ authors.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[dependencies]
+sha2.workspace = true
+tar.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [lints]
 workspace = true

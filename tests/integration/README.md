@@ -6,6 +6,12 @@ Run the editor-independent Dev Container profile gate with:
 cargo xtask test-integration --suite devcontainer-v1
 ```
 
+Run the standard OpenSSH interoperability gate with:
+
+```text
+cargo xtask test-integration --suite openssh
+```
+
 The command requires Linux x86_64 or arm64, Docker Engine/CLI, Compose V2, and
 OpenSSH. Missing dependencies, unknown suites, zero discovered tests, ignored
 tests, or a discrepancy between discovered and passed counts fail the gate.

@@ -45,6 +45,27 @@ jobs:
           CDENV_INTEGRATION: "1"
         run: cargo xtask test-integration --suite devcontainer-v1
 
+  openssh-release-gate:
+    name: OpenSSH interoperability (${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Select pinned Rust toolchain
+        run: rustup show active-toolchain
+      - name: Run standard OpenSSH interoperability gate
+        env:
+          CDENV_INTEGRATION: "1"
+        run: cargo xtask test-integration --suite openssh
+
   macos-agent-stub:
     name: Agent unsupported-host stub
     runs-on: macos-latest

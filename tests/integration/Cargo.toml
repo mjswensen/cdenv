@@ -15,21 +15,33 @@ devcontainer-v1 = ["integration"]
 openssh = ["integration"]
 
 [dependencies]
+cdenv-agent = { path = "../../crates/cdenv-agent" }
 cdenv-cli = { path = "../../crates/cdenv-cli" }
 cdenv-core = { path = "../../crates/cdenv-core" }
 cdenv-devcontainer = { path = "../../crates/cdenv-devcontainer" }
 serde_json.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
 
 [[bin]]
 name = "editor-server-simulator"
 path = "src/bin/editor-server-simulator.rs"
 required-features = ["devcontainer-v1"]
 
+[[bin]]
+name = "openssh-fixture-server"
+path = "src/bin/openssh-fixture-server.rs"
+required-features = ["openssh"]
+
 [[test]]
 name = "devcontainer_v1"
 path = "tests/devcontainer_v1.rs"
 required-features = ["devcontainer-v1"]
+
+[[test]]
+name = "openssh"
+path = "tests/openssh.rs"
+required-features = ["openssh"]
 
 [lints]
 workspace = true

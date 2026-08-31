@@ -338,11 +338,13 @@ dependencies = [
 name = "cdenv-integration-tests"
 version = "0.1.0"
 dependencies = [
+ "cdenv-agent",
  "cdenv-cli",
  "cdenv-core",
  "cdenv-devcontainer",
  "serde_json",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]

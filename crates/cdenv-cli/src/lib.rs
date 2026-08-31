@@ -22,6 +22,7 @@ mod config;
 mod create;
 mod docker;
 mod docker_cli;
+mod doctor;
 mod down;
 mod error;
 mod feature_lock;
@@ -107,6 +108,7 @@ pub use docker_cli::{
     DockerPullClaim, DockerResourceIdentity, DockerfileInput, GeneratedContextFile, ImageId,
     build_arguments, create_arguments, pull_arguments,
 };
+pub use doctor::{DoctorCheck, DoctorOutcome, DoctorReport, doctor_report, render_doctor_report};
 pub use down::{
     CONTAINER_STOP_GRACE, DownError, DownOutcome, DownRequest, DownWarning, EnvironmentStopOutcome,
     ForwardingStopOutcome, ForwardingSupervisorStop, InterruptedOperationRecovery,
@@ -259,7 +261,7 @@ where
 {
     if !matches!(
         command_line.command(),
-        CliCommand::List(_) | CliCommand::Status(_)
+        CliCommand::List(_) | CliCommand::Status(_) | CliCommand::Doctor(_)
     ) {
         return None;
     }
@@ -275,6 +277,10 @@ where
             ));
         }
     };
+    if matches!(command_line.command(), CliCommand::Doctor(_)) {
+        let report = doctor_report(&root);
+        return Some(render_doctor_report(format, &report, stdout, stderr));
+    }
     let (entries, docker) = match collect_live_workspace_reports(&root) {
         Ok(result) => result,
         Err(error) => {

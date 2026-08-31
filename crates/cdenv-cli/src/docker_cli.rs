@@ -128,6 +128,8 @@ pub struct DockerBuildRequest<'a> {
     pub context: &'a DockerBuildContext,
     /// Repository or generated Dockerfile.
     pub dockerfile: DockerfileInput<'a>,
+    /// Disable `BuildKit` cache reads for this build.
+    pub no_cache: bool,
 }
 
 /// Borrowed container-create operation input.
@@ -364,6 +366,7 @@ impl DockerCliAdapter {
             request.tag,
             &iid_file,
             request.identity,
+            request.no_cache,
         )?;
         let redactions = request
             .plan
@@ -515,12 +518,16 @@ pub fn build_arguments(
     tag: &str,
     iid_file: &Path,
     identity: DockerResourceIdentity<'_>,
+    no_cache: bool,
 ) -> Result<Vec<OsString>, DockerCliError> {
     validate_build_options_at_boundary(&plan.options)?;
     validate_docker_value("image tag", tag)?;
     let mut arguments = Vec::new();
     arguments.push(OsString::from("build"));
     arguments.extend(plan.options.iter().map(OsString::from));
+    if no_cache {
+        arguments.push(OsString::from("--no-cache"));
+    }
     arguments.push(OsString::from("--file"));
     arguments.push(dockerfile.as_os_str().to_owned());
     if let Some(target) = &plan.target {

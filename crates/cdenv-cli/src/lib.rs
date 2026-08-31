@@ -38,6 +38,7 @@ mod output;
 mod paths;
 mod process;
 mod proxy;
+mod rebuild;
 mod reconciliation;
 mod reporting;
 mod ssh_command;
@@ -172,6 +173,12 @@ pub use process::{
 };
 pub use proxy::{
     ProxyEngine, ProxyError, ProxyRuntimeError, ProxyTarget, run_proxy_stdio, run_proxy_transport,
+};
+pub use rebuild::{
+    CheckoutStatus, GENERATED_IMAGE_HISTORY, GeneratedImageCandidate, PreparedRebuildPlan,
+    RebuildCleanupRequest, RebuildEnvironment, RebuildError, RebuildInvariantError, RebuildOutcome,
+    RebuildPhase, RebuildPlanner, RebuildRequest, RebuildRollbackRequest, ReplacementFailure,
+    rebuild_workspace, select_generated_images_for_cleanup,
 };
 pub use reconciliation::{
     CategoryDrift, EnvironmentReconciler, EnvironmentReconciliationRequest, EnvironmentTransition,

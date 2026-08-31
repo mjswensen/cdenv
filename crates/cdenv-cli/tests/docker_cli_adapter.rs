@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 use cdenv_cli::{
     CancellationToken, DockerBuildContext, DockerBuildRequest, DockerCliAdapter,
     DockerCreateRequest, DockerEndpoint, DockerEnvironment, DockerResourceIdentity,
-    DockerSocketProbe, DockerfileInput, ProcessRunner,
+    DockerSocketProbe, DockerfileInput, ProcessRunner, build_arguments,
 };
 use cdenv_core::{GenerationId, InstallationId, ProfileId, WorkspaceName};
 use cdenv_devcontainer::{
@@ -342,6 +342,30 @@ async fn fake_cli_build_uses_buildkit_ordered_options_labels_tag_and_typed_iid_c
     let installation = InstallationId::parse("installation").expect("installation");
     let workspace = WorkspaceName::parse("workspace").expect("workspace");
     let profile_id = ProfileId::parse("cdenv-devcontainer-v1").expect("profile ID");
+    let dockerfile = checkout.join("Dockerfile");
+    let iid_file = fixture.temporary.path().join("claim.id");
+    let cached = build_arguments(
+        build,
+        &dockerfile,
+        &checkout,
+        "cdenv/workspace:g2",
+        &iid_file,
+        identity(&installation, &workspace, &profile_id),
+        false,
+    )
+    .expect("cached arguments");
+    let uncached = build_arguments(
+        build,
+        &dockerfile,
+        &checkout,
+        "cdenv/workspace:g2",
+        &iid_file,
+        identity(&installation, &workspace, &profile_id),
+        true,
+    )
+    .expect("uncached arguments");
+    assert!(!cached.contains(&OsString::from("--no-cache")));
+    assert_eq!(uncached.get(3), Some(&OsString::from("--no-cache")));
 
     let claim = adapter
         .build(
@@ -352,6 +376,7 @@ async fn fake_cli_build_uses_buildkit_ordered_options_labels_tag_and_typed_iid_c
                 identity: identity(&installation, &workspace, &profile_id),
                 context: &DockerBuildContext::Repository,
                 dockerfile: DockerfileInput::Repository,
+                no_cache: false,
             },
             &CancellationToken::default(),
         )

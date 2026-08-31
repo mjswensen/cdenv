@@ -87,6 +87,35 @@ impl GitAdapter {
         parse_version(&output.stdout)
     }
 
+    /// Runs `git status --porcelain` and returns only whether checkout changes exist.
+    ///
+    /// Porcelain bytes are deliberately discarded and never included in logs or errors, so dirty
+    /// tracked and untracked filenames cannot escape this boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns a spawn or non-zero-exit failure without command output.
+    pub fn checkout_has_changes(&self, checkout: &Path) -> Result<bool, GitError> {
+        let output = Command::new(&self.executable)
+            .args(["status", "--porcelain"])
+            .current_dir(checkout)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .output()
+            .map_err(|source| GitError::Spawn {
+                executable: self.executable.clone(),
+                operation: "checkout status",
+                source,
+            })?;
+        if !output.status.success() {
+            return Err(GitError::StatusExited {
+                code: output.status.code(),
+            });
+        }
+        Ok(!output.stdout.is_empty())
+    }
+
     pub(crate) fn clone_repository(
         &self,
         source: &str,
@@ -229,6 +258,12 @@ pub enum GitError {
         code: Option<i32>,
         /// Bounded output with the clone source redacted.
         stderr: String,
+    },
+    /// Checkout status failed without exposing porcelain or stderr bytes.
+    #[error("Git checkout status failed with exit code {code:?}")]
+    StatusExited {
+        /// Portable exit code, absent when signaled.
+        code: Option<i32>,
     },
     /// Cancellation terminated the Git process group.
     #[error("Git {operation} was cancelled")]

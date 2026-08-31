@@ -1,0 +1,11 @@
+services:
+  app:
+    image: debian:13-slim
+    command: ["sleep", "infinity"]
+    volumes:
+      - profile-data:/data
+  db:
+    image: debian:13-slim
+    command: ["sleep", "infinity"]
+volumes:
+  profile-data:

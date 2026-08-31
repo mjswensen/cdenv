@@ -1,0 +1,28 @@
+{
+  "profile": "cdenv-devcontainer-v1",
+  "matrix": [
+    {"row": "syntax-metadata-substitution", "tests": ["positive_fixture_profiles_parse_and_validate", "hostile_and_unsupported_profiles_fail_closed"]},
+    {"row": "image-dockerfile-compose-lifecycle", "tests": ["docker_and_compose_replacement_preserve_checkout_and_named_volume"]},
+    {"row": "features-locks", "tests": ["feature_security_contract_is_repository_owned"]},
+    {"row": "users-mounts-options-requirements", "tests": ["positive_fixture_profiles_parse_and_validate"]},
+    {"row": "lifecycle-recovery", "tests": ["positive_fixture_profiles_parse_and_validate"]},
+    {"row": "ports-forwarding", "tests": ["positive_fixture_profiles_parse_and_validate"]},
+    {"row": "category-drift", "tests": ["positive_fixture_profiles_parse_and_validate"]},
+    {"row": "compose-isolation-volumes-orphans", "tests": ["docker_and_compose_replacement_preserve_checkout_and_named_volume"]},
+    {"row": "fail-closed-profile", "tests": ["hostile_and_unsupported_profiles_fail_closed"]},
+    {"row": "checkout-immutability", "tests": ["pure_profile_gate_does_not_mutate_fixture_checkout"]}
+  ],
+  "security": [
+    "oci-bearer-token-on-blob",
+    "cross-origin-redirect-strips-credentials",
+    "exactly-one-feature-layer",
+    "descriptor-size-and-digest-verification",
+    "published-feature-resource-limits",
+    "cache-reuse-and-retention",
+    "frozen-offline-lock",
+    "dockerignore-context-semantics",
+    "malformed-jsonc-oci-archive-docker-compose-output",
+    "cancellation-duplicate-drift-secret-redaction"
+  ],
+  "ordinaryRegressionIssues": [53, 54, 55, 56, 57, 58, 59]
+}

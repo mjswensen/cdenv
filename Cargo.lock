@@ -337,6 +337,13 @@ dependencies = [
 [[package]]
 name = "cdenv-integration-tests"
 version = "0.1.0"
+dependencies = [
+ "cdenv-cli",
+ "cdenv-core",
+ "cdenv-devcontainer",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "cfg-if"

@@ -1,0 +1,8 @@
+{
+  "name": "failing-and-background-lifecycle",
+  "image": "debian:13-slim",
+  "onCreateCommand": {"prepare": ["/bin/sh", "-c", "printf ready"], "parallel": ["/bin/sh", "-c", "sleep 1"]},
+  "postCreateCommand": ["/bin/sh", "-c", "test -f /workspace/allow-success"],
+  "postStartCommand": ["/bin/sh", "-c", "sleep 3600"],
+  "waitFor": "onCreateCommand"
+}

@@ -1,0 +1,6 @@
+{
+  "name": "build-create-runtime-drift",
+  "build": {"dockerfile": "Dockerfile", "args": {"BUILD_VALUE": "one"}},
+  "runArgs": ["--hostname", "profile-drift"],
+  "containerEnv": {"RUNTIME_VALUE": "one"}
+}

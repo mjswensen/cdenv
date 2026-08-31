@@ -1,0 +1,23 @@
+# Integration release suites
+
+Run the editor-independent Dev Container profile gate with:
+
+```text
+cargo xtask test-integration --suite devcontainer-v1
+```
+
+The command requires Linux x86_64 or arm64, Docker Engine/CLI, Compose V2, and
+OpenSSH. Missing dependencies, unknown suites, zero discovered tests, ignored
+tests, or a discrepancy between discovered and passed counts fail the gate.
+The suite runs in release mode and does not require Node.js, an editor, or the
+reference Dev Container CLI.
+
+The gate runs the focused `cdenv-devcontainer` and `cdenv-cli` regression tests,
+then the black-box tests in `tests/devcontainer_v1.rs`. Base-image pulls are
+limited to the fixture-declared Debian and Alpine images. Feature network tests
+use controlled fixture servers in focused component tests; normal fixture
+parsing is offline.
+
+`fixtures/devcontainer-v1-coverage.json` maps every Section 17.5 support-matrix
+row and security promise to release-gate coverage. The editor-server simulator
+is a repository-owned protocol fixture rather than an editor dependency.

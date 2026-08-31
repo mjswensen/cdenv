@@ -1,0 +1,6 @@
+{
+  "name": "basic-debian",
+  "image": "debian:13-slim",
+  "workspaceFolder": "/workspaces/basic-debian",
+  "postCreateCommand": ["/bin/sh", "-c", "test -f /opt/cdenv/editor-server-simulator"]
+}

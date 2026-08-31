@@ -38,6 +38,17 @@ impl IntegrationSuite {
         }
     }
 
+    const fn feature(self) -> &'static str {
+        self.name()
+    }
+
+    const fn target(self) -> &'static str {
+        match self {
+            Self::DevcontainerV1 => "devcontainer_v1",
+            Self::Openssh => "openssh",
+        }
+    }
+
     fn parse(value: &str) -> Result<Self, String> {
         match value {
             "devcontainer-v1" => Ok(Self::DevcontainerV1),
@@ -231,6 +242,10 @@ fn run_quality_gate() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "the release gate keeps dependency, discovery, execution, and count checks ordered"
+)]
 fn run_integration(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
     let Some(flag) = arguments.next() else {
         eprintln!("xtask: test-integration requires --suite <devcontainer-v1|openssh>");
@@ -259,18 +274,35 @@ fn run_integration(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if env::var_os("CDENV_INTEGRATION").as_deref() == Some(OsStr::new("1"))
-        && !integration_dependencies_available()
-    {
+    if !integration_dependencies_available() || !integration_platform_supported() {
         return ExitCode::FAILURE;
+    }
+    if suite == IntegrationSuite::DevcontainerV1 {
+        let regressions = run_cargo(&[
+            "test",
+            "--release",
+            "--package",
+            "cdenv-devcontainer",
+            "--package",
+            "cdenv-cli",
+            "--lib",
+            "--locked",
+        ]);
+        if regressions != ExitCode::SUCCESS {
+            eprintln!("xtask: focused profile regression tests failed");
+            return regressions;
+        }
     }
 
     let arguments = [
         "test",
+        "--release",
         "--package",
         "cdenv-integration-tests",
         "--features",
-        "integration",
+        suite.feature(),
+        "--test",
+        suite.target(),
         "--locked",
         "--",
         "--list",
@@ -295,21 +327,53 @@ fn run_integration(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
         "xtask: integration suite `{}` discovered {discovered} tests",
         suite.name()
     );
-    let executed = run_cargo(&[
+    let execution_arguments = [
         "test",
+        "--release",
         "--package",
         "cdenv-integration-tests",
         "--features",
-        "integration",
+        suite.feature(),
+        "--test",
+        suite.target(),
         "--locked",
-    ]);
-    if executed == ExitCode::SUCCESS {
+    ];
+    let execution = match cargo_output(&execution_arguments) {
+        Ok(output) => output,
+        Err(error) => {
+            eprintln!("xtask: failed to start Cargo: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    print_output(&execution);
+    if !execution.status.success() {
+        return status_exit_code(&execution);
+    }
+    let passed = passed_tests(&execution);
+    if passed == 0 || passed != discovered {
         eprintln!(
-            "xtask: integration suite `{}` executed {discovered} tests",
+            "xtask: integration suite `{}` discovered {discovered} tests but passed {passed}; skipped or unexecuted tests fail the release gate",
             suite.name()
         );
+        return ExitCode::FAILURE;
     }
-    executed
+    eprintln!(
+        "xtask: integration suite `{}` executed {passed} tests",
+        suite.name()
+    );
+    ExitCode::SUCCESS
+}
+
+fn integration_platform_supported() -> bool {
+    let supported = cfg!(target_os = "linux") && matches!(env::consts::ARCH, "x86_64" | "aarch64");
+    if !supported {
+        eprintln!(
+            "xtask: complete integration suites require Linux x86_64 or arm64, found {} {}",
+            env::consts::OS,
+            env::consts::ARCH
+        );
+    }
+    supported
 }
 
 fn integration_dependencies_available() -> bool {
@@ -338,6 +402,15 @@ fn discovered_tests(output: &Output) -> usize {
         .count()
 }
 
+fn passed_tests(output: &Output) -> usize {
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| line.starts_with("test result: ok."))
+        .filter_map(|line| line.split_whitespace().nth(3))
+        .filter_map(|value| value.parse::<usize>().ok())
+        .sum()
+}
+
 fn run_cargo(arguments: &[&str]) -> ExitCode {
     match cargo_output(arguments) {
         Ok(output) if output.status.success() => {
@@ -360,6 +433,10 @@ fn cargo_output(arguments: &[&str]) -> std::io::Result<Output> {
 
 fn report_cargo_failure(output: &Output) -> ExitCode {
     print_output(output);
+    status_exit_code(output)
+}
+
+fn status_exit_code(output: &Output) -> ExitCode {
     output
         .status
         .code()
@@ -382,7 +459,7 @@ fn print_command(cargo: &OsStr, arguments: &[&str]) {
 
 fn print_help() {
     eprintln!(
-        "Usage:\n  cargo xtask check\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites require at least one discovered and executed test. Until a suite is implemented, the command fails as unavailable. Set CDENV_INTEGRATION=1 for declared CI runs; Docker Engine/CLI, Compose V2, and OpenSSH are then required."
+        "Usage:\n  cargo xtask check\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing dependencies never skip the suite."
     );
 }
 

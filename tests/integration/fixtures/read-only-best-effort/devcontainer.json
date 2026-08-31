@@ -1,0 +1,6 @@
+{
+  "name": "read-only-best-effort",
+  "image": "debian:13-slim",
+  "hostRequirements": {"cpus": 1, "memory": "512mb", "storage": "1gb"},
+  "mounts": ["type=bind,source=${localWorkspaceFolder},target=/workspace,readonly"]
+}

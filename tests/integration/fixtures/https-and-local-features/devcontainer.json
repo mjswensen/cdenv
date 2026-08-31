@@ -1,0 +1,9 @@
+{
+  "name": "https-and-local-features",
+  "image": "debian:13-slim",
+  "features": {
+    "./.devcontainer/features/local": {"message": "profile-gate"},
+    "https://127.0.0.1.invalid/controlled-feature.tgz": {}
+  },
+  "overrideFeatureInstallOrder": ["./.devcontainer/features/local"]
+}

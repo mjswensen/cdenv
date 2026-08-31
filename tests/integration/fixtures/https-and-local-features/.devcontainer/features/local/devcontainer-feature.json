@@ -1,0 +1,7 @@
+{
+  "id": "local",
+  "version": "1.0.0",
+  "options": {
+    "message": {"type": "string", "default": "profile-gate"}
+  }
+}

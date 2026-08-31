@@ -1,0 +1,5 @@
+{
+  "name": "lockfile-stale",
+  "image": "debian:13-slim",
+  "features": {"./feature": {"enabled": true}}
+}

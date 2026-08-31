@@ -1,0 +1,8 @@
+{
+  "name": "compose-primary-and-service",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "runServices": ["app", "db"],
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [8080]
+}

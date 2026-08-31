@@ -1,0 +1,7 @@
+{
+  "name": "image-metadata-merge",
+  "image": "debian:13-slim",
+  "remoteUser": "vscode",
+  "containerEnv": {"PROFILE": "desired"},
+  "mounts": ["type=volume,source=metadata-cache,target=/cache"]
+}

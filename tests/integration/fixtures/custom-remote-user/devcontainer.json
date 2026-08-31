@@ -1,0 +1,9 @@
+{
+  "name": "custom-remote-user",
+  "image": "debian:13-slim",
+  "remoteUser": "dev",
+  "containerUser": "dev",
+  "updateRemoteUserUID": true,
+  "containerEnv": {"CONTAINER_ONLY": "yes"},
+  "remoteEnv": {"REMOTE_ONLY": "yes"}
+}

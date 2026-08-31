@@ -17,6 +17,7 @@ mod bollard;
 mod command_line;
 mod compose;
 mod compose_lifecycle;
+mod compose_rebuild;
 mod config;
 mod create;
 mod docker;
@@ -80,6 +81,13 @@ pub use compose_lifecycle::{
     ComposeLifecycleError, ComposeLifecycleFacts, ComposeLifecycleOrchestrator,
     ComposeServiceSetState, ComposeStopOutcome, CreateComposeRequest, RecordedComposeRequest,
     classify_compose_service_set,
+};
+pub use compose_rebuild::{
+    ComposeCleanupKind, ComposeCleanupWarning, ComposePartialEvidence, ComposePartialService,
+    ComposePartialState, ComposeRebuildError, ComposeRebuildInvariantError,
+    ComposeRebuildOrchestrator, ComposeRebuildOutcome, ComposeRebuildPhase, ComposeRebuildRecovery,
+    ComposeRebuildRequest, ComposeRebuildRuntime, ComposeServiceHealth, ObservedComposeService,
+    classify_compose_partial_state,
 };
 pub use config::{ConfigLoadError, ConfigSource, discover_and_read_config};
 pub use create::{

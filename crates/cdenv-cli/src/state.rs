@@ -813,6 +813,8 @@ pub struct WorkspaceState {
     last_up_at: Option<StateTimestamp>,
     operation: OperationState,
     last_error: Option<SanitizedSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    interrupted_compose_rebuild: Option<crate::compose_rebuild::ComposeRebuildRecovery>,
     active: Option<ActiveGeneration>,
 }
 
@@ -840,6 +842,7 @@ impl WorkspaceState {
             last_up_at: None,
             operation: OperationState::idle(),
             last_error: None,
+            interrupted_compose_rebuild: None,
             active: None,
         }
     }
@@ -898,6 +901,22 @@ impl WorkspaceState {
         &self.name
     }
 
+    /// Returns durable evidence from an interrupted non-atomic Compose rebuild.
+    #[must_use]
+    pub const fn interrupted_compose_rebuild(
+        &self,
+    ) -> Option<&crate::compose_rebuild::ComposeRebuildRecovery> {
+        self.interrupted_compose_rebuild.as_ref()
+    }
+
+    /// Records or clears precise interrupted Compose replacement evidence.
+    pub fn set_interrupted_compose_rebuild(
+        &mut self,
+        recovery: Option<crate::compose_rebuild::ComposeRebuildRecovery>,
+    ) {
+        self.interrupted_compose_rebuild = recovery;
+    }
+
     /// Returns the last completely provisioned generation, if any.
     #[must_use]
     pub const fn active(&self) -> Option<&ActiveGeneration> {
@@ -937,6 +956,7 @@ impl WorkspaceState {
         self.last_up_at = Some(completed_at);
         self.operation = OperationState::idle();
         self.last_error = None;
+        self.interrupted_compose_rebuild = None;
     }
 }
 
@@ -1196,6 +1216,7 @@ impl WorkspaceStateV0 {
             last_up_at: None,
             operation: self.operation,
             last_error: self.last_error,
+            interrupted_compose_rebuild: None,
             active: self.active,
         }
     }

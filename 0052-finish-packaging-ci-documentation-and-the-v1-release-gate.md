@@ -9,6 +9,7 @@ _Originally converted from [`implementation-chunks/52-packaging-ci-docs-and-rele
 
 **Parent phase:** [Implementation plan §17.7 and Chunk 18](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-18-doctor-packaging-ci-and-release)
 **Depends on:** 49, 50, and 51
+**Blocks:** 66
 
 ## Goal
 
@@ -16,13 +17,15 @@ Produce verifiable host release archives for every supported host platform.
 
 ## Work
 
-- Extend `cargo xtask dist` to build macOS arm64/x86_64 and Linux arm64/x86_64 host artifacts, each embedding both verified Linux musl agents with one shared build ID.
-- Verify archive contents, host executable formats/architectures, embedded artifact IDs/protocols, version output, checksums, and the absence of empty or unexpected files.
-- Add a clean-install package smoke test proving an extracted host binary validates both embedded agents without Node.js, an editor, `sshd`, or port 22.
+- Make `cargo xtask dist` produce one reproducible archive for its host target, and add a release matrix that builds macOS arm64/x86_64 and Linux arm64/x86_64 archives. Every host must embed both verified Linux musl agents with one shared build ID.
+- Verify exact archive contents, adjacent checksums, host executable format/architecture, embedded agent ELF architecture/static linkage, artifact IDs/protocols, version output, and the absence of empty or unexpected files.
+- Add a package-only smoke test that extracts each archive and exercises the host binary's version and embedded-artifact validation paths for both agent architectures.
+
+The package smoke test ends at binary/artifact validation. Issue 66 owns installed operational workflows, Docker/OpenSSH smoke coverage, and the assertions that no `sshd` or published port 22 is used.
 
 ## Acceptance criteria
 
-- `cargo xtask dist` produces four checksum-verified host archives from a clean locked checkout.
-- Each archive contains exactly the expected host binary and release metadata for its platform.
+- The release matrix runs `cargo xtask dist` from clean locked checkouts and produces all four checksum-verified host archives.
+- Each archive contains exactly one executable for its declared host platform; deterministic release/checksum metadata is emitted alongside it.
 - Each extracted host binary reports its version and validates both embedded Linux agent artifacts with the shared build ID and protocol.
-- Package-content and clean-install tests fail on missing, empty, unexpected, wrong-architecture, dynamically linked, or checksum-mismatched artifacts.
+- Package tests fail on missing, empty, unexpected, wrong-format, wrong-architecture, or checksum-mismatched host artifacts, and on dynamically linked or otherwise invalid Linux agent artifacts.

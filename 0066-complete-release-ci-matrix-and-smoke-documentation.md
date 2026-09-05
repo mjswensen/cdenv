@@ -1,12 +1,14 @@
 ---
 id: 66
 created: 2026-09-01
+depends-on:
+  - 52
 ---
 
 # Complete release CI matrix and smoke documentation
 
 **Split from:** 52
-**Depends on:** 52
+
 **Blocks:** 64 and 65
 
 ## Goal

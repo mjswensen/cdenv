@@ -1,15 +1,17 @@
 ---
 id: 26
 created: 2026-08-20
+depends-on:
+  - 19
+  - 21
 ---
 
 # Implement secure Feature sources, cache, and extraction
 
 _Converted from [`implementation-chunks/26-feature-sources-cache-and-extraction.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.5 and Chunk 6](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-6-features-cache-lockfile-and-generated-images)
-**Depends on:** 19, 21, and the HTTP/OCI decisions in 04
+**Legacy dependencies (untracked):** 4
 
 ## Goal
 

@@ -1,12 +1,13 @@
 ---
 id: 64
 created: 2026-09-01
+depends-on:
+  - 66
 ---
 
 # Add coverage reporting to release CI
 
 **Split from:** 52
-**Depends on:** 66
 
 ## Goal
 

@@ -1,15 +1,15 @@
 ---
 id: 17
 created: 2026-08-20
+depends-on:
+  - 16
 ---
 
 # Plan users, mounts, environment, and host requirements
 
 _Converted from [`implementation-chunks/17-users-mounts-environment-and-host-requirements.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.2, §11.4, and §11.7](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#114-docker-and-build-options)
-**Depends on:** 16
 
 ## Goal
 

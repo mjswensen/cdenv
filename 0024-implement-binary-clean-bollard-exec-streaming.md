@@ -1,15 +1,15 @@
 ---
 id: 24
 created: 2026-08-20
+depends-on:
+  - 23
 ---
 
 # Implement binary-clean Bollard Exec streaming
 
 _Converted from [`implementation-chunks/24-bollard-exec-streaming.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.11, §12, and Chunk 5](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#1011-proxy)
-**Depends on:** 23
 
 ## Goal
 

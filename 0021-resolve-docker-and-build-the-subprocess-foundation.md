@@ -1,15 +1,15 @@
 ---
 id: 21
 created: 2026-08-20
+depends-on: []
 ---
 
 # Resolve Docker and build the subprocess foundation
 
 _Converted from [`implementation-chunks/21-docker-endpoint-and-process-runner.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §4 and §12](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#12-docker-cli-compose-and-bollard-adapters)
-**Depends on:** 04, 09, and 10
+**Legacy dependencies (untracked):** 4, 9, 10
 
 ## Goal
 

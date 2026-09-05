@@ -1,12 +1,17 @@
 ---
 id: 56
 created: 2026-08-21
+depends-on:
+  - 53
+  - 54
+  - 55
+  - 60
 ---
 
 # Complete Feature source cache retention and security tests
 
 **Parent phase:** Implementation plan §11.5, §17.2, and Chunk 6
-**Depends on:** 53, 54, 55, and 60
+
 **Blocks:** 28 and 57
 
 ## Goal

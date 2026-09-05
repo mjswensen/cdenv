@@ -1,15 +1,17 @@
 ---
 id: 48
 created: 2026-08-20
+depends-on:
+  - 30
+  - 41
+  - 47
 ---
 
 # Implement Compose rebuild and partial-state recovery
 
 _Converted from [`implementation-chunks/48-compose-rebuild-and-partial-recovery.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.6, §11.10, and Chunk 16](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-16-rebuild-rollback-and-cleanup)
-**Depends on:** 30, 41, and 47
 
 ## Goal
 

@@ -1,15 +1,20 @@
 ---
 id: 50
 created: 2026-08-20
+depends-on:
+  - 41
+  - 44
+  - 45
+  - 46
+  - 59
+  - 48
 ---
 
 # Build the OpenSSH interoperability release gate
 
 _Converted from [`implementation-chunks/50-openssh-release-gate.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §17.3, §17.6, and Chunk 17](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#176-automated-openssh-release-gate)
-**Depends on:** 41, 44, 45, 46, 59, and rebuild flows through 48
 
 ## Goal
 

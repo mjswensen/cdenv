@@ -1,15 +1,18 @@
 ---
 id: 40
 created: 2026-08-20
+depends-on:
+  - 24
+  - 31
+  - 32
+  - 37
 ---
 
 # Implement the agent bridge and scoped forwarding supervisor
 
 _Converted from [`implementation-chunks/40-agent-bridge-and-forwarding-supervisor.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.9 and Chunk 10](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#119-declared-ports-and-forwarding-supervisor)
-**Depends on:** 24, 31, 32, and 37
 
 ## Goal
 

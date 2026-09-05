@@ -1,15 +1,18 @@
 ---
 id: 46
 created: 2026-08-20
+depends-on:
+  - 41
+  - 42
+  - 44
+  - 45
 ---
 
 # Implement `direct-tcpip` and foreground `cdenv forward`
 
 _Converted from [`implementation-chunks/46-direct-tcpip-and-ad-hoc-forward.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.9, §15.8, and Chunk 15](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-15-direct-forwarding-and-ad-hoc-cdenv-forward)
-**Depends on:** 41, 42, 44, and 45
 
 ## Goal
 

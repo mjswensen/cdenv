@@ -1,15 +1,17 @@
 ---
 id: 42
 created: 2026-08-20
+depends-on:
+  - 32
+  - 36
 ---
 
 # Implement SSH identities, generated config, and `cdenv ssh`
 
 _Converted from [`implementation-chunks/42-ssh-identity-config-and-wrapper.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §14 and Chunk 11](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#14-ssh-identity-and-configuration)
-**Depends on:** 10, 13, 32, and 36
+**Legacy dependencies (untracked):** 10, 13
 
 ## Goal
 

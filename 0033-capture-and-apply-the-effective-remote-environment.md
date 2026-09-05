@@ -1,15 +1,17 @@
 ---
 id: 33
 created: 2026-08-20
+depends-on:
+  - 16
+  - 17
+  - 32
 ---
 
 # Capture and apply the effective remote environment
 
 _Converted from [`implementation-chunks/33-effective-remote-environment.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.7 and Chunk 8](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#117-effective-remote-environment)
-**Depends on:** 16, 17, and 32
 
 ## Goal
 

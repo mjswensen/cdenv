@@ -1,15 +1,22 @@
 ---
 id: 49
 created: 2026-08-20
+depends-on:
+  - 48
+  - 53
+  - 54
+  - 55
+  - 56
+  - 57
+  - 58
+  - 59
 ---
 
 # Build the Dev Container profile release gate
 
 _Converted from [`implementation-chunks/49-devcontainer-profile-release-gate.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §17.4–17.5 and Chunk 17](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#175-automated-dev-container-profile-release-gate)
-**Depends on:** production flows through 48, and 53, 54, 55, 56, 57, 58, and 59
 
 ## Goal
 

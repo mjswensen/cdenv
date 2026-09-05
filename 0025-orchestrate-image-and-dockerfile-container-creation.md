@@ -1,15 +1,18 @@
 ---
 id: 25
 created: 2026-08-20
+depends-on:
+  - 20
+  - 22
+  - 23
+  - 24
 ---
 
 # Orchestrate image and Dockerfile container creation
 
 _Converted from [`implementation-chunks/25-image-scenario-orchestration.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.11, §12, and Chunk 5](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#1111-stable-identity-and-discovery)
-**Depends on:** 20, 22, 23, and 24
 
 ## Goal
 

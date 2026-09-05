@@ -1,15 +1,19 @@
 ---
 id: 44
 created: 2026-08-20
+depends-on:
+  - 24
+  - 34
+  - 38
+  - 43
 ---
 
 # Implement the host proxy and per-transport attach hook
 
 _Converted from [`implementation-chunks/44-host-proxy-and-post-attach.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.11, §11.6, and Chunk 13](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-13-host-proxy-and-attach-lifecycle-through-bollard)
-**Depends on:** 12, 24, 34, 38, and 43
+**Legacy dependencies (untracked):** 12
 
 ## Goal
 

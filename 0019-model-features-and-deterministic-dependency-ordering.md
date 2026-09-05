@@ -1,15 +1,15 @@
 ---
 id: 19
 created: 2026-08-20
+depends-on: []
 ---
 
 # Model Features and deterministic dependency ordering
 
 _Converted from [`implementation-chunks/19-feature-model-and-ordering.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.5 and Chunk 6](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#115-features-and-lockfiles)
-**Depends on:** 15
+**Legacy dependencies (untracked):** 15
 
 ## Goal
 

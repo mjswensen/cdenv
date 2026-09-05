@@ -1,15 +1,17 @@
 ---
 id: 34
 created: 2026-08-20
+depends-on:
+  - 20
+  - 32
+  - 33
 ---
 
 # Implement lifecycle execution, checkpoints, and the background runner
 
 _Converted from [`implementation-chunks/34-agent-lifecycle-runner.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.6 and Chunk 8](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#116-lifecycle-execution-and-recovery)
-**Depends on:** 20, 32, and 33
 
 ## Goal
 

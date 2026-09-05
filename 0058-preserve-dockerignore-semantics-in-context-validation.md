@@ -1,12 +1,14 @@
 ---
 id: 58
 created: 2026-08-21
+depends-on:
+  - 22
 ---
 
 # Preserve Dockerignore semantics in context validation
 
 **Parent phase:** Implementation plan §11.4, §12, and Chunk 5
-**Depends on:** 22
+
 **Blocks:** 28
 
 ## Goal

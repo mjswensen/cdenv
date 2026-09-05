@@ -1,15 +1,18 @@
 ---
 id: 29
 created: 2026-08-20
+depends-on:
+  - 20
+  - 21
+  - 23
+  - 28
 ---
 
 # Implement Compose project planning and the V2 adapter
 
 _Converted from [`implementation-chunks/29-compose-planning-and-adapter.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.10, §12, and Chunk 7](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#1110-compose-v2-behavior)
-**Depends on:** 20, 21, 23, and 28
 
 ## Goal
 

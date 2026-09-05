@@ -1,15 +1,18 @@
 ---
 id: 37
 created: 2026-08-20
+depends-on:
+  - 30
+  - 34
+  - 36
 ---
 
 # Implement `down` and interrupted-operation recovery
 
 _Converted from [`implementation-chunks/37-down-and-operation-recovery.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.5, §9.5, and Chunk 9](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#105-down)
-**Depends on:** 12, 30, 34, and 36
+**Legacy dependencies (untracked):** 12
 
 ## Goal
 

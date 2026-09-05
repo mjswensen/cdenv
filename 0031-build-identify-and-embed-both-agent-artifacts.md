@@ -1,15 +1,15 @@
 ---
 id: 31
 created: 2026-08-20
+depends-on: []
 ---
 
 # Build, identify, and embed both agent artifacts
 
 _Converted from [`implementation-chunks/31-agent-build-identity-and-embedding.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §13.1–13.2 and Chunk 8](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#131-build-pipeline)
-**Depends on:** 05 and cross-build decisions from 04
+**Legacy dependencies (untracked):** 5, 4
 
 ## Goal
 

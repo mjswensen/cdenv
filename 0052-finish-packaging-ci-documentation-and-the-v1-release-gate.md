@@ -1,6 +1,10 @@
 ---
 id: 52
 created: 2026-08-20
+depends-on:
+  - 49
+  - 50
+  - 51
 ---
 
 # Finish cross-platform release packaging
@@ -8,7 +12,7 @@ created: 2026-08-20
 _Originally converted from [`implementation-chunks/52-packaging-ci-docs-and-release.md`] on 2026-08-20. Coverage, mutation testing, and CI/documentation work are tracked separately in 64, 65, and 66._
 
 **Parent phase:** [Implementation plan §17.7 and Chunk 18](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-18-doctor-packaging-ci-and-release)
-**Depends on:** 49, 50, and 51
+
 **Blocks:** 66
 
 ## Goal

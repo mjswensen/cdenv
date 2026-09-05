@@ -1,15 +1,17 @@
 ---
 id: 22
 created: 2026-08-20
+depends-on:
+  - 18
+  - 20
+  - 21
 ---
 
 # Implement the specification-facing Docker CLI adapter
 
 _Converted from [`implementation-chunks/22-docker-cli-adapter.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.4, §12, and Chunk 5](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-5-docker-cli-and-bollard-image-scenario-adapters)
-**Depends on:** 18, 20, and 21
 
 ## Goal
 

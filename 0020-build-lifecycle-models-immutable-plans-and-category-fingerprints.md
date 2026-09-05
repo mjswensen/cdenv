@@ -1,15 +1,18 @@
 ---
 id: 20
 created: 2026-08-20
+depends-on:
+  - 16
+  - 17
+  - 18
+  - 19
 ---
 
 # Build lifecycle models, immutable plans, and category fingerprints
 
 _Converted from [`implementation-chunks/20-lifecycle-model-and-immutable-plans.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.6, §11.8, and Chunk 4](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#116-lifecycle-execution-and-recovery)
-**Depends on:** 16, 17, 18, and 19
 
 ## Goal
 

@@ -1,15 +1,26 @@
 ---
 id: 28
 created: 2026-08-20
+depends-on:
+  - 22
+  - 25
+  - 26
+  - 27
+  - 31
+  - 53
+  - 54
+  - 55
+  - 56
+  - 57
+  - 58
+  - 60
 ---
 
 # Build generated Feature, metadata, and UID/GID images
 
 _Converted from [`implementation-chunks/28-generated-feature-and-uid-images.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.4–11.5 and Chunk 6](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-6-features-cache-lockfile-and-generated-images)
-**Depends on:** 22, 25, 26, 27, 31, 53, 54, 55, 56, 57, 58, and 60
 
 ## Goal
 

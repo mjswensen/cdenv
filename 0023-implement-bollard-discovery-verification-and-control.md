@@ -1,15 +1,16 @@
 ---
 id: 23
 created: 2026-08-20
+depends-on:
+  - 21
 ---
 
 # Implement Bollard discovery, verification, and control
 
 _Converted from [`implementation-chunks/23-bollard-discovery-and-control.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §12 and Chunk 5](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#12-docker-cli-compose-and-bollard-adapters)
-**Depends on:** 06, 21, and the exact Bollard decision in 04
+**Legacy dependencies (untracked):** 6, 4
 
 ## Goal
 

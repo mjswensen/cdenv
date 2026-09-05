@@ -1,12 +1,15 @@
 ---
 id: 57
 created: 2026-08-21
+depends-on:
+  - 27
+  - 56
 ---
 
 # Complete frozen Feature lock policy and mutation tests
 
 **Parent phase:** Implementation plan §10.10, §11.5, and §17.1–17.2
-**Depends on:** 27 and 56
+
 **Blocks:** 28
 
 ## Goal

@@ -1,15 +1,17 @@
 ---
 id: 27
 created: 2026-08-20
+depends-on:
+  - 19
+  - 26
 ---
 
 # Implement frozen Feature locks and `cdenv lock`
 
 _Converted from [`implementation-chunks/27-feature-lockfile-and-lock-command.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.10 and §11.5](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#1010-lock)
-**Depends on:** 12, 14, 19, and 26
+**Legacy dependencies (untracked):** 12, 14
 
 ## Goal
 

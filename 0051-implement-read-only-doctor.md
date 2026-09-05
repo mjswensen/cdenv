@@ -1,15 +1,20 @@
 ---
 id: 51
 created: 2026-08-20
+depends-on:
+  - 38
+  - 41
+  - 42
+  - 48
+  - 49
+  - 50
 ---
 
 # Implement read-only `doctor`
 
 _Converted from [`implementation-chunks/51-read-only-doctor.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.12 and Chunk 18](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#1012-doctor)
-**Depends on:** 38, 41, 42, 48, 49, and 50
 
 ## Goal
 

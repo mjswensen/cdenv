@@ -1,15 +1,20 @@
 ---
 id: 36
 created: 2026-08-20
+depends-on:
+  - 20
+  - 25
+  - 27
+  - 30
+  - 35
 ---
 
 # Implement shared `create`/`up` reconciliation
 
 _Converted from [`implementation-chunks/36-create-and-up-reconciliation.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.1, §10.4, §11.8, and Chunk 9](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#104-up)
-**Depends on:** 13, 20, 25, 27, 30, and 35
+**Legacy dependencies (untracked):** 13
 
 ## Goal
 

@@ -1,12 +1,14 @@
 ---
 id: 55
 created: 2026-08-21
+depends-on:
+  - 26
 ---
 
 # Align Feature source resource limits with the V1 contract
 
 **Parent phase:** Implementation plan §11.5 and the `cdenv-devcontainer-v1` support matrix
-**Depends on:** 26
+
 **Blocks:** 28 and 56
 
 ## Goal

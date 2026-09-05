@@ -1,15 +1,18 @@
 ---
 id: 41
 created: 2026-08-20
+depends-on:
+  - 30
+  - 36
+  - 38
+  - 40
 ---
 
 # Reconcile declared forwarding plans transactionally
 
 _Converted from [`implementation-chunks/41-declarative-forwarding-reconciliation.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.4, §11.8–11.9, and Chunk 10](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-10-declarative-port-publication-and-forwarding-supervisor)
-**Depends on:** 30, 36, 38, and 40
 
 ## Goal
 

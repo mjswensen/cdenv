@@ -1,15 +1,15 @@
 ---
 id: 16
 created: 2026-08-20
+depends-on: []
 ---
 
 # Implement image metadata merge and staged substitution
 
 _Converted from [`implementation-chunks/16-image-metadata-and-substitution.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.3 and Chunk 4](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#113-parsing-paths-metadata-and-substitutions)
-**Depends on:** 15
+**Legacy dependencies (untracked):** 15
 
 ## Goal
 

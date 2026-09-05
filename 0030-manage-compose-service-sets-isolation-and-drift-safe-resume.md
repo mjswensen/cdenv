@@ -1,15 +1,15 @@
 ---
 id: 30
 created: 2026-08-20
+depends-on:
+  - 29
 ---
 
 # Manage Compose service sets, isolation, and drift-safe resume
 
 _Converted from [`implementation-chunks/30-compose-managed-lifecycle.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.5, §11.10, and Chunk 7](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-7-compose-v2-orchestration)
-**Depends on:** 29
 
 ## Goal
 

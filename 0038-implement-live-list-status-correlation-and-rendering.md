@@ -1,15 +1,18 @@
 ---
 id: 38
 created: 2026-08-20
+depends-on:
+  - 23
+  - 36
+  - 37
 ---
 
 # Implement live `list`/`status` correlation and rendering
 
 _Converted from [`implementation-chunks/38-list-status-and-output.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.3, §10.7, and §16.2–16.3](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#103-list)
-**Depends on:** 08, 11, 23, 36, and 37
+**Legacy dependencies (untracked):** 8, 11
 
 ## Goal
 

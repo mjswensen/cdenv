@@ -1,15 +1,16 @@
 ---
 id: 32
 created: 2026-08-20
+depends-on:
+  - 24
+  - 31
 ---
 
 # Implement tool-free agent identity and provisioning
 
 _Converted from [`implementation-chunks/32-agent-tool-free-provisioning.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §13.3–13.5 and Chunk 8](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#134-tool-free-provisioning-flow)
-**Depends on:** 24 and 31
 
 ## Goal
 

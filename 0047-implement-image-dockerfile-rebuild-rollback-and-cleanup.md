@@ -1,15 +1,18 @@
 ---
 id: 47
 created: 2026-08-20
+depends-on:
+  - 27
+  - 36
+  - 41
+  - 46
 ---
 
 # Implement image/Dockerfile rebuild, rollback, and cleanup
 
 _Converted from [`implementation-chunks/47-image-rebuild-rollback-and-cleanup.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.6 and Chunk 16](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-16-rebuild-rollback-and-cleanup)
-**Depends on:** 27, 36, 41, and 46
 
 ## Goal
 

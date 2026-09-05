@@ -1,12 +1,14 @@
 ---
 id: 53
 created: 2026-08-21
+depends-on:
+  - 26
 ---
 
 # Secure OCI bearer authentication and redirect handling
 
 **Parent phase:** Implementation plan §11.5 and Chunk 6
-**Depends on:** 26
+
 **Blocks:** 28 and 56
 
 ## Goal

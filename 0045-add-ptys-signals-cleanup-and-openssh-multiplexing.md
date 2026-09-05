@@ -1,15 +1,16 @@
 ---
 id: 45
 created: 2026-08-20
+depends-on:
+  - 43
+  - 44
 ---
 
 # Add PTYs, signals, cleanup, and OpenSSH multiplexing
 
 _Converted from [`implementation-chunks/45-pty-signals-and-multiplexing.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §15.7, §15.9, and Chunk 14](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-14-pty-multiplexing-signals-and-cleanup)
-**Depends on:** 43 and 44
 
 ## Goal
 

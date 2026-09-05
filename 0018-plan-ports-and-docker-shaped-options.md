@@ -1,15 +1,16 @@
 ---
 id: 18
 created: 2026-08-20
+depends-on:
+  - 17
 ---
 
 # Plan ports and Docker-shaped options
 
 _Converted from [`implementation-chunks/18-ports-and-docker-options-planning.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.4 and §11.9](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#119-declared-ports-and-forwarding-supervisor)
-**Depends on:** 15 and 17
+**Legacy dependencies (untracked):** 15
 
 ## Goal
 

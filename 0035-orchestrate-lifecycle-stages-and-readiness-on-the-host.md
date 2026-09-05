@@ -1,15 +1,20 @@
 ---
 id: 35
 created: 2026-08-20
+depends-on:
+  - 25
+  - 28
+  - 30
+  - 32
+  - 33
+  - 34
 ---
 
 # Orchestrate lifecycle stages and readiness on the host
 
 _Converted from [`implementation-chunks/35-host-lifecycle-readiness.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §10.4, §11.6, and Chunk 9](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-9-lifecycle-orchestration-and-core-cli-environment-flows)
-**Depends on:** 25, 28, 30, 32, 33, and 34
 
 ## Goal
 

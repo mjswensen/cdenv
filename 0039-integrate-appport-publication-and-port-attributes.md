@@ -1,15 +1,19 @@
 ---
 id: 39
 created: 2026-08-20
+depends-on:
+  - 18
+  - 22
+  - 29
+  - 36
+  - 38
 ---
 
 # Integrate `appPort` publication and port attributes
 
 _Converted from [`implementation-chunks/39-app-port-publication.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §11.9 and Chunk 10](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#119-declared-ports-and-forwarding-supervisor)
-**Depends on:** 18, 22, 29, 36, and 38
 
 ## Goal
 

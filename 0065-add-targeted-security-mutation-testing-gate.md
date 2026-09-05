@@ -1,12 +1,14 @@
 ---
 id: 65
 created: 2026-09-01
+depends-on:
+  - 62
+  - 66
 ---
 
 # Add targeted security mutation testing gate
 
 **Split from:** 52
-**Depends on:** 62 and 66
 
 ## Goal
 

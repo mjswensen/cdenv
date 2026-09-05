@@ -1,12 +1,14 @@
 ---
 id: 60
 created: 2026-08-21
+depends-on:
+  - 26
 ---
 
 # Decompose Feature source responsibilities for auditability
 
 **Parent phase:** Implementation plan §6.1, §6.6, §11.5, and Chunk 6
-**Depends on:** 26
+
 **Blocks:** 28 and 56
 
 ## Goal

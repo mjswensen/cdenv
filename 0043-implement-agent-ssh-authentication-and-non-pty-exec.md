@@ -1,15 +1,17 @@
 ---
 id: 43
 created: 2026-08-20
+depends-on:
+  - 31
+  - 33
+  - 42
 ---
 
 # Implement agent SSH authentication and non-PTY exec
 
 _Converted from [`implementation-chunks/43-agent-ssh-auth-and-exec.md`] on 2026-08-20._
 
-
 **Parent phase:** [Implementation plan §15.1–15.6 and Chunk 12](https://github.com/mjswensen/cdenv/blob/main/implementation-plan.md#chunk-12-agent-ssh-handshake-authentication-and-exec)
-**Depends on:** 31, 33, and 42
 
 ## Goal
 

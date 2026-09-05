@@ -1,11 +1,11 @@
 ---
 id: 61
 created: 2026-08-22
+depends-on:
+  - 63
 ---
 
 # Split image orchestration planning from Docker mutation
-
-**Depends on:** 63
 
 ## Description
 

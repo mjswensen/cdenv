@@ -1,6 +1,6 @@
 {
   "appPort": ["0.0.0.0:6500:6500"],
-  "image": "ghcr.io/mjswensen/devcontainer:2026-08-21",
+  "image": "ghcr.io/mjswensen/devcontainer:sha-bbdc6db",
   "containerUser": "mjs",
   "remoteUser": "mjs",
   "name": "cdenv",

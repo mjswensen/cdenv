@@ -1,15 +1,11 @@
 [tools]
-node = "24"
 rust = "1.97.1"
-
-[tasks.pi-install]
-run = "curl -fsSL https://pi.dev/install.sh | sh"
 
 [tasks.cargo-deny-install]
 run = "cargo install cargo-deny --version 0.20.2 --locked"
 
 [tasks.bootstrap]
-depends = ["cargo-deny-install", "pi-install"]
+depends = ["cargo-deny-install"]
 
 [tasks.web-agent]
-run = "tmux new-session -d -s web-agent 'npx -y @mjswensen/web-agent --host 0.0.0.0 --port 6500'"
+run = "tmux new-session -d -s web-agent 'web-agent --host 0.0.0.0 --port 6500'"

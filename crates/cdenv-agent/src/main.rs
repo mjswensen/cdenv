@@ -5,7 +5,10 @@ use std::io::Read;
 #[cfg(target_os = "linux")]
 use std::os::unix::process::CommandExt;
 use std::path::Path;
-use std::process::{Command, ExitCode, Stdio};
+use std::process::ExitCode;
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
+#[cfg(target_os = "linux")]
 use std::time::Duration;
 
 const MAXIMUM_CAPTURE_REQUEST_BYTES: u64 = 4 * 1024 * 1024;

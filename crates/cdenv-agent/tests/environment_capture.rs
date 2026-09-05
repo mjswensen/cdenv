@@ -1,5 +1,5 @@
-#![cfg(target_os = "linux")]
 //! Linux executable contracts for environment capture, filtering, and reuse.
+#![cfg(target_os = "linux")]
 
 use std::ffi::OsString;
 use std::fs;

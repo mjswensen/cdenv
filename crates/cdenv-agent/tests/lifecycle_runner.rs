@@ -1,5 +1,5 @@
-#![cfg(target_os = "linux")]
 //! Linux lifecycle execution and recovery contracts.
+#![cfg(target_os = "linux")]
 
 use std::collections::BTreeMap;
 use std::fs;

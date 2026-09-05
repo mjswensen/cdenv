@@ -2,15 +2,21 @@
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(target_os = "linux")]
+use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(target_os = "linux")]
 const SNAPSHOT_MAGIC: &[u8; 12] = b"CDENV-ENV\0\x01\0";
+#[cfg(target_os = "linux")]
 const MAXIMUM_ENTRIES: usize = 16 * 1024;
+#[cfg(target_os = "linux")]
 const MAXIMUM_ENTRY_BYTES: usize = 1024 * 1024;
+#[cfg(target_os = "linux")]
 const MAXIMUM_SNAPSHOT_BYTES: usize = 16 * 1024 * 1024;
 
 /// A configured shell probe used to discover the selected user's environment.
@@ -105,20 +111,23 @@ impl EnvironmentSnapshot {
         command.envs(&self.entries);
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn apply_to_tokio(&self, command: &mut tokio::process::Command) {
         command.env_clear();
         command.envs(&self.entries);
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn value(&self, name: &OsStr) -> Option<&OsStr> {
         self.entries.get(name).map(OsString::as_os_str)
     }
 
+    #[cfg(target_os = "linux")]
     pub(crate) fn entries(&self) -> &BTreeMap<OsString, OsString> {
         &self.entries
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn from_entries(entries: BTreeMap<OsString, OsString>) -> Self {
         Self { entries }
     }

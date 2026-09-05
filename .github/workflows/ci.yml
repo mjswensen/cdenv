@@ -40,6 +40,14 @@ jobs:
         uses: actions/checkout@v4
       - name: Select pinned Rust toolchain
         run: rustup show active-toolchain
+      - name: Set up the verified Docker baseline
+        uses: docker/setup-docker-action@v5
+        with:
+          version: v29.7.1
+      - name: Set up the verified Compose baseline
+        uses: docker/setup-compose-action@v2
+        with:
+          version: v5.3.1
       - name: Run editor-independent profile gate
         env:
           CDENV_INTEGRATION: "1"
@@ -83,9 +91,5 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
-      - name: Install Linux musl targets
-        run: rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
-      - name: Check static agent targets
-        run: |
-          cargo check --package cdenv-agent --target x86_64-unknown-linux-musl --locked
-          cargo check --package cdenv-agent --target aarch64-unknown-linux-musl --locked
+      - name: Build and validate static agent artifacts
+        run: cargo xtask stage-agents

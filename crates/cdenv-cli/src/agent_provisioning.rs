@@ -786,6 +786,15 @@ mod tests {
         bytes[..4].copy_from_slice(b"\x7fELF");
         bytes[4] = 2;
         bytes[5] = 1;
+        bytes[6] = 1;
+        bytes[16] = 2;
+        bytes[20] = 1;
+        bytes[24] = 1;
+        bytes[52] = 64;
+        bytes[64] = 1;
+        bytes[68] = 1;
+        bytes[96] = 120;
+        bytes[104] = 120;
         bytes[18..20].copy_from_slice(&(62_u16).to_le_bytes());
         bytes[32..40].copy_from_slice(&(64_u64).to_le_bytes());
         bytes[54..56].copy_from_slice(&(56_u16).to_le_bytes());

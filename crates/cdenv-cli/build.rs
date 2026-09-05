@@ -13,6 +13,11 @@ fn main() {
     let output = Path::new(&output);
     let source = env::var_os("CDENV_AGENT_ARTIFACT_DIR").map(|path| Path::new(&path).to_path_buf());
     let names = ["cdenv-agent-x86_64", "cdenv-agent-aarch64"];
+    if let Some(directory) = &source {
+        for name in names {
+            println!("cargo:rerun-if-changed={}", directory.join(name).display());
+        }
+    }
     let available = source
         .as_ref()
         .is_some_and(|directory| names.iter().all(|name| directory.join(name).is_file()));

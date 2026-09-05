@@ -16,26 +16,15 @@ use clap::Parser;
 
 fn main() -> ExitCode {
     let arguments = std::env::args_os().collect::<Vec<_>>();
+    if let [_, command] = arguments.as_slice()
+        && command == "__validate-artifacts"
+    {
+        return validate_package_artifacts();
+    }
     if let [_, command, manifest] = arguments.as_slice()
         && command == "__forwarding-supervisor"
     {
-        let runtime = match tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                eprintln!("cdenv: cannot start private supervisor runtime: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        return match runtime.block_on(run_private_supervisor_manifest(Path::new(manifest))) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(error) => {
-                eprintln!("cdenv: private forwarding supervisor failed: {error}");
-                ExitCode::FAILURE
-            }
-        };
+        return private_supervisor_exit(Path::new(manifest));
     }
     let command_line = CommandLine::parse();
     let output_format = command_line.output_format();
@@ -112,6 +101,68 @@ fn main() -> ExitCode {
     }
 
     render_application_result(output_format, result, &mut stdout, &mut stderr)
+}
+
+fn private_supervisor_exit(manifest: &Path) -> ExitCode {
+    let runtime = match tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(runtime) => runtime,
+        Err(error) => {
+            eprintln!("cdenv: cannot start private supervisor runtime: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match runtime.block_on(run_private_supervisor_manifest(manifest)) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("cdenv: private forwarding supervisor failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+// Deliberately bypass installation discovery: package validation needs no Docker,
+// home directory, consent, or initialized cdenv root.
+fn validate_package_artifacts() -> ExitCode {
+    use cdenv_cli::AgentArtifactProvider;
+    use cdenv_core::ContainerArchitecture;
+    use sha2::{Digest, Sha256};
+
+    let result = (|| {
+        let build_id = AgentArtifactProvider::embedded_identity().map_err(|e| e.to_string())?;
+        let mut agents = serde_json::Map::new();
+        for (name, architecture) in [
+            ("x86_64", ContainerArchitecture::X86_64),
+            ("aarch64", ContainerArchitecture::Aarch64),
+        ] {
+            let bytes = AgentArtifactProvider::embedded()
+                .artifact(architecture)
+                .map_err(|e| e.to_string())?;
+            agents.insert(
+                name.to_owned(),
+                serde_json::json!(format!("{:x}", Sha256::digest(bytes))),
+            );
+        }
+        Ok::<_, String>(serde_json::json!({
+            "schemaVersion": 1,
+            "version": env!("CARGO_PKG_VERSION"),
+            "buildId": build_id.as_str(),
+            "protocolVersion": 1,
+            "agents": agents,
+        }))
+    })();
+    match result {
+        Ok(report) => {
+            println!("{report}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("cdenv: artifact validation failed: {error}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn proxy_exit(root: &CdenvRoot, workspace: &cdenv_core::WorkspaceName) -> ExitCode {

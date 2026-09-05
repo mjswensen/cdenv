@@ -21,11 +21,13 @@ Then run the complete local gate:
 cargo xtask check
 ```
 
-Build a locally verifiable release archive after Docker Buildx has produced both static Linux agents:
+Build a locally verifiable release archive from a clean checkout (Docker Buildx builds and verifies both static Linux agents):
 
 ```bash
 cargo xtask dist
 ```
+
+See [release packaging](docs/release-packaging.md) for the four-host matrix, reproducibility contract, and package-only smoke test.
 
 `cargo xtask check` runs the same baseline commands used by CI:
 

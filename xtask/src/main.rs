@@ -1,14 +1,14 @@
 //! Repository automation entry point.
 
+use cdenv_core::executable::validate_static_elf;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, Output};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use sha2::{Digest, Sha256};
+mod package;
+use package::package_distribution;
 
 const QUALITY_COMMANDS: &[&[&str]] = &[
     &["fmt", "--check"],
@@ -70,7 +70,22 @@ fn main() -> ExitCode {
 
     match command.to_str() {
         Some("check") if arguments.next().is_none() => run_quality_gate(),
-        Some("build" | "dist") if arguments.next().is_none() => build_distribution(),
+        Some("build" | "dist") if arguments.next().is_none() => build_distribution(false),
+        Some("stage-agents") if arguments.next().is_none() => build_distribution(true),
+        Some("test-package") => {
+            let paths = arguments.collect::<Vec<_>>();
+            let [archive] = paths.as_slice() else {
+                print_help();
+                return ExitCode::FAILURE;
+            };
+            match package::smoke(Path::new(archive)) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("xtask: {error}");
+                    ExitCode::FAILURE
+                }
+            }
+        }
         Some("test-integration") => run_integration(arguments),
         Some("help" | "--help" | "-h") if arguments.next().is_none() => {
             print_help();
@@ -97,9 +112,9 @@ fn main() -> ExitCode {
     clippy::too_many_lines,
     reason = "the release pipeline keeps its ordered Docker staging steps auditable in one place"
 )]
-fn build_distribution() -> ExitCode {
-    let build_id = match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => format!("{:x}-{}", duration.as_nanos(), std::process::id()),
+fn build_distribution(agents_only: bool) -> ExitCode {
+    let build_id = match package::build_id() {
+        Ok(id) => id,
         Err(error) => {
             eprintln!("xtask: cannot create build ID: {error}");
             return ExitCode::FAILURE;
@@ -108,7 +123,10 @@ fn build_distribution() -> ExitCode {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .map_or_else(|| PathBuf::from("."), Path::to_path_buf);
-    let stage = root.join("target/cdenv-agent").join(&build_id);
+    let supplied_stage = env::var_os("CDENV_AGENT_ARTIFACT_DIR").map(PathBuf::from);
+    let stage = supplied_stage
+        .clone()
+        .unwrap_or_else(|| root.join("target/cdenv-agent").join(&build_id));
     if let Err(error) = fs::create_dir_all(&stage) {
         eprintln!("xtask: cannot create staging directory: {error}");
         return ExitCode::FAILURE;
@@ -117,6 +135,9 @@ fn build_distribution() -> ExitCode {
         ("linux/amd64", "cdenv-agent-x86_64", 62_u16),
         ("linux/arm64", "cdenv-agent-aarch64", 183_u16),
     ] {
+        if supplied_stage.is_some() {
+            continue;
+        }
         let tag = format!("cdenv-agent-{build_id}-{name}");
         let built = Command::new("docker")
             .current_dir(&root)
@@ -142,9 +163,9 @@ fn build_distribution() -> ExitCode {
         let version = Command::new("docker")
             .args(["run", "--rm", "--platform", platform, &tag, "version"])
             .output();
-        let expected_version = format!("\"buildId\":\"{build_id}\"");
-        if !matches!(version, Ok(ref output) if output.status.success() && String::from_utf8_lossy(&output.stdout).contains("\"name\":\"cdenv-agent\"") && String::from_utf8_lossy(&output.stdout).contains("\"protocolVersion\":1") && String::from_utf8_lossy(&output.stdout).contains(&expected_version))
-        {
+        if !version.is_ok_and(|output| {
+            output.status.success() && package::valid_agent_version(&output.stdout, &build_id)
+        }) {
             eprintln!(
                 "xtask: {platform} agent did not report the expected build and protocol identity"
             );
@@ -182,15 +203,40 @@ fn build_distribution() -> ExitCode {
             return ExitCode::FAILURE;
         }
     }
+    let report = match package::agent_report(&stage, &build_id) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("xtask: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let manifest = stage.join("agents.json");
+    let verified = if supplied_stage.is_some() {
+        fs::read(&manifest).is_ok_and(|bytes| bytes == report.to_string().as_bytes())
+    } else {
+        fs::write(&manifest, report.to_string()).is_ok()
+    };
+    if !verified {
+        eprintln!("xtask: staged agent identity/checksum mismatch");
+        return ExitCode::FAILURE;
+    }
+    if agents_only {
+        return ExitCode::SUCCESS;
+    }
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     match Command::new(cargo)
         .current_dir(&root)
         .args(["build", "--release", "--package", "cdenv-cli", "--locked"])
         .env("CDENV_AGENT_ARTIFACT_DIR", &stage)
         .env("CDENV_BUILD_ID", &build_id)
+        .env("CARGO_TARGET_DIR", root.join("target"))
+        .env(
+            "RUSTFLAGS",
+            format!("--remap-path-prefix={}=/cdenv", root.display()),
+        )
         .status()
     {
-        Ok(status) if status.success() => match package_distribution(&root, &build_id) {
+        Ok(status) if status.success() => match package_distribution(&root, &build_id, &report) {
             Ok(archive) => {
                 eprintln!(
                     "xtask: staged host and agents with build ID {build_id}; packaged {}",
@@ -209,81 +255,6 @@ fn build_distribution() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-fn package_distribution(root: &Path, build_id: &str) -> std::io::Result<PathBuf> {
-    let host = root.join("target/release/cdenv");
-    let metadata = fs::metadata(&host)?;
-    if !metadata.is_file() || metadata.len() == 0 {
-        return Err(std::io::Error::other(
-            "release host binary is missing or empty",
-        ));
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        if metadata.permissions().mode() & 0o111 == 0 {
-            return Err(std::io::Error::other(
-                "release host binary is not executable",
-            ));
-        }
-    }
-    let platform = format!("{}-{}", env::consts::OS, env::consts::ARCH);
-    let destination = root.join("target/dist");
-    fs::create_dir_all(&destination)?;
-    let archive = destination.join(format!("cdenv-{platform}-{build_id}.tar"));
-    let file = fs::File::create(&archive)?;
-    let mut tar = tar::Builder::new(file);
-    tar.append_path_with_name(&host, "cdenv")?;
-    tar.finish()?;
-    let bytes = fs::read(&archive)?;
-    let checksum = format!(
-        "{:x}  {}\n",
-        Sha256::digest(&bytes),
-        archive.file_name().unwrap_or_default().to_string_lossy()
-    );
-    let checksum_path = archive.with_extension("tar.sha256");
-    fs::File::create(&checksum_path)?.write_all(checksum.as_bytes())?;
-    let recorded = fs::read_to_string(&checksum_path)?;
-    if !recorded.starts_with(&format!("{:x}", Sha256::digest(fs::read(&archive)?))) {
-        return Err(std::io::Error::other(
-            "distribution checksum verification failed",
-        ));
-    }
-    Ok(archive)
-}
-
-fn validate_static_elf(bytes: &[u8], machine: u16) -> Result<(), ()> {
-    if bytes.len() < 64
-        || &bytes[..4] != b"\x7fELF"
-        || bytes[4] != 2
-        || bytes[5] != 1
-        || u16::from_le_bytes([bytes[18], bytes[19]]) != machine
-    {
-        return Err(());
-    }
-    let offset = usize::try_from(u64::from_le_bytes(
-        bytes[32..40].try_into().map_err(|_| ())?,
-    ))
-    .map_err(|_| ())?;
-    let size = usize::from(u16::from_le_bytes([bytes[54], bytes[55]]));
-    let count = usize::from(u16::from_le_bytes([bytes[56], bytes[57]]));
-    let end = offset
-        .checked_add(size.checked_mul(count).ok_or(())?)
-        .ok_or(())?;
-    if size < 4 || end > bytes.len() {
-        return Err(());
-    }
-    if (0..count).any(|index| {
-        u32::from_le_bytes(
-            bytes[offset + index * size..][..4]
-                .try_into()
-                .unwrap_or([0; 4]),
-        ) == 3
-    }) {
-        return Err(());
-    }
-    Ok(())
 }
 
 fn run_quality_gate() -> ExitCode {
@@ -513,7 +484,7 @@ fn print_command(cargo: &OsStr, arguments: &[&str]) {
 
 fn print_help() {
     eprintln!(
-        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing dependencies never skip the suite."
+        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask stage-agents\n  cargo xtask test-package <archive.tar>\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing dependencies never skip the suite."
     );
 }
 
@@ -532,32 +503,5 @@ mod tests {
             Ok(IntegrationSuite::Openssh)
         );
         assert!(IntegrationSuite::parse("unknown").is_err());
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn distribution_archive_contains_only_the_executable_and_verified_checksum() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let temporary = tempfile::tempdir().expect("temporary root");
-        let release = temporary.path().join("target/release");
-        fs::create_dir_all(&release).expect("release directory");
-        let host = release.join("cdenv");
-        fs::write(&host, b"host-binary").expect("host binary");
-        fs::set_permissions(&host, fs::Permissions::from_mode(0o755)).expect("executable mode");
-
-        let archive = package_distribution(temporary.path(), "test-build").expect("package");
-        let mut entries = tar::Archive::new(fs::File::open(&archive).expect("archive"));
-        let names = entries
-            .entries()
-            .expect("entries")
-            .map(|entry| entry.expect("entry").path().expect("path").into_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(names, [PathBuf::from("cdenv")]);
-        let checksum = fs::read_to_string(archive.with_extension("tar.sha256")).expect("checksum");
-        assert!(checksum.starts_with(&format!(
-            "{:x}",
-            Sha256::digest(fs::read(archive).expect("archive bytes"))
-        )));
     }
 }

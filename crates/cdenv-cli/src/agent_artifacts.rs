@@ -74,7 +74,7 @@ pub enum AgentArtifactError {
         /// Architecture selected for the mismatched artifact.
         architecture: ContainerArchitecture,
     },
-    /// A program interpreter proves the artifact is dynamically linked.
+    /// A program interpreter or dynamic segment violates static release linkage.
     #[error("agent artifact for {architecture} is dynamically linked")]
     Dynamic {
         /// Architecture selected for the dynamically linked artifact.
@@ -134,48 +134,20 @@ fn validate_elf(
     bytes: &[u8],
     architecture: ContainerArchitecture,
 ) -> Result<(), AgentArtifactError> {
+    use cdenv_core::executable::{StaticElfError, validate_static_elf};
+
     if bytes.is_empty() {
         return Err(AgentArtifactError::Empty { architecture });
     }
-    if bytes.len() < 64 || &bytes[..4] != b"\x7fELF" || bytes[4] != 2 || bytes[5] != 1 {
-        return Err(AgentArtifactError::InvalidElf { architecture });
-    }
-    let machine = u16::from_le_bytes([bytes[18], bytes[19]]);
-    let expected = match architecture {
+    let machine = match architecture {
         ContainerArchitecture::X86_64 => 62,
         ContainerArchitecture::Aarch64 => 183,
     };
-    if machine != expected {
-        return Err(AgentArtifactError::WrongArchitecture { architecture });
-    }
-    let program_offset = usize::try_from(u64::from_le_bytes(
-        bytes[32..40]
-            .try_into()
-            .map_err(|_| AgentArtifactError::InvalidElf { architecture })?,
-    ))
-    .map_err(|_| AgentArtifactError::InvalidElf { architecture })?;
-    let entry_size = usize::from(u16::from_le_bytes([bytes[54], bytes[55]]));
-    let count = usize::from(u16::from_le_bytes([bytes[56], bytes[57]]));
-    let table_end = program_offset
-        .checked_add(
-            entry_size
-                .checked_mul(count)
-                .ok_or(AgentArtifactError::InvalidElf { architecture })?,
-        )
-        .ok_or(AgentArtifactError::InvalidElf { architecture })?;
-    if entry_size < 4 || table_end > bytes.len() {
-        return Err(AgentArtifactError::InvalidElf { architecture });
-    }
-    if (0..count).any(|index| {
-        u32::from_le_bytes(
-            bytes[program_offset + index * entry_size..][..4]
-                .try_into()
-                .unwrap_or([0; 4]),
-        ) == 3
-    }) {
-        return Err(AgentArtifactError::Dynamic { architecture });
-    }
-    Ok(())
+    validate_static_elf(bytes, machine).map_err(|error| match error {
+        StaticElfError::Malformed => AgentArtifactError::InvalidElf { architecture },
+        StaticElfError::WrongMachine => AgentArtifactError::WrongArchitecture { architecture },
+        StaticElfError::Dynamic => AgentArtifactError::Dynamic { architecture },
+    })
 }
 
 #[cfg(test)]
@@ -186,6 +158,15 @@ mod tests {
         bytes[..4].copy_from_slice(b"\x7fELF");
         bytes[4] = 2;
         bytes[5] = 1;
+        bytes[6] = 1;
+        bytes[16] = 2;
+        bytes[20] = 1;
+        bytes[24] = 1;
+        bytes[52] = 64;
+        bytes[64] = 1;
+        bytes[68] = 1;
+        bytes[96] = 120;
+        bytes[104] = 120;
         bytes[18..20].copy_from_slice(&machine.to_le_bytes());
         bytes[32..40].copy_from_slice(&(64_u64).to_le_bytes());
         bytes[54..56].copy_from_slice(&(56_u16).to_le_bytes());

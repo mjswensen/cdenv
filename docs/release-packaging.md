@@ -36,7 +36,7 @@ outside this gate (issue 66).
 `cargo xtask stage-agents`. Each clean native host job downloads that same verified
 manifest and pair of agents under `target/`, sets `CDENV_AGENT_ARTIFACT_DIR`, then
 runs `cargo xtask dist`. Supplied agents must match the current commit and manifest
-hashes and pass ELF validation again. Hosts are Linux and macOS, each on x86_64 and
-aarch64. Each job rebuilds the host to check identical archive checksums and
-uploads the archive and its adjacent metadata. No Docker daemon is needed on the
-macOS runners.
+hashes and pass ELF validation again. The three supported hosts are Linux x86_64,
+Linux aarch64, and macOS aarch64 (Apple Silicon). Each job rebuilds the host to
+check identical archive checksums and uploads the archive and its adjacent
+metadata. No Docker daemon is needed on the macOS runner.

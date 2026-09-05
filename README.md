@@ -27,7 +27,7 @@ Build a locally verifiable release archive from a clean checkout (Docker Buildx 
 cargo xtask dist
 ```
 
-See [release packaging](docs/release-packaging.md) for the four-host matrix, reproducibility contract, and package-only smoke test.
+See [release packaging](docs/release-packaging.md) for the three-host matrix, reproducibility contract, and package-only smoke test.
 
 `cargo xtask check` runs the same baseline commands used by CI:
 

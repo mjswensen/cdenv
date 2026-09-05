@@ -68,15 +68,10 @@ fn validate_host(bytes: &[u8], platform: &str) -> io::Result<()> {
                 && u16::from_le_bytes([bytes[18], bytes[19]]) == machine
                 && bytes[24..32] != [0; 8]
         }
-        "macos-x86_64" | "macos-aarch64" => {
-            let cpu: u32 = if platform.ends_with("x86_64") {
-                0x0100_0007
-            } else {
-                0x0100_000c
-            };
+        "macos-aarch64" => {
             bytes.len() >= 32
                 && bytes[..4] == [0xcf, 0xfa, 0xed, 0xfe]
-                && bytes[4..8] == cpu.to_le_bytes()
+                && bytes[4..8] == 0x0100_000c_u32.to_le_bytes()
                 && bytes[12..16] == 2_u32.to_le_bytes()
         }
         _ => false,
@@ -341,18 +336,13 @@ mod tests {
     }
 
     #[test]
-    fn validates_both_macho_architectures() {
-        for (platform, cpu) in [
-            ("macos-x86_64", 0x0100_0007_u32),
-            ("macos-aarch64", 0x0100_000c),
-        ] {
-            let mut bytes = vec![0; 32];
-            bytes[..4].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe]);
-            bytes[4..8].copy_from_slice(&cpu.to_le_bytes());
-            bytes[12] = 2;
-            assert!(validate_host(&bytes, platform).is_ok());
-            bytes[4] ^= 1;
-            assert!(validate_host(&bytes, platform).is_err());
-        }
+    fn validates_macho_arm64_and_rejects_wrong_architecture() {
+        let mut bytes = vec![0; 32];
+        bytes[..4].copy_from_slice(&[0xcf, 0xfa, 0xed, 0xfe]);
+        bytes[4..8].copy_from_slice(&0x0100_000c_u32.to_le_bytes());
+        bytes[12] = 2;
+        assert!(validate_host(&bytes, "macos-aarch64").is_ok());
+        bytes[4] ^= 1;
+        assert!(validate_host(&bytes, "macos-aarch64").is_err());
     }
 }

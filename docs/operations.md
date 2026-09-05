@@ -58,7 +58,7 @@ the command; cdenv never substitutes an unverified implementation. Preserve chec
 volumes during ordinary down/up and rebuild flows; cleanup retention applies only to cdenv-generated
 images and caches after their verified references are no longer retained.
 
-Before a macOS release, run the Docker Desktop smoke checklist on Apple Silicon and Intel hardware
-when available: create an image workspace, run `up/down/up`, SSH and PTY/forward it, rebuild it,
+Before a macOS release, run the Docker Desktop smoke checklist on Apple Silicon:
+create an image workspace, run `up/down/up`, SSH and PTY/forward it, rebuild it,
 run `doctor`, and verify no port 22 or `sshd` exists. Record the hardware, Docker Desktop version,
 and result with the release. Editor observations are compatibility notes, never release gates.

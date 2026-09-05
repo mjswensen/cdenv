@@ -3,7 +3,7 @@
 **Project:** `cdenv` — Containerized Development Environment
 **Website:** `cdenv.sh`
 **Implementation:** Rust 2024 edition
-**Hosts:** macOS and Linux on x86_64 and arm64
+**Hosts:** macOS on arm64 (Apple Silicon); Linux on x86_64 and arm64
 **Containers:** Local Docker, managed by cdenv’s Dev Container implementation
 **Workspace format:** Development Containers (`devcontainer.json`)
 **Dev Container compatibility:** Versioned cdenv V1 profile pinned to an upstream specification revision
@@ -1551,7 +1551,6 @@ The in-repository black-box suite must verify:
 Release artifacts:
 
 - macOS arm64;
-- macOS x86_64;
 - Linux arm64;
 - Linux x86_64.
 
@@ -1562,8 +1561,7 @@ Automated complete Docker/OpenSSH suites:
 
 Documented pre-release Docker Desktop smoke tests:
 
-- macOS Apple Silicon;
-- macOS Intel when hardware is available.
+- macOS Apple Silicon.
 
 Named editor observations are compatibility notes, not release gates.
 
@@ -1764,7 +1762,7 @@ At this stage create may finish as `missing`; environment startup is added after
 ### Chunk 18: Doctor, packaging, CI, and release
 
 - read-only profile-aware `doctor` and JSON envelope;
-- all four host artifacts with both embedded agents;
+- all three host artifacts with both embedded agents;
 - minimum/pinned Docker Engine/CLI/Compose jobs and Linux architecture integration matrix;
 - macOS Docker Desktop smoke checklist;
 - checksums, installation/profile/lock/upgrade/state-migration documentation;

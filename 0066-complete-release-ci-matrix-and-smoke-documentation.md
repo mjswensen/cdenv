@@ -19,7 +19,7 @@ Enforce the supported runtime matrix and document the operational V1 release con
 
 - Configure CI for strict Rust quality checks, `cargo-deny`, and explicit pinned/minimum Docker Engine/CLI and Compose V2 jobs; do not rely only on whatever versions a hosted runner happens to provide.
 - Enforce nonempty Linux x86_64/arm64 Dev Container and OpenSSH release-suite matrices; declared Docker, Compose, OpenSSH, architecture, or fixture prerequisites must fail rather than skip.
-- Add a versioned, recordable macOS Docker Desktop smoke checklist for Apple Silicon and Intel when hardware is available. Editor observations remain non-gating notes.
+- Add a versioned, recordable macOS Docker Desktop smoke checklist for Apple Silicon. Editor observations remain non-gating notes.
 - Audit and complete the existing operations/profile documentation for installation/uninstallation, root override, exact dependency baselines, profile revision/support matrix, lock policy, state migrations/upgrades, trust and source sanitization, lifecycle/recovery, forwarding exposure, SSH Include consent, troubleshooting, and retention cleanup.
 - Using the archives produced by issue 52, document and run an installed operational smoke workflow covering the applicable §19 commands and V1 non-goals.
 

@@ -4,8 +4,11 @@ rust = "1.97.1"
 [tasks.cargo-deny-install]
 run = "cargo install cargo-deny --version 0.20.2 --locked"
 
+[tasks.web-agent-install]
+run = "curl -fsSL https://raw.githubusercontent.com/mjswensen/web-agent/main/install.sh | sh"
+
 [tasks.bootstrap]
-depends = ["cargo-deny-install"]
+depends = ["cargo-deny-install", "web-agent-install"]
 
 [tasks.web-agent]
 run = "tmux new-session -d -s web-agent 'web-agent --host 0.0.0.0 --port 6500'"

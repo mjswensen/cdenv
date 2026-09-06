@@ -9,6 +9,9 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Branch instrumentation is nightly-only; correctness gates still use rust-toolchain.toml.
+  COVERAGE_TOOLCHAIN: nightly-2026-09-01
+  CARGO_LLVM_COV_VERSION: 0.9.0
 
 jobs:
   quality:
@@ -19,12 +22,47 @@ jobs:
         uses: actions/checkout@v4
       - name: Require a clean checkout
         run: test -z "$(git status --porcelain)"
+      - name: Check coverage plumbing and failure handling
+        run: |
+          bash -n .github/scripts/install-coverage.sh .github/scripts/coverage.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
       - name: Run strict checks in the pinned development container
         uses: devcontainers/ci@v0.3
         with:
           push: never
           env: CARGO_TERM_COLOR
           runCmd: cargo xtask check
+
+  workspace-coverage:
+    name: Workspace coverage (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+          - runner: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: test -z "$(git status --porcelain)"
+      - name: Install pinned coverage tools
+        run: bash .github/scripts/install-coverage.sh
+      - name: Instrument locked ordinary workspace tests
+        env:
+          COVERAGE_ID: workspace-${{ matrix.platform }}
+        run: bash .github/scripts/coverage.sh workspace
+      - name: Retain reports and test outcome even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-workspace-${{ matrix.platform }}
+          path: target/coverage/workspace-${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 14
 
   linux-release-gates:
     name: Linux release suites (${{ matrix.arch }}, ${{ matrix.baseline }})
@@ -114,6 +152,59 @@ jobs:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
         run: cargo xtask test-integration --suite openssh
+
+      # These reruns cannot substitute for either required pinned-toolchain gate above.
+      - name: Install pinned coverage tools
+        run: bash .github/scripts/install-coverage.sh
+      - name: Instrument Dev Container release suite
+        env:
+          CDENV_INTEGRATION: "1"
+          CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
+          COVERAGE_ID: devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+        run: bash .github/scripts/coverage.sh devcontainer-v1
+      - name: Instrument OpenSSH release suite
+        env:
+          CDENV_INTEGRATION: "1"
+          CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
+          COVERAGE_ID: openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+        run: bash .github/scripts/coverage.sh openssh
+      - name: Retain Dev Container coverage and gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+          path: target/coverage/devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain OpenSSH coverage and gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+          path: target/coverage/openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
+          if-no-files-found: error
+          retention-days: 14
+
+  coverage-index:
+    name: Coverage report inventory (no percentage gate)
+    if: always()
+    needs: [workspace-coverage, linux-release-gates]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: coverage-*
+          path: target/coverage-download
+      - name: Require complete successful report inventory and summarize
+        run: python3 .github/scripts/coverage-index.py target/coverage-download target/coverage-index
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-index
+          path: target/coverage-index/
+          if-no-files-found: error
+          retention-days: 14
 
   macos-agent-stub:
     name: Agent unsupported-host stub

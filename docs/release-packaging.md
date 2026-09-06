@@ -1,5 +1,9 @@
 # Release packages
 
+For informational workspace and release-suite function/branch reports, artifact
+retention and baseline review, see [coverage reporting](coverage.md). Coverage does
+not replace the required release gates or installed-package smoke checks.
+
 From a clean checkout with the pinned Rust toolchain, run `cargo xtask dist`.
 The Cargo alias and all release builds use `--locked`. Docker Buildx and QEMU
 support for both Linux architectures are required when building agents locally.

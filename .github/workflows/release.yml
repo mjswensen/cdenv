@@ -88,3 +88,28 @@ jobs:
           name: cdenv-${{ matrix.platform }}
           path: target/dist/
           if-no-files-found: error
+
+  publish:
+    name: Prepare draft GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: host
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cdenv-*
+          path: target/release-artifacts
+      - name: Collect release assets
+        run: |
+          mkdir -p target/dist
+          find target/release-artifacts -type f -name 'cdenv-*' -exec cp {} target/dist/ \;
+          cp "$(find target/release-artifacts -type f -name install.sh | head -n 1)" target/dist/install.sh
+      # A maintainer publishes only after retaining the macOS Docker Desktop smoke record.
+      - name: Upload assets to a draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$GITHUB_REF_NAME" target/dist/*
+          --repo "$GITHUB_REPOSITORY" --draft --generate-notes --verify-tag

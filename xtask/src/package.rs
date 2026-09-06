@@ -123,6 +123,11 @@ pub fn package_distribution(root: &Path, build_id: &str, report: &Value) -> io::
     validate_host(&bytes, &platform())?;
     let destination = root.join("target/dist");
     fs::create_dir_all(&destination)?;
+    let installer = root.join("install.sh");
+    if !fs::symlink_metadata(&installer)?.is_file() {
+        return Err(io::Error::other("release installer is not a regular file"));
+    }
+    fs::copy(&installer, destination.join("install.sh"))?;
     let archive = destination.join(format!("cdenv-{}-{build_id}.tar", platform()));
     let bytes = archive_bytes(&bytes)?;
     fs::write(&archive, &bytes)?;

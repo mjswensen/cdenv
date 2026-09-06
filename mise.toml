@@ -1,4 +1,5 @@
 [tools]
+python = "3.13.15"
 rust = "1.97.1"
 
 [tasks.cargo-deny-install]

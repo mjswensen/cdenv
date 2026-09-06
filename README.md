@@ -4,11 +4,27 @@
 
 ## Workspace
 
-The Rust workspace contains platform-neutral core types, pure Dev Container profile logic, the host CLI, the Linux-targeted agent, `xtask`, and a non-published integration-test package. The disposable feasibility spike under `spikes/feasibility/` is intentionally excluded. Installation, trust, recovery, forwarding, and macOS smoke-test guidance is in the [operations guide](docs/operations.md).
+The Rust workspace contains platform-neutral core types, pure Dev Container profile logic, the host CLI, the Linux-targeted agent, `xtask`, and a non-published integration-test package. The disposable feasibility spike under `spikes/feasibility/` is intentionally excluded. End-user installation, getting started, trust, recovery, forwarding, and macOS smoke-test guidance is in the [operations guide](docs/operations.md).
+
+## Install and get started
+
+On a supported host with Docker, Compose V2, OpenSSH, and Git installed:
+
+```bash
+curl -fsSL https://github.com/mjswensen/cdenv/releases/latest/download/install.sh | sh
+cdenv doctor
+cdenv create https://github.com/example/project.git
+cdenv up project
+cdenv ssh project
+```
+
+Use `cdenv list`, `cdenv status project`, and `cdenv down project` to inspect,
+monitor, and stop the environment. See the [operations guide](docs/operations.md)
+for dependency versions, installation overrides, SSH consent, and recovery.
 
 ## Development
 
-The development container uses the shared [`ghcr.io/mjswensen/devcontainer`](https://ghcr.io/mjswensen/devcontainer) image and runs as its `mjs` user. On creation it installs the tools pinned in `mise.toml` (Node 24 and Rust 1.97.1) and bootstraps [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 and [Pi](https://pi.dev/). To prepare a local checkout with the same tooling, install [mise](https://mise.jdx.dev/) and run:
+The development container uses the shared [`ghcr.io/mjswensen/devcontainer`](https://ghcr.io/mjswensen/devcontainer) image and runs as its `mjs` user. On creation it installs the tools pinned in `mise.toml` (Python 3.13.15 and Rust 1.97.1) and bootstraps [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 and [Pi](https://pi.dev/). To prepare a local checkout with the same tooling, install [mise](https://mise.jdx.dev/) and run:
 
 ```bash
 mise install

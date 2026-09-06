@@ -27,6 +27,10 @@ jobs:
           bash -n .github/scripts/install-coverage.sh .github/scripts/coverage.sh
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-security-mutations.py
+      - name: Check installer success and verification failure handling
+        run: |
+          sh -n install.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-install.py
       - name: Run strict checks in the pinned development container
         uses: devcontainers/ci@v0.3
         with:

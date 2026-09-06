@@ -22,7 +22,9 @@ Outputs in `target/dist/`:
 - `cdenv-<os>-<architecture>-<commit>.tar`: exactly one regular executable, `cdenv`;
 - `.tar.sha256`: SHA-256 and exact archive filename;
 - `.tar.json`: deterministic platform, version, build ID, protocol and both
-  embedded agent SHA-256 identities.
+  embedded agent SHA-256 identities;
+- `install.sh`: the checksum-verifying GitHub release installer. Tagged builds
+  upload this script together with the platform archives to a draft release.
 
 `cargo xtask test-package <archive.tar>` checks the adjacent checksum and metadata,
 validates canonical archive contents and native executable format/architecture,
@@ -48,6 +50,28 @@ port 22 exists. It cleans up its container/root and never substitutes a build-tr
 binary. The release workflow runs this installed smoke on both Linux archive
 architectures. The macOS equivalent is the separately retained, versioned
 [Docker Desktop checklist](smoke/macos-docker-desktop-v1.md).
+
+## Publishing a tagged release
+
+Pushing a `v*` tag builds all three platforms and uploads their archives,
+checksums, metadata, and `install.sh` to a **draft** GitHub Release. Only the
+release-upload job receives repository write permission. The workflow does not
+make the release public automatically: the macOS runtime gate is manual.
+
+Before publishing:
+
+1. Download the macOS archive and checksum from the draft release as a repository
+   maintainer (or from the corresponding workflow artifacts).
+2. Complete the [Apple Silicon Docker Desktop checklist](smoke/macos-docker-desktop-v1.md)
+   against that exact archive. All required fields and steps must pass.
+3. Attach the completed record and redacted command output to the draft release.
+4. Publish the draft through GitHub's release UI. If the smoke fails or is missing,
+   leave the release in draft; do not publish it.
+
+Draft releases are not available to the public installer. The default installation
+command continues to use the latest published, non-prerelease release until a
+maintainer publishes the new release. Mark release candidates as prereleases
+before publishing them so they do not become the default installation.
 
 `.github/workflows/release.yml` builds the two agents once on Linux using
 `cargo xtask stage-agents`. Each clean native host job downloads that same verified

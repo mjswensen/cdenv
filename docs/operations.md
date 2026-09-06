@@ -29,11 +29,27 @@ and the reference Dev Container CLI are not runtime or release-suite dependencie
 
 ## Install, root selection, and uninstall
 
-Download the archive for the host OS/architecture together with its adjacent
-`.sha256`, verify the checksum before extraction, and install its sole `cdenv`
-executable on `PATH`. See [release packaging](release-packaging.md) for artifact
-identity and checksum details. There is no installer, updater, shell startup
-mutation, privileged helper, or installation-wide daemon.
+The simplest installation uses the release installer. It detects Linux x86_64,
+Linux arm64, and macOS arm64, downloads the matching release archive, verifies
+its adjacent SHA-256 checksum, and installs `cdenv` into a writable directory
+already present in `PATH`:
+
+```bash
+curl -fsSL https://github.com/mjswensen/cdenv/releases/latest/download/install.sh | sh
+```
+
+Set `CDENV_VERSION` to install a tagged release, `CDENV_REPOSITORY` to use a
+fork, or `CDENV_INSTALL_DIR` to select a destination explicitly. The installer
+requires `curl`, `tar`, and a SHA-256 utility (`sha256sum` on Linux or `shasum`
+on macOS). It never modifies shell startup files. If no writable directory is
+already on `PATH`, it stops and explains how to retry with
+`CDENV_INSTALL_DIR`.
+
+For a manual installation, download the archive for the host OS/architecture
+together with its adjacent `.sha256`, verify the checksum before extraction,
+and install its sole `cdenv` executable on `PATH`. See [release packaging](release-packaging.md)
+for artifact identity and checksum details. There is no updater, privileged
+helper, or installation-wide daemon.
 
 By default cdenv uses its documented home location. Set `CDENV_HOME` or pass
 `--root PATH` to select an absolute private root; `--root` is the explicit

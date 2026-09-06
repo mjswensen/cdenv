@@ -27,7 +27,10 @@ Build a locally verifiable release archive from a clean checkout (Docker Buildx 
 cargo xtask dist
 ```
 
-See [release packaging](docs/release-packaging.md) for the three-host matrix, reproducibility contract, and package-only smoke test.
+See [release packaging](docs/release-packaging.md) for the three-host matrix,
+reproducibility contract, package-only smoke, and checksum-verified installed
+Linux workflow. The versioned [macOS Docker Desktop checklist](docs/smoke/macos-docker-desktop-v1.md)
+records the Apple Silicon runtime smoke separately.
 
 `cargo xtask check` runs the same baseline commands used by CI:
 
@@ -35,7 +38,7 @@ See [release packaging](docs/release-packaging.md) for the three-host matrix, re
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --locked
-cargo doc --workspace --no-deps
+cargo doc --workspace --no-deps --locked
 cargo deny check
 ```
 
@@ -46,8 +49,8 @@ cargo xtask test-integration --suite devcontainer-v1
 cargo xtask test-integration --suite openssh
 ```
 
-A suite fails when it is unknown, unavailable, discovers zero tests, or executes no
-passing tests; it never turns an empty package into a successful gate. Until the
-suite is implemented, this is reported as unavailable. Set `CDENV_INTEGRATION=1`
-for declared CI runs: missing Docker Engine/CLI, Compose V2, or OpenSSH dependencies
-then fail rather than skip.
+A suite fails when it is unknown, unavailable, discovers zero tests, skips tests,
+or executes fewer tests than it discovered; it never turns an empty package into
+a successful gate. Declared CI architecture and required fixture mismatches also
+fail. Missing or below-baseline Docker Engine/CLI, Compose V2, or OpenSSH
+prerequisites fail rather than skip.

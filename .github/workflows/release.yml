@@ -64,6 +64,25 @@ jobs:
           cargo xtask dist
           cmp target/first.sha256 target/dist/*.tar.sha256
           cargo xtask test-package target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar
+      - name: Set up pinned Docker for the installed Linux workflow
+        if: runner.os == 'Linux'
+        uses: docker/setup-docker-action@v5
+        with:
+          version: v29.7.1
+      - name: Set up pinned Compose for the installed Linux workflow
+        if: runner.os == 'Linux'
+        uses: docker/setup-compose-action@v2
+        with:
+          version: v5.3.1
+      - name: Build and select baseline OpenSSH for the installed Linux workflow
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential libssl-dev zlib1g-dev
+          .github/scripts/install-openssh.sh
+      - name: Run checksum-verified installed operational smoke
+        if: runner.os == 'Linux'
+        run: cargo xtask test-installed target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar
       - uses: actions/upload-artifact@v4
         with:
           name: cdenv-${{ matrix.platform }}

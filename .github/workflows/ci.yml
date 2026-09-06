@@ -12,88 +12,123 @@ env:
 
 jobs:
   quality:
-    name: Workspace quality gate
-    runs-on: ubuntu-latest
+    name: Strict Rust and cargo-deny quality gate
+    runs-on: ubuntu-24.04
     steps:
-      - name: Check out repository
+      - name: Check out clean locked repository
         uses: actions/checkout@v4
-      - name: Run checks in the development container
+      - name: Require a clean checkout
+        run: test -z "$(git status --porcelain)"
+      - name: Run strict checks in the pinned development container
         uses: devcontainers/ci@v0.3
         with:
           push: never
           env: CARGO_TERM_COLOR
           runCmd: cargo xtask check
 
-  devcontainer-profile-release-gate:
-    name: Dev Container profile (${{ matrix.arch }})
+  linux-release-gates:
+    name: Linux release suites (${{ matrix.arch }}, ${{ matrix.baseline }})
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: x86_64
             runner: ubuntu-24.04
+            baseline: minimum
+            docker: v29.6.2
+            docker_cli_arch: x86_64
+            uname_arch: x86_64
+            docker_cli_sha256: 0fcea2a8b4d1b54ccc9010e3451b78504a369d414f37eb3bb79300e1b5c22ce6
           - arch: arm64
             runner: ubuntu-24.04-arm
+            baseline: minimum
+            docker: v29.6.2
+            docker_cli_arch: aarch64
+            uname_arch: aarch64
+            docker_cli_sha256: 4eb4d1b21131897ed3990aac31039161bf4bdd07fcfb733e996010319ff4e069
+          - arch: x86_64
+            runner: ubuntu-24.04
+            baseline: pinned
+            docker: v29.7.1
+            docker_cli_arch: x86_64
+            uname_arch: x86_64
+            docker_cli_sha256: unused
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            baseline: pinned
+            docker: v29.7.1
+            docker_cli_arch: aarch64
+            uname_arch: aarch64
+            docker_cli_sha256: unused
     runs-on: ${{ matrix.runner }}
     steps:
-      - name: Check out repository
+      - name: Check out clean locked repository
         uses: actions/checkout@v4
-      - name: Select pinned Rust toolchain
-        run: rustup show active-toolchain
-      - name: Set up the verified Docker baseline
+      - name: Require a clean checkout and pinned Rust toolchain
+        run: |
+          test -z "$(git status --porcelain)"
+          rustup show active-toolchain
+      - name: Set up explicit Docker Engine baseline
         uses: docker/setup-docker-action@v5
         with:
-          version: v29.7.1
-      - name: Set up the verified Compose baseline
+          version: ${{ matrix.docker }}
+      - name: Set up minimum Docker CLI independently of minimum Engine
+        if: matrix.baseline == 'minimum'
+        env:
+          CLI_ARCH: ${{ matrix.docker_cli_arch }}
+          CLI_SHA256: ${{ matrix.docker_cli_sha256 }}
+        run: |
+          archive="$RUNNER_TEMP/docker-29.7.1.tgz"
+          curl -fsSL "https://download.docker.com/linux/static/stable/$CLI_ARCH/docker-29.7.1.tgz" -o "$archive"
+          printf '%s  %s\n' "$CLI_SHA256" "$archive" | sha256sum --check --strict
+          mkdir -p "$RUNNER_TEMP/docker-cli"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/docker-cli" --strip-components=1 docker/docker
+          echo "$RUNNER_TEMP/docker-cli" >> "$GITHUB_PATH"
+      - name: Set up explicit minimum Compose V2 baseline
         uses: docker/setup-compose-action@v2
         with:
           version: v5.3.1
-      - name: Run editor-independent profile gate
+      - name: Build and select verified OpenSSH baseline
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes build-essential libssl-dev zlib1g-dev
+          .github/scripts/install-openssh.sh
+      - name: Verify exact selected dependency versions
+        run: |
+          test "$(docker version --format '{{.Client.Version}}')" = 29.7.1
+          if [[ '${{ matrix.baseline }}' == minimum ]]; then
+            test "$(docker version --format '{{.Server.Version}}')" = 29.6.2
+          else
+            test "$(docker version --format '{{.Server.Version}}')" = 29.7.1
+          fi
+          test "$(docker compose version --short)" = 5.3.1
+          ssh -V 2>&1 | grep -q '^OpenSSH_10\.0p2'
+          test "$(uname -m)" = '${{ matrix.uname_arch }}'
+      - name: Run nonempty editor-independent Dev Container profile suite
         env:
           CDENV_INTEGRATION: "1"
+          CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
         run: cargo xtask test-integration --suite devcontainer-v1
-
-  openssh-release-gate:
-    name: OpenSSH interoperability (${{ matrix.arch }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Select pinned Rust toolchain
-        run: rustup show active-toolchain
-      - name: Run standard OpenSSH interoperability gate
+      - name: Run nonempty standard OpenSSH interoperability suite
         env:
           CDENV_INTEGRATION: "1"
+          CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
         run: cargo xtask test-integration --suite openssh
 
   macos-agent-stub:
     name: Agent unsupported-host stub
-    runs-on: macos-latest
+    runs-on: macos-15
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Select pinned Rust toolchain
-        run: rustup show active-toolchain
-      - name: Check agent targets
-        run: cargo check --package cdenv-agent --all-targets --locked
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain
+      - run: cargo check --package cdenv-agent --all-targets --locked
 
   linux-agent-targets:
     name: Agent Linux musl targets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-      - name: Set up ARM64 emulation
-        uses: docker/setup-qemu-action@v3
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
       - name: Build and validate static agent artifacts
         run: cargo xtask stage-agents

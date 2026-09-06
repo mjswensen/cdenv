@@ -27,10 +27,21 @@ connects the embedded bytes to the agents whose runtime identities were verified
 on Linux; it does not attempt to execute Linux binaries on macOS. Run the smoke
 test only on trusted release packages, on their declared native host.
 
-The smoke path clears the host process environment and requires no Docker,
-OpenSSH, installation, consent, or home directory. Development binaries without
-staged agents fail artifact validation. Installed operational workflows remain
-outside this gate (issue 66).
+The package-only smoke path clears the host process environment and requires no
+Docker, OpenSSH, installation, consent, or home directory. Development binaries
+without staged agents fail artifact validation. It deliberately makes no runtime
+claim.
+
+On Linux, `cargo xtask test-installed <archive.tar>` first repeats package and
+adjacent-checksum validation, then extracts that exact archive into an isolated
+`PATH` and root and runs `tests/release/installed-smoke.sh`. The workflow shadows
+Node/editor commands with failing stubs, creates a local Git fixture, exercises
+the applicable implementation-plan §19 list/status/doctor/lock/down/up/rebuild,
+OpenSSH, and foreground-forward commands, and verifies that no `sshd` or published
+port 22 exists. It cleans up its container/root and never substitutes a build-tree
+binary. The release workflow runs this installed smoke on both Linux archive
+architectures. The macOS equivalent is the separately retained, versioned
+[Docker Desktop checklist](smoke/macos-docker-desktop-v1.md).
 
 `.github/workflows/release.yml` builds the two agents once on Linux using
 `cargo xtask stage-agents`. Each clean native host job downloads that same verified
@@ -39,4 +50,6 @@ runs `cargo xtask dist`. Supplied agents must match the current commit and manif
 hashes and pass ELF validation again. The three supported hosts are Linux x86_64,
 Linux aarch64, and macOS aarch64 (Apple Silicon). Each job rebuilds the host to
 check identical archive checksums and uploads the archive and its adjacent
-metadata. No Docker daemon is needed on the macOS runner.
+metadata. No Docker daemon is needed for macOS package construction. Docker Desktop runtime
+behavior is recorded manually with the versioned checklist because hosted macOS
+packaging is not an automated Docker Desktop guarantee.

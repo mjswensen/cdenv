@@ -23,7 +23,7 @@ const QUALITY_COMMANDS: &[&[&str]] = &[
         "warnings",
     ],
     &["test", "--workspace", "--locked"],
-    &["doc", "--workspace", "--no-deps"],
+    &["doc", "--workspace", "--no-deps", "--locked"],
     &["deny", "check"],
 ];
 
@@ -86,6 +86,7 @@ fn main() -> ExitCode {
                 }
             }
         }
+        Some("test-installed") => run_installed_smoke(arguments),
         Some("test-integration") => run_integration(arguments),
         Some("help" | "--help" | "-h") if arguments.next().is_none() => {
             print_help();
@@ -267,6 +268,37 @@ fn run_quality_gate() -> ExitCode {
     ExitCode::SUCCESS
 }
 
+fn run_installed_smoke(arguments: impl Iterator<Item = OsString>) -> ExitCode {
+    let paths = arguments.collect::<Vec<_>>();
+    let [archive] = paths.as_slice() else {
+        eprintln!("xtask: test-installed requires exactly one release archive");
+        return ExitCode::FAILURE;
+    };
+    let archive = match fs::canonicalize(archive) {
+        Ok(path) => path,
+        Err(error) => {
+            eprintln!("xtask: cannot resolve release archive: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = package::smoke(&archive) {
+        eprintln!("xtask: package validation failed before installed smoke: {error}");
+        return ExitCode::FAILURE;
+    }
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map_or_else(|| PathBuf::from("."), Path::to_path_buf)
+        .join("tests/release/installed-smoke.sh");
+    match Command::new("bash").arg(script).arg(archive).status() {
+        Ok(status) if status.success() => ExitCode::SUCCESS,
+        Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
+        Err(error) => {
+            eprintln!("xtask: failed to start installed smoke: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_lines,
     reason = "the release gate keeps dependency, discovery, execution, and count checks ordered"
@@ -397,27 +429,115 @@ fn integration_platform_supported() -> bool {
             env::consts::OS,
             env::consts::ARCH
         );
+        return false;
     }
-    supported
+    if let Ok(declared) = env::var("CDENV_INTEGRATION_ARCH") {
+        let declared = match declared.as_str() {
+            "x86_64" | "amd64" => "x86_64",
+            "arm64" | "aarch64" => "aarch64",
+            _ => {
+                eprintln!("xtask: unsupported declared integration architecture `{declared}`");
+                return false;
+            }
+        };
+        if declared != env::consts::ARCH {
+            eprintln!(
+                "xtask: declared integration architecture {declared} does not match host {}",
+                env::consts::ARCH
+            );
+            return false;
+        }
+    }
+    true
 }
 
 fn integration_dependencies_available() -> bool {
-    let dependencies = [
-        ("Docker Engine/CLI", "docker", vec!["version"]),
-        ("Docker Compose V2", "docker", vec!["compose", "version"]),
-        ("OpenSSH client", "ssh", vec!["-V"]),
-    ];
-    let mut available = true;
-    for (name, executable, arguments) in dependencies {
-        if !matches!(
-            Command::new(executable).args(arguments).status(),
-            Ok(status) if status.success()
-        ) {
+    let docker = dependency_output(
+        "Docker Engine/CLI",
+        "docker",
+        &[
+            "version",
+            "--format",
+            "{{.Client.Version}} {{.Server.Version}} {{.Server.APIVersion}}",
+        ],
+    );
+    let compose = dependency_output(
+        "Docker Compose V2",
+        "docker",
+        &["compose", "version", "--short"],
+    );
+    let openssh = dependency_output("OpenSSH client", "ssh", &["-V"]);
+    let Some((docker, compose, openssh)) = docker
+        .zip(compose)
+        .zip(openssh)
+        .map(|((a, b), c)| (a, b, c))
+    else {
+        return false;
+    };
+
+    let docker = String::from_utf8_lossy(&docker.stdout);
+    let fields = docker.split_whitespace().collect::<Vec<_>>();
+    let docker_supported = fields.len() == 3
+        && version_at_least(fields[0], (29, 7, 1))
+        && version_at_least(fields[1], (29, 6, 2))
+        && version_at_least(fields[2], (1, 55, 0));
+    let compose_supported =
+        version_at_least(String::from_utf8_lossy(&compose.stdout).trim(), (5, 3, 1));
+    let openssh_text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&openssh.stdout),
+        String::from_utf8_lossy(&openssh.stderr)
+    );
+    let openssh_version = openssh_text
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("OpenSSH_"));
+    let openssh_supported =
+        openssh_version.is_some_and(|value| version_at_least(value, (10, 0, 2)));
+    if !docker_supported {
+        eprintln!(
+            "xtask: Docker requires CLI 29.7.1+, Engine 29.6.2+, and API 1.55+; found `{docker}`"
+        );
+    }
+    if !compose_supported {
+        eprintln!("xtask: Docker Compose V2 5.3.1+ is required");
+    }
+    if !openssh_supported {
+        eprintln!(
+            "xtask: OpenSSH 10.0p2+ is required; found `{}`",
+            openssh_text.trim()
+        );
+    }
+    docker_supported && compose_supported && openssh_supported
+}
+
+fn dependency_output(name: &str, executable: &str, arguments: &[&str]) -> Option<Output> {
+    match Command::new(executable).args(arguments).output() {
+        Ok(output) if output.status.success() => Some(output),
+        Ok(_) | Err(_) => {
             eprintln!("xtask: declared integration environment is missing {name}");
-            available = false;
+            None
         }
     }
-    available
+}
+
+fn version_at_least(value: &str, minimum: (u32, u32, u32)) -> bool {
+    let mut components = value
+        .trim_start_matches(['v', 'V'])
+        .split(['.', 'p', '_'])
+        .map(|part| {
+            part.chars()
+                .take_while(char::is_ascii_digit)
+                .collect::<String>()
+                .parse::<u32>()
+        });
+    let Some(Ok(major)) = components.next() else {
+        return false;
+    };
+    let Some(Ok(minor)) = components.next() else {
+        return false;
+    };
+    let patch = components.next().and_then(Result::ok).unwrap_or(0);
+    (major, minor, patch) >= minimum
 }
 
 fn discovered_tests(output: &Output) -> usize {
@@ -484,7 +604,7 @@ fn print_command(cargo: &OsStr, arguments: &[&str]) {
 
 fn print_help() {
     eprintln!(
-        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask stage-agents\n  cargo xtask test-package <archive.tar>\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing dependencies never skip the suite."
+        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask stage-agents\n  cargo xtask test-package <archive.tar>\n  cargo xtask test-installed <archive.tar>\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing or below-baseline dependencies never skip the suite."
     );
 }
 
@@ -503,5 +623,13 @@ mod tests {
             Ok(IntegrationSuite::Openssh)
         );
         assert!(IntegrationSuite::parse("unknown").is_err());
+    }
+
+    #[test]
+    fn dependency_version_parser_handles_docker_compose_and_openssh_versions() {
+        assert!(version_at_least("v29.7.1", (29, 7, 1)));
+        assert!(version_at_least("10.0p2", (10, 0, 2)));
+        assert!(!version_at_least("OpenSSH_9.9p9", (10, 0, 2)));
+        assert!(!version_at_least("29.6.9", (29, 7, 1)));
     }
 }

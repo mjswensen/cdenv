@@ -294,6 +294,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn https_references_reject_username_only_and_password_only_credentials() {
+        for reference in [
+            "https://user@example.com/feature.tgz",
+            "https://:secret@example.com/feature.tgz",
+        ] {
+            assert!(FeatureReference::parse(reference).is_err());
+        }
+    }
+
+    #[test]
     fn references_normalize_and_reject_unsupported_transport_forms() {
         assert_eq!(
             FeatureReference::parse("GHCR.IO/devcontainers/features/git:1")

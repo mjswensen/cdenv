@@ -278,6 +278,22 @@ mod tests {
     use super::*;
     use std::io::Cursor;
 
+    #[test]
+    fn archive_path_policy_rejects_absolute_and_parent_paths_before_io() {
+        for path in ["/escape", "../escape", "safe/../../escape"] {
+            assert!(
+                validate_archive_path(Path::new(path), 4096).is_err(),
+                "accepted {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_path_policy_accepts_exact_byte_limit_but_rejects_one_over() {
+        assert!(validate_archive_path(Path::new("safe/file"), 9).is_ok());
+        assert!(validate_archive_path(Path::new("safe/file"), 8).is_err());
+    }
+
     fn archive(path: &Path, name: &str) {
         let file = File::create(path).expect("archive");
         let mut tar = tar::Builder::new(file);

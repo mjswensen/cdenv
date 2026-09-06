@@ -152,6 +152,20 @@ pub(super) fn checked_https_url(value: &str) -> Result<Url, FeatureSourceError> 
 mod tests {
     use super::*;
     #[test]
+    fn https_policy_rejects_downgrades_credentials_and_private_redirect_targets() {
+        for value in [
+            "http://registry.example/blob",
+            "https://user@registry.example/blob",
+            "https://:secret@registry.example/blob",
+            "https://10.0.0.1/blob",
+            "https://localhost/blob",
+        ] {
+            assert!(checked_https_url(value).is_err(), "accepted {value}");
+        }
+        assert!(checked_https_url("https://registry.example/blob").is_ok());
+    }
+
+    #[test]
     fn same_origin_requires_scheme_host_and_effective_port_to_match() {
         let origin = Url::parse("https://registry.example:443/v2/tool").expect("origin URL");
         let same = Url::parse("https://REGISTRY.example/v2/blob").expect("same-origin URL");

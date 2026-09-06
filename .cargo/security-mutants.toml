@@ -1,0 +1,7 @@
+# Invoked only through .github/scripts/security-mutations.py.
+# Selection and the reviewed baseline live in security-mutants.json.
+additional_cargo_args = ["--locked", "--lib"]
+additional_cargo_test_args = ["feature"]
+copy_target = false
+copy_vcs = false
+gitignore = true

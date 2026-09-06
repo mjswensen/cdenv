@@ -1,0 +1,26 @@
+{
+  "diff_sha256": {
+    "archive-entry-bound": "c883ed5aa1e103fd1a4222f7f83f23633d89e28a38297b73db70a1b8b86c403e",
+    "archive-path-bound": "ae091c16fbb35ba239d967d52c2881471ae087f0d867148763b0c73da0070fa2",
+    "archive-path-components": "1551dfd7babeb90c5792f8a85f2a037b403b9c87a0208186b4375ccf832ee243",
+    "archive-path-validation": "4341d357aa05563d53ef807f73e20712f1d2e8e6064a1284cdf1b4a6d4bc56b7",
+    "bearer-realm": "5565c4b00102bac3184354a72ab9ac0caf9c17e5fd7826809bd201600e4bd9af",
+    "bearer-scope": "58b6b96536564e7ecff733bacfc99adb5282a9dddf7225b936a85fb8d5ee1255",
+    "bearer-service": "2c21dea68e09359392e6bcd24904fd47b67320108c8da77432faeb22e7bc69f4",
+    "blob-digest": "1394c23e251f350f749b3bf28da4ad1a8a90328af3df4cde37c7691d0917dd34",
+    "frozen-resolution": "fd52d6e379fb6c327541f32f83e3abee90550276492d7b2f18508d447e85ce73",
+    "https-reference-credentials": "eb0872277389e6c4561638b725749d11f38b52ff3cdd7f59a9f86da7140328b5",
+    "https-transport": "89717a83c72b8e1063c3a82e006a134441ff330184608ef59b7cb5845e95ce8d",
+    "local-reference-separators": "dc7a3e1bec54f7e1ec144b36cbda60299804ca7c291509cb686571f9027e4598",
+    "lock-structure": "5cda75653b0d8fe2a8e03e454f8d5b683c94b234b1c4e34cfb8da2d04c5e1f25",
+    "manifest-descriptor": "c6f4184f3b8811d36627bf3319e7c94acbb46fecae7a94063e6b5ba80a82db79",
+    "redirect-credentials": "d260d42aa136a85c5d394b97079d9381f24266705469820bf231b7cac70a8e3d",
+    "redirect-origin": "0a1ce567604a969b6a585a7632a8cf9e7d4c511f77faf9dffa4812641e023408",
+    "redirect-port-boundary": "601a9c9bc9bb3a12b92b9bf2cb73148e1b33cf249af5d488e903bd68b16763fa",
+    "redirect-private-host": "6875755b350b423cd386c56a4a06b1a7816bc3b51a3f2b66203bb9b75e6daefe",
+    "reference-private-host": "33eadf9430006926362e4433c21f3560ee20751e5ab5b416c0d10352a784776d",
+    "reference-sha256": "56eb977bdf625e7d8dcb21b4a2168d581e4c85f23a0c45ee0f8eb4cb2396cac2"
+  },
+  "revision": "security-feature-v1",
+  "schema": 1
+}

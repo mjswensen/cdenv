@@ -254,6 +254,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn blob_digest_rejects_changed_content_with_the_same_length() {
+        let expected = digest_bytes(b"trusted blob");
+        assert!(verify_digest(&expected, b"trusted blob").is_ok());
+        assert!(matches!(
+            verify_digest(&expected, b"changed blob"),
+            Err(FeatureSourceError::Digest { .. })
+        ));
+    }
+
+    #[test]
     fn downloaded_size_accepts_the_limit_and_detects_one_byte_overflow() {
         assert_eq!(checked_download_size(63, 1, 64).expect("exact limit"), 64);
         assert!(checked_download_size(64, 1, 64).is_err());

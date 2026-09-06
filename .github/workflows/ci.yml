@@ -22,16 +22,47 @@ jobs:
         uses: actions/checkout@v4
       - name: Require a clean checkout
         run: test -z "$(git status --porcelain)"
-      - name: Check coverage plumbing and failure handling
+      - name: Check coverage and mutation plumbing failure handling
         run: |
           bash -n .github/scripts/install-coverage.sh .github/scripts/coverage.sh
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-security-mutations.py
       - name: Run strict checks in the pinned development container
         uses: devcontainers/ci@v0.3
         with:
           push: never
           env: CARGO_TERM_COLOR
           runCmd: cargo xtask check
+
+  security-mutations:
+    name: Security mutations (${{ matrix.shard }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [reference-lock, transport, archive-integrity]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require clean source and pinned Rust
+        run: |
+          test -z "$(git status --porcelain)"
+          rustup show active-toolchain
+      - name: Install pinned mutation runner
+        run: cargo install cargo-mutants --version '=27.1.0' --locked
+      - name: Run reviewed nonempty shard in disposable source copies
+        run: python3 .github/scripts/security-mutations.py '${{ matrix.shard }}'
+      - name: Independently verify source bytes even after gate failure
+        if: always()
+        run: python3 .github/scripts/security-mutations.py '${{ matrix.shard }}' --verify-source
+      - name: Retain selection, diffs, test logs, outcomes and source evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-mutations-linux-x86_64-${{ matrix.shard }}
+          path: target/security-mutations/${{ matrix.shard }}/
+          if-no-files-found: error
+          retention-days: 14
 
   workspace-coverage:
     name: Workspace coverage (${{ matrix.platform }})

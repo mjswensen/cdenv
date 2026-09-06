@@ -1,0 +1,149 @@
+{
+  "schema": 1,
+  "runner_version": "27.1.0",
+  "baseline_revision": "security-feature-v1",
+  "product_revision": "f96b4adcced0",
+  "shards": ["reference-lock", "transport", "archive-integrity"],
+  "targets": [
+    {
+      "id": "local-reference-separators",
+      "shard": "reference-lock",
+      "name": "crates/cdenv-devcontainer/src/feature/reference.rs:86:43: replace || with && in normalize_local",
+      "test": "feature::reference::tests::references_normalize_and_reject_unsupported_transport_forms",
+      "reason": "NUL or backslash alone must not bypass contained local-reference validation."
+    },
+    {
+      "id": "https-reference-credentials",
+      "shard": "reference-lock",
+      "name": "crates/cdenv-devcontainer/src/feature/reference.rs:106:35: replace || with && in normalize_https",
+      "test": "feature::reference::tests::https_references_reject_username_only_and_password_only_credentials",
+      "reason": "Either username or password is sufficient to reject a credential-bearing reference."
+    },
+    {
+      "id": "reference-private-host",
+      "shard": "reference-lock",
+      "name": "crates/cdenv-devcontainer/src/feature/reference.rs:194:5: replace reject_private_host -> Result<(), FeatureError> with Ok(())",
+      "test": "feature::reference::tests::references_normalize_and_reject_unsupported_transport_forms",
+      "reason": "Private and metadata-service destinations must not pass public Feature validation."
+    },
+    {
+      "id": "reference-sha256",
+      "shard": "reference-lock",
+      "name": "crates/cdenv-devcontainer/src/feature/reference.rs:224:5: replace validate_sha256 -> Result<(), &'static str> with Ok(())",
+      "test": "feature::reference::tests::references_normalize_and_reject_unsupported_transport_forms",
+      "reason": "OCI identities require a syntactically valid SHA-256 selector, not a malformed digest."
+    },
+    {
+      "id": "frozen-resolution",
+      "shard": "reference-lock",
+      "name": "crates/cdenv-devcontainer/src/feature/lock.rs:130:9: replace FeatureLock::validate_frozen -> Result<(), FeatureError> with Ok(())",
+      "test": "feature::lock::boundary_tests::frozen_validation_detects_changes_in_each_serialized_resolution_field",
+      "reason": "Frozen operation must reject changed roots, options, versions, dependencies and content identities."
+    },
+    {
+      "id": "lock-structure",
+      "shard": "reference-lock",
+      "name": "crates/cdenv-devcontainer/src/feature/lock.rs:158:9: replace FeatureLock::validate_structure -> Result<(), FeatureError> with Ok(())",
+      "test": "feature::lock::boundary_tests::parsing_and_encoding_enforce_the_same_structural_validation",
+      "reason": "Unsupported schemas and malformed integrity records cannot become trusted frozen state."
+    },
+    {
+      "id": "redirect-origin",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/http.rs:99:5: replace same_origin -> bool with true",
+      "test": "feature_sources::http::tests::same_origin_requires_scheme_host_and_effective_port_to_match",
+      "reason": "Treating every redirect as same-origin permits bearer credentials to cross the origin boundary."
+    },
+    {
+      "id": "redirect-port-boundary",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/http.rs:105:9: replace && with || in same_origin",
+      "test": "feature_sources::http::tests::same_origin_requires_scheme_host_and_effective_port_to_match",
+      "reason": "A matching scheme/host is insufficient when the effective port changes."
+    },
+    {
+      "id": "https-transport",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/http.rs:113:21: replace != with == in checked_https_url",
+      "test": "feature_sources::http::tests::https_policy_rejects_downgrades_credentials_and_private_redirect_targets",
+      "reason": "HTTP downgrade targets must be rejected before dispatch."
+    },
+    {
+      "id": "redirect-credentials",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/http.rs:119:35: replace || with && in checked_https_url",
+      "test": "feature_sources::http::tests::https_policy_rejects_downgrades_credentials_and_private_redirect_targets",
+      "reason": "Redirect URLs with only one credential field still violate anonymous source policy."
+    },
+    {
+      "id": "redirect-private-host",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/http.rs:142:21: replace || with && in checked_https_url",
+      "test": "feature_sources::http::tests::https_policy_rejects_downgrades_credentials_and_private_redirect_targets",
+      "reason": "A private IP or private DNS name alone must be rejected at every redirect."
+    },
+    {
+      "id": "bearer-realm",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/oci.rs:280:13: delete match arm \"realm\" in parse_bearer_challenge",
+      "test": "feature_sources::oci::tests::bearer_challenge_accepts_anonymous_scope_without_credentials",
+      "reason": "Anonymous token dispatch must preserve the challenged realm rather than losing authentication state."
+    },
+    {
+      "id": "bearer-service",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/oci.rs:281:13: delete match arm \"service\" in parse_bearer_challenge",
+      "test": "feature_sources::oci::tests::bearer_challenge_accepts_anonymous_scope_without_credentials",
+      "reason": "The challenged token audience/service must survive parsing."
+    },
+    {
+      "id": "bearer-scope",
+      "shard": "transport",
+      "name": "crates/cdenv-cli/src/feature_sources/oci.rs:282:13: delete match arm \"scope\" in parse_bearer_challenge",
+      "test": "feature_sources::oci::tests::bearer_challenge_accepts_anonymous_scope_without_credentials",
+      "reason": "Repository pull scope must not silently disappear from the anonymous token request."
+    },
+    {
+      "id": "manifest-descriptor",
+      "shard": "archive-integrity",
+      "name": "crates/cdenv-cli/src/feature_sources/oci.rs:329:5: replace verify_manifest_descriptor -> Result<(), FeatureSourceError> with Ok(())",
+      "test": "feature_sources::oci::tests::selected_manifest_descriptor_rejects_size_and_digest_mismatches",
+      "reason": "Selected manifests must match both descriptor size and digest before trusting their layer declarations."
+    },
+    {
+      "id": "blob-digest",
+      "shard": "archive-integrity",
+      "name": "crates/cdenv-cli/src/feature_sources/cache.rs:153:5: replace verify_digest -> Result<(), FeatureSourceError> with Ok(())",
+      "test": "feature_sources::cache::tests::blob_digest_rejects_changed_content_with_the_same_length",
+      "reason": "Length-preserving blob corruption must fail digest verification, including offline cache reuse."
+    },
+    {
+      "id": "archive-path-validation",
+      "shard": "archive-integrity",
+      "name": "crates/cdenv-cli/src/feature_sources/archive.rs:253:5: replace validate_archive_path -> Result<(), FeatureSourceError> with Ok(())",
+      "test": "feature_sources::archive::tests::archive_path_policy_rejects_absolute_and_parent_paths_before_io",
+      "reason": "Path safety must be enforced by our validator, not accidentally by a later tar or filesystem failure."
+    },
+    {
+      "id": "archive-path-components",
+      "shard": "archive-integrity",
+      "name": "crates/cdenv-cli/src/feature_sources/archive.rs:264:9: replace || with && in validate_archive_path",
+      "test": "feature_sources::archive::tests::archive_path_policy_rejects_absolute_and_parent_paths_before_io",
+      "reason": "Relative parent traversal is unsafe even when the path is not absolute."
+    },
+    {
+      "id": "archive-path-bound",
+      "shard": "archive-integrity",
+      "name": "crates/cdenv-cli/src/feature_sources/archive.rs:257:19: replace > with >= in validate_archive_path",
+      "test": "feature_sources::archive::tests::archive_path_policy_accepts_exact_byte_limit_but_rejects_one_over",
+      "reason": "The hostile-path byte bound must distinguish exact contract limits from overflow."
+    },
+    {
+      "id": "archive-entry-bound",
+      "shard": "archive-integrity",
+      "name": "crates/cdenv-cli/src/feature_sources/archive.rs:176:18: replace > with >= in extract_into",
+      "test": "feature_sources::archive::tests::extraction_limits_accept_exact_bounds_and_reject_one_over",
+      "reason": "Entry-count enforcement must retain exact-bound valid archives while rejecting resource exhaustion."
+    }
+  ]
+}

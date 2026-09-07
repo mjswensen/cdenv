@@ -1,7 +1,17 @@
 ---
 id: 68
 created: 2026-09-07
-depends-on: []
+depends-on:
+  - 69
+  - 70
+  - 71
+  - 72
+  - 73
+  - 74
+  - 75
+  - 76
+  - 77
+  - 78
 ---
 
 # Forward host Git credentials with a workspace-scoped broker
@@ -11,6 +21,29 @@ depends-on: []
 Make supported Git authentication that already works on the host available to Git in the running primary dev container, without copying the host's credential stores or private keys into it. Look up HTTPS credentials through host Git on demand and forward access to a selected host SSH agent. Also provide separately enabled inheritance of Git author name/email.
 
 This is an implementation issue with an agreed product contract, informed by a source-level comparison with DevPod. It is not a request to execute Git operations on the host on behalf of the container, implement a general secret store, or promise that every host Git/SSH configuration is automatically portable.
+
+## Remaining implementation breakdown
+
+Planning baseline (2026-09-07): a permission/parser foundation has been prepared in the source working tree, including independent command grammar, staged/bound receipts, strict origin validation, redacted bounded credential types, read-only permission reporting, tests, and ADR 0002. It is not a working credential broker or complete lifecycle integration. Preserve and build on that foundation rather than treating it as evidence that the product acceptance criteria below are complete.
+
+The remaining work is split into the following blocking issues. This issue remains the umbrella and normative product/security contract; the split does not weaken its agreed decisions or acceptance criteria.
+
+| Issue | Remaining work |
+|---|---|
+| [69](0069-wire-production-create-and-up-lifecycle-workflows.md) | Connect production `create`/`up` to the existing planning, provisioning, lifecycle, and forwarding coordinators. |
+| [70](0070-wire-production-down-rebuild-and-recovery-workflows.md) | Connect production `down`/`rebuild`, rollback, and Compose partial-recovery workflows. |
+| [71](0071-build-the-versioned-workspace-credential-broker-and-private-exec-bridge.md) | Implement versioned broker transport, verified workspace/generation leases, private container endpoints, and bounded multiplexing. |
+| [72](0072-implement-trusted-noninteractive-host-git-credential-lookups.md) | Implement trusted neutral-context, noninteractive, bounded host Git credential lookups without token caching. |
+| [73](0073-install-the-static-https-helper-and-preserve-container-git-configuration.md) | Install the static HTTPS helper and reversible per-origin integration that preserves configuration and isolates native helpers. |
+| [74](0074-relay-explicitly-selected-host-ssh-agents-through-the-credential-bridge.md) | Relay selected host SSH agents with socket validation, refresh, protocol bounds, and cancellation. |
+| [75](0075-implement-separately-enabled-missing-field-git-author-identity-defaults.md) | Supply separately enabled name/email defaults only where identity fields are genuinely missing. |
+| [76](0076-reconcile-live-credential-grants-revocation-and-health-reporting.md) | Implement authenticated live grant reconciliation, acknowledged selective revocation, and real per-capability health reporting. |
+| [77](0077-integrate-credentials-with-early-lifecycle-readiness-and-generation-handoff.md) | Enroll early/detached lifecycle and SSH work, establish workspace lifetime, and handle stop/reconnect/rebuild generation transitions. |
+| [78](0078-gate-credential-workflows-security-and-cross-platform-release-compatibility.md) | Supply authenticated end-to-end fixtures, security/release gates, Linux architecture coverage, macOS smoke, and final compatibility documentation. |
+
+The dependency graph permits production create/up wiring (69), the transport substrate (71), and the host Git backend (72) to proceed independently once the foundation is available. Capability implementations feed live reconciliation (76); production lifecycle composition and live services then converge in 77, followed by release evidence in 78. Each child's `depends-on` frontmatter records its concrete prerequisites; no child depends on this umbrella, avoiding a cycle.
+
+Keep issue 68 open until the complete contract has been reviewed against the implemented workflows and release evidence. Closing the component issues does not automatically resolve the umbrella or authorize treating missing platform evidence as a passing gate.
 
 ## Agreed decisions
 

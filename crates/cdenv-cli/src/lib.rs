@@ -20,6 +20,7 @@ mod compose_lifecycle;
 mod compose_rebuild;
 mod config;
 mod create;
+mod credentials;
 mod docker;
 mod docker_cli;
 mod doctor;
@@ -69,7 +70,8 @@ pub use bollard::{
     decode_docker_multiplexed, verify_port_bindings,
 };
 pub use command_line::{
-    CliCommand, CommandKind, CommandLine, CreateArgs, DoctorArgs, DownArgs, ForwardArgs,
+    CliCommand, CommandKind, CommandLine, CreateArgs, CredentialEnable, CredentialOriginCapability,
+    CredentialOriginsArgs, CredentialsArgs, CredentialsCommand, DoctorArgs, DownArgs, ForwardArgs,
     ForwardMapping, ForwardMappingError, ListArgs, LockArgs, OutputFormat, ProxyArgs, RebuildArgs,
     RepoRelativeConfigPath, RepoRelativeConfigPathError, SshArgs, SshConfigConsent, StatusArgs,
     UpArgs, WorkspaceSelector, WorkspaceSelectorError,
@@ -94,6 +96,10 @@ pub use config::{ConfigLoadError, ConfigSource, discover_and_read_config};
 pub use create::{
     ConfigContainmentError, CreateWorkspaceError, CreateWorkspaceRequest, CreatedWorkspace,
     create_workspace, validate_explicit_config,
+};
+pub use credentials::{
+    CREDENTIAL_PERMISSION_SCHEMA, CredentialCommandError, CredentialPermissionState,
+    CredentialStatusReport, credential_status, mutate_credentials, render_credentials_application,
 };
 pub use docker::{
     ApiVersion, BollardConnector, BollardConnectorError, DOCKER_PROBE_TIMEOUT, DockerCapabilities,
@@ -487,6 +493,11 @@ pub fn invoke_with_root(
         .map_err(|error| ApplicationError::CreateFailed {
             message: error.to_string(),
         }),
+        CliCommand::Credentials(arguments) => mutate_credentials(root, &arguments.command)
+            .map(|_| ())
+            .map_err(|error| ApplicationError::CredentialsFailed {
+                message: error.to_string(),
+            }),
         CliCommand::Lock(arguments) => {
             lock_workspace(root, arguments)
                 .map(|_| ())

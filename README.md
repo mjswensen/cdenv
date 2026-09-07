@@ -22,6 +22,14 @@ Use `cdenv list`, `cdenv status project`, and `cdenv down project` to inspect,
 monitor, and stop the environment. See the [operations guide](docs/operations.md)
 for dependency versions, installation overrides, SSH consent, and recovery.
 
+## Host credential permissions
+
+`cdenv credentials` manages independently opted-in HTTPS, SSH-agent, and Git
+author-identity permissions, including staging before an explicitly named clone.
+**This is currently a permission/parser foundation, not working live credential
+forwarding.** Production lifecycle command wiring and the credential broker are
+still required for issue 68. See the [implemented boundary and command guide](docs/operations.md#host-credential-permissions-issue-68).
+
 ## Development
 
 The development container uses the shared [`ghcr.io/mjswensen/devcontainer`](https://ghcr.io/mjswensen/devcontainer) image and runs as its `mjs` user. On creation it installs the tools pinned in `mise.toml` (Python 3.13.15 and Rust 1.97.1) and bootstraps [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 and [Pi](https://pi.dev/). To prepare a local checkout with the same tooling, install [mise](https://mise.jdx.dev/) and run:

@@ -470,8 +470,18 @@ fn help_lists_exactly_the_v1_commands() {
     assert_eq!(
         command_names,
         [
-            "create", "list", "up", "down", "rebuild", "status", "ssh", "forward", "lock", "proxy",
-            "doctor"
+            "create",
+            "list",
+            "up",
+            "down",
+            "rebuild",
+            "status",
+            "ssh",
+            "forward",
+            "lock",
+            "proxy",
+            "doctor",
+            "credentials"
         ]
     );
 }

@@ -5,6 +5,8 @@
 //! integers are validated before they cross persistence, Docker, or agent
 //! protocol boundaries.
 
+pub mod credential_protocol;
+pub mod credentials;
 pub mod executable;
 mod identity;
 mod status;

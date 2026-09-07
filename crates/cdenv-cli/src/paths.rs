@@ -174,6 +174,25 @@ impl CdenvRoot {
         self.0.join("fingerprint.key")
     }
 
+    /// Returns private installation-scoped credential permission storage.
+    #[must_use]
+    pub fn credential_permissions_dir(&self) -> PathBuf {
+        self.0.join("credentials")
+    }
+
+    /// Returns the lock serializing staged and bound permission changes.
+    #[must_use]
+    pub fn credential_permissions_lock(&self) -> PathBuf {
+        self.credential_permissions_dir().join("permissions.lock")
+    }
+
+    /// Returns the permission file for exactly one validated workspace name.
+    #[must_use]
+    pub fn credential_permission_file(&self, name: &WorkspaceName) -> PathBuf {
+        self.credential_permissions_dir()
+            .join(format!("{name}.json"))
+    }
+
     /// Returns the managed workspace collection directory.
     #[must_use]
     pub fn workspaces_dir(&self) -> PathBuf {
@@ -259,6 +278,12 @@ impl WorkspacePaths<'_> {
     #[must_use]
     pub fn state_file(&self) -> PathBuf {
         self.root().join("state.json")
+    }
+
+    /// Returns the private receipt binding grants to this exact workspace identity.
+    #[must_use]
+    pub fn credential_binding_file(&self) -> PathBuf {
+        self.root().join("credential-binding.json")
     }
 
     /// Returns the workspace operation lock path.

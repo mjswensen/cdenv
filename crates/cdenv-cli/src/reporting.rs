@@ -93,6 +93,7 @@ pub struct WorkspaceListItem {
     source: Option<String>,
     config: Option<String>,
     profile: Option<String>,
+    credentials: Option<crate::CredentialStatusReport>,
     message: Option<String>,
 }
 
@@ -167,6 +168,7 @@ pub struct WorkspaceStatusReport {
     feature_digests: BTreeMap<String, String>,
     agent_build_id: Option<String>,
     agent_protocol_version: Option<u32>,
+    credentials: crate::CredentialStatusReport,
 }
 
 impl WorkspaceStatusReport {
@@ -199,6 +201,7 @@ impl WorkspaceStatusReport {
             dimensions.forwarding(),
             ForwardingStatus::Active | ForwardingStatus::NotConfigured
         ) || !matches!(dimensions.local_health(), LocalHealthStatus::Valid)
+            || self.credentials.is_unavailable()
             || self
                 .status
                 .facts()
@@ -316,6 +319,7 @@ fn list_item(
                 source: Some(state.repository_source().as_str().to_owned()),
                 config: Some(state.desired_devcontainer_config().as_str().to_owned()),
                 profile: Some(state.devcontainer_profile().as_str().to_owned()),
+                credentials: Some(crate::credential_status(root, state.name())),
                 message: None,
             }
         }
@@ -325,6 +329,7 @@ fn list_item(
             source: None,
             config: None,
             profile: None,
+            credentials: None,
             message: Some(entry_message(invalid)),
         },
     }
@@ -729,6 +734,7 @@ pub fn requested_workspace_status(
             .map_or_else(BTreeMap::new, |active| active.feature_digests().clone()),
         agent_build_id: active.map(|active| active.provisioned().agent_build_id().to_string()),
         agent_protocol_version: active.map(|active| active.provisioned().protocol_version().get()),
+        credentials: crate::credential_status(root, name),
     })
 }
 
@@ -782,13 +788,13 @@ pub fn render_human_list(
 ) -> io::Result<()> {
     writeln!(
         writer,
-        "NAME\tENVIRONMENT\tOPERATION\tCONFIGURATION\tHEALTH"
+        "NAME\tENVIRONMENT\tOPERATION\tCONFIGURATION\tHEALTH\tCREDENTIALS"
     )?;
     for item in report.workspaces() {
         let dimensions = item.status().dimensions();
         writeln!(
             writer,
-            "{}\t{}\t{}\t{}/{}/{}\t{}",
+            "{}\t{}\t{}\t{}/{}/{}\t{}\t{}",
             item.name,
             enum_name(dimensions.environment()),
             enum_name(dimensions.operation()),
@@ -796,6 +802,9 @@ pub fn render_human_list(
             enum_name(dimensions.configuration().create()),
             enum_name(dimensions.configuration().runtime()),
             enum_name(dimensions.local_health()),
+            item.credentials
+                .as_ref()
+                .map_or("unavailable", crate::CredentialStatusReport::summary),
         )?;
     }
     Ok(())
@@ -835,6 +844,7 @@ pub fn render_human_status(
     writeln!(writer, "Operation: {}", enum_name(dimensions.operation()))?;
     writeln!(writer, "Lifecycle: {}", enum_name(dimensions.lifecycle()))?;
     writeln!(writer, "Forwarding: {}", enum_name(dimensions.forwarding()))?;
+    writeln!(writer, "Credentials: {}", report.credentials.summary())?;
     writeln!(
         writer,
         "Local health: {}",

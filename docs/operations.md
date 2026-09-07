@@ -55,7 +55,8 @@ By default cdenv uses its documented home location. Set `CDENV_HOME` or pass
 `--root PATH` to select an absolute private root; `--root` is the explicit
 per-command override. Do not share or copy roots between users or installations.
 A root contains installation identity, checkout registry/state, private keys,
-managed SSH configuration, forwarding control files, operation logs, and caches.
+managed SSH configuration, forwarding control files, explicit credential
+permission records, operation logs, and caches.
 The only managed host path outside it is an explicitly consented SSH Include;
 the only checkout write is an explicit Feature lock operation.
 
@@ -133,6 +134,127 @@ all-or-none, ends on Ctrl+C, and rejects listener conflicts. Non-loopback exposu
 requires explicit `--bind` and emits a warning because other hosts may connect.
 `appPort` is Docker publication and follows the binding recorded in the support
 matrix; inspect it separately from cdenv forwarding.
+
+## Host credential permissions (issue 68)
+
+**Implementation status: permission management and bounded credential parsing
+only. Live forwarding is not available in this build.** The current CLI `create`
+workflow ends after cloning; production `up`, `down`, and `rebuild` dispatch is
+not yet wired to the library coordinators. Saving permission does not make Git
+in a container authenticate, and the first-hook workflow in issue 68 is not yet
+implemented. See [ADR 0002](adr/0002-opt-in-host-capabilities.md) for the precise
+implemented/pending boundary.
+
+Permissions are independent, off by default, installation/workspace-scoped, and
+never derived from `devcontainer.json`, `customizations`, `remoteEnv`, or
+advisory `secrets`. The explicit command is noninteractive consent to the named
+authority; there is no enable-all default:
+
+```text
+cdenv credentials enable NAME git-https [--host HTTPS_ORIGIN ...]
+cdenv credentials enable NAME ssh-agent [--socket auto|ABSOLUTE_HOST_SOCKET]
+cdenv credentials enable NAME git-identity
+cdenv credentials allow NAME git-https HTTPS_ORIGIN ...
+cdenv credentials deny NAME git-https HTTPS_ORIGIN ...
+cdenv credentials disable NAME [CAPABILITY ...]
+cdenv credentials status NAME [--json]
+```
+
+Supply several origins after `--host`, or repeat `--host`. `--root` and `CDENV_HOME` retain
+their normal precedence. HTTPS origins allow private/intranet servers, DNS/IDNA
+names, and bracketed IPv6. The effective port is explicit in stored/displayed
+origins, so `https://git.example`, `https://git.example/`, and
+`https://git.example:443` name the same grant. Userinfo, wildcard, query, fragment,
+non-root path, control characters, and ambiguous shorthand are rejected. Paths
+and usernames are future lookup context, not permission scope.
+
+First HTTPS enable for a bound workspace may derive only the original sanitized
+HTTPS source origin. SSH/local sources require explicit origins. Re-enabling
+without origins does not widen an existing allowlist, even after every origin
+has been denied. `allow`/`deny` never enable a disabled capability. Omitted
+`--socket` preserves an existing explicit selector; the first omission records
+`auto`, not the current environment or a discovered socket. This foundation does
+not resolve or connect either kind of selector.
+
+For a not-yet-created explicit name, stage permission without creating a
+checkout/container or running any helper/login operation:
+
+```sh
+cdenv credentials enable project git-https --host https://github.com
+cdenv credentials enable project ssh-agent
+cdenv credentials enable project git-identity
+cdenv credentials status project --json  # staged; transport inactive
+cdenv create --name project https://github.com/example/project.git
+cdenv credentials status project        # bound; integration unavailable
+```
+
+This example currently demonstrates **permission binding and host cloning**, not
+container credential forwarding. A successful explicitly named clone binds the
+staged record before any future container lifecycle stage. Failed clones retain
+staged bytes for retry. A later failure retains the checkout. An automatic name
+cannot consume a staged grant; if that conflict is discovered after clone, the
+checkout is retained and the command fails. Disable the old grants before
+explicitly granting capabilities to that retained workspace. A durable binding
+receipt left by an interrupted policy write is reported as `binding_pending` and
+allows the explicit enable to retry against only that exact workspace.
+
+State lives at `<root>/credentials/NAME.json` (schema 1, mode `0600`), under a
+mode-`0700` directory, with a private receipt at
+`<root>/workspaces/NAME/credential-binding.json`. Neither is inside the checkout.
+Root/installation identity and the workspace receipt prevent transfer to another
+root or replacement workspace; copying/restoring directories can invalidate a
+binding. Unknown schemas/capabilities, unsafe owners/modes, symlinks, hard links,
+and oversized records are rejected, not repaired by credential commands.
+Existing workspace and agent schemas are unchanged.
+
+Successful stage/enable means **permission saved**, not backend availability.
+For an existing active generation, enable/allow save permission but return
+nonzero with explicit integration-unavailable guidance. `status`, `list`, and
+`doctor` share staged/bound/stale permission facts. They report inactive
+transport and uninspected backends; they never fetch a token, inspect identity
+values, sign, run login, migrate, or start/repair a broker.
+
+Disable without capabilities discards all current grants; selective disable
+discards only those capabilities, including their origins/selectors. Deny and
+disable persist revocation first. This build can confirm success only when the
+supervisor is absent or its lifetime lock proves it stopped. Unknown control
+state or a held lifetime lock returns **revocation unconfirmed** without
+signalling any PID or stopping unrelated services. Retry after verified service
+shutdown; do not mistake the persisted revocation for an acknowledgement from a
+live broker. Live selective reconciliation is still part of the unfinished issue.
+
+### Delegation and compatibility boundaries
+
+The accepted runtime design delegates to trusted workspace code; it is not a
+sandbox against container root, Docker authority, or deliberate exfiltration.
+HTTPS tokens necessarily enter container memory and cannot be recalled after
+delivery. Origin filtering does not restrict where a copied token is used or
+which repositories its issuer permits. General SSH-agent access includes signing
+and is neither Git-only nor destination-scoped. Author name/email is separately
+enabled and must not inherit signing keys/configuration, GPG, or Docker credentials.
+
+The eventual managed integration must cover cdenv lifecycle/SSH children and
+their descendants, not arbitrary `docker exec`, entrypoints, other users, or
+Compose sidecars. It must preserve native helper behavior on ungranted origins
+and prevent granted-origin native store/cache helpers from receiving forwarded
+tokens. No such helper configuration is installed by this foundation.
+
+Host helpers must eventually run in a trusted neutral configuration context,
+without checkout `includeIf gitdir`/`onbranch` portability promises, container
+configuration injection, browser login, or cdenv token caching. Lookup-only
+`erase` cannot repair rejected/stale tokens: repair/authenticate on the host and
+retry a later lookup. URL userinfo, a one-time clone prompt, `.netrc`, custom HTTP
+headers, URL rewriting, and arbitrary provider mechanisms are not implicitly
+portable. Host aliases, `IdentityFile`, `ProxyJump`, `IdentityAgent`, and
+`known_hosts` are not automatically replicated; never disable host-key or TLS
+verification to work around missing setup.
+
+No host Git/OpenSSH/helper interoperability matrix, noninteractive provider
+behavior, SSH-agent refresh/confirmation result, or macOS keychain smoke has yet
+been verified for live forwarding. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
+publishes the implemented parser limits. Transport bounds, host-helper timeouts,
+backpressure, socket refresh, lifecycle handoff, and authenticated real Git/SSH
+fixtures remain required before shipping issue 68.
 
 ## Diagnostics, retention, and release evidence
 

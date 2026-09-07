@@ -181,6 +181,8 @@ pub enum CliCommand {
     Proxy(ProxyArgs),
     /// Diagnose cdenv without making repairs.
     Doctor(DoctorArgs),
+    /// Manage explicit workspace-scoped host credential permissions.
+    Credentials(CredentialsArgs),
 }
 
 impl CliCommand {
@@ -199,6 +201,7 @@ impl CliCommand {
             Self::Lock(_) => CommandKind::Lock,
             Self::Proxy(_) => CommandKind::Proxy,
             Self::Doctor(_) => CommandKind::Doctor,
+            Self::Credentials(_) => CommandKind::Credentials,
         }
     }
 
@@ -209,6 +212,9 @@ impl CliCommand {
             Self::List(arguments) if arguments.json => OutputFormat::Json,
             Self::Status(arguments) if arguments.json => OutputFormat::Json,
             Self::Doctor(arguments) if arguments.json => OutputFormat::Json,
+            Self::Credentials(CredentialsArgs {
+                command: CredentialsCommand::Status { json: true, .. },
+            }) => OutputFormat::Json,
             Self::Create(_)
             | Self::List(_)
             | Self::Up(_)
@@ -219,7 +225,8 @@ impl CliCommand {
             | Self::Forward(_)
             | Self::Lock(_)
             | Self::Proxy(_)
-            | Self::Doctor(_) => OutputFormat::Human,
+            | Self::Doctor(_)
+            | Self::Credentials(_) => OutputFormat::Human,
         }
     }
 }
@@ -249,6 +256,8 @@ pub enum CommandKind {
     Proxy,
     /// The `doctor` command.
     Doctor,
+    /// The `credentials` command group.
+    Credentials,
 }
 
 impl CommandKind {
@@ -267,6 +276,7 @@ impl CommandKind {
             Self::Lock => "lock",
             Self::Proxy => "proxy",
             Self::Doctor => "doctor",
+            Self::Credentials => "credentials",
         }
     }
 }
@@ -397,6 +407,131 @@ pub struct DoctorArgs {
     /// Emit one versioned JSON document.
     #[arg(long)]
     pub json: bool,
+}
+
+/// Arguments for explicit host credential permission management.
+#[derive(Debug, Args, PartialEq, Eq)]
+pub struct CredentialsArgs {
+    /// The explicit operation; there is no implicit enable-all command.
+    #[command(subcommand)]
+    pub command: CredentialsCommand,
+}
+
+/// Independent capability enable/revoke and read-only status operations.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum CredentialsCommand {
+    /// Enable exactly one capability, or stage permission before explicit create.
+    Enable {
+        /// Validated workspace name, including a not-yet-created name.
+        name: WorkspaceName,
+        /// Exactly the named capability is enabled.
+        #[command(subcommand)]
+        capability: CredentialEnable,
+    },
+    /// Add exact origins to an already enabled HTTPS capability.
+    Allow(CredentialOriginsArgs),
+    /// Revoke exact origins from an already enabled HTTPS capability.
+    Deny(CredentialOriginsArgs),
+    /// Revoke selected capabilities, or every current capability when omitted.
+    Disable {
+        /// Exact workspace name.
+        name: WorkspaceName,
+        /// Explicit capability names; unknown capabilities fail closed.
+        capabilities: Vec<cdenv_core::credentials::CredentialCapability>,
+    },
+    /// Inspect staged or bound permissions without helper, login, or repair work.
+    Status {
+        /// Exact workspace name.
+        name: WorkspaceName,
+        /// Emit one versioned JSON document containing no credential payloads.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+impl CredentialsCommand {
+    /// Returns the explicitly named permission scope.
+    #[must_use]
+    pub const fn name(&self) -> &WorkspaceName {
+        match self {
+            Self::Enable { name, .. } | Self::Disable { name, .. } | Self::Status { name, .. } => {
+                name
+            }
+            Self::Allow(arguments) | Self::Deny(arguments) => &arguments.name,
+        }
+    }
+}
+
+/// Per-capability options; options for another capability are never accepted.
+#[derive(Debug, Subcommand, PartialEq, Eq)]
+pub enum CredentialEnable {
+    /// Grant lookup-only host Git credentials for exact HTTPS origins.
+    GitHttps {
+        /// Explicit HTTPS origins; repeat --host to add several grants.
+        #[arg(long = "host", num_args = 1.., value_name = "HTTPS_ORIGIN", value_parser = HttpsOriginValueParser)]
+        origins: Vec<cdenv_core::credentials::HttpsOrigin>,
+    },
+    /// Grant general use of a selected host SSH agent, including signing.
+    SshAgent {
+        /// Explicit socket selector; omission preserves an existing selector.
+        #[arg(long, value_name = "auto|ABSOLUTE_HOST_SOCKET")]
+        socket: Option<cdenv_core::credentials::SshAgentSelector>,
+    },
+    /// Grant only missing Git author name/email defaults, not signing.
+    GitIdentity,
+}
+
+impl CredentialEnable {
+    /// Returns the one capability granted by this invocation.
+    #[must_use]
+    pub const fn capability(&self) -> cdenv_core::credentials::CredentialCapability {
+        use cdenv_core::credentials::CredentialCapability;
+        match self {
+            Self::GitHttps { .. } => CredentialCapability::GitHttps,
+            Self::SshAgent { .. } => CredentialCapability::SshAgent,
+            Self::GitIdentity => CredentialCapability::GitIdentity,
+        }
+    }
+}
+
+/// The only origin-scoped credential capability supported by this CLI version.
+#[derive(Clone, Copy, Debug, clap::ValueEnum, PartialEq, Eq)]
+pub enum CredentialOriginCapability {
+    /// Exact HTTPS-origin grants; SSH-agent access has no origin restriction.
+    GitHttps,
+}
+
+/// An origin adjustment that can target only an enabled HTTPS capability.
+#[derive(Debug, Args, PartialEq, Eq)]
+pub struct CredentialOriginsArgs {
+    /// Exact workspace name.
+    pub name: WorkspaceName,
+    /// The only origin-scoped capability in this release.
+    #[arg(value_enum)]
+    pub capability: CredentialOriginCapability,
+    /// One or more explicit HTTPS origins.
+    #[arg(required = true, num_args = 1.., value_name = "HTTPS_ORIGIN", value_parser = HttpsOriginValueParser)]
+    pub origins: Vec<cdenv_core::credentials::HttpsOrigin>,
+}
+
+#[derive(Clone)]
+struct HttpsOriginValueParser;
+
+impl clap::builder::TypedValueParser for HttpsOriginValueParser {
+    type Value = cdenv_core::credentials::HttpsOrigin;
+
+    fn parse_ref(
+        &self,
+        _command: &clap::Command,
+        _argument: Option<&clap::Arg>,
+        value: &std::ffi::OsStr,
+    ) -> Result<Self::Value, clap::Error> {
+        // Clap's standard value parser echoes invalid input, which may contain
+        // URL userinfo. Do not attach the raw value to the diagnostic context.
+        value.to_str().and_then(|value| Self::Value::parse(value).ok()).ok_or_else(|| {
+            clap::Error::raw(ErrorKind::ValueValidation, "expected an exact HTTPS origin without userinfo, path, query, fragment, or wildcard")
+        })
+    }
 }
 
 /// A validated repository-relative Dev Container configuration path.

@@ -188,6 +188,9 @@ pub enum CreateWorkspaceError {
     /// Installation identity setup failed before reservation.
     #[error(transparent)]
     Installation(#[from] InstallationError),
+    /// Staged host permission could not be bound; the successful checkout is retained.
+    #[error(transparent)]
+    Credentials(#[from] crate::CredentialCommandError),
     /// Managed directory or log setup failed before reservation.
     #[error(transparent)]
     Storage(#[from] StorageError),
@@ -373,6 +376,8 @@ pub fn create_workspace(
         }
     }
 
+    bind_created_permissions(root, &mut state, request.name.is_some())?;
+
     if cancellation.is_cancelled() {
         return record_post_clone_failure(
             &paths.state_file(),
@@ -414,6 +419,21 @@ pub fn create_workspace(
         operation_log: prepared.operation_log_path,
         git_version: prepared.git_version,
     })
+}
+
+fn bind_created_permissions(
+    root: &CdenvRoot,
+    state: &mut WorkspaceState,
+    explicit_name: bool,
+) -> Result<(), CreateWorkspaceError> {
+    if let Err(error) = crate::credentials::bind_created_workspace(root, state, explicit_name) {
+        return record_post_clone_failure(
+            &root.workspace(state.name()).state_file(),
+            state,
+            CreateWorkspaceError::Credentials(error),
+        );
+    }
+    Ok(())
 }
 
 struct PreparedCreate {

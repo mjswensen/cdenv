@@ -11,6 +11,14 @@
 **Compose integration:** Docker Compose V2
 **Editor integration:** Standard OpenSSH; no editor-specific implementation
 
+**Issue 68 implementation status:** The opt-in credential permission commands,
+staged/bound host storage, and bounded Git credential parser are implemented.
+The live broker is not. Production command composition is a prerequisite:
+`create` currently ends after clone and `up`/`down`/`rebuild` still return
+`CommandUnavailable`, despite the available library coordinators. Runtime
+workflows below remain the target contract, not evidence of completed wiring.
+See [ADR 0002](docs/adr/0002-opt-in-host-capabilities.md).
+
 ---
 
 ## 1. Product Summary
@@ -46,7 +54,7 @@ The container does not run OpenSSH `sshd` and does not publish port 22. OpenSSH 
 cdenv-agent ssh-server --stdio
 ```
 
-SSH protocol bytes flow through stdin/stdout. Each SSH connection has one host proxy process and one container agent process. There is no installation-wide daemon or permanent container SSH daemon. A workspace may have a scoped host forwarding supervisor while configuration-declared ports are active, and a temporary container lifecycle runner while background lifecycle work remains.
+SSH protocol bytes flow through stdin/stdout. Each SSH connection has one host proxy process and one container agent process. There is no installation-wide daemon or permanent container SSH daemon. A workspace may have a scoped host forwarding supervisor while configuration-declared ports are active, and a temporary container lifecycle runner while background lifecycle work remains. Issue 68 extends this ownership design to independently granted host capabilities, including zero-port/zero-SSH-client workspaces; that runtime extension is pending.
 
 ---
 
@@ -98,9 +106,9 @@ V1 promises the Dev Container behavior explicitly listed by `cdenv-devcontainer-
 - an installation-wide always-on daemon or permanent container SSH daemon;
 - automatic self-update;
 - background management of ad-hoc user-requested forwards beyond configuration-declared `forwardPorts`;
-- SFTP, SSH agent forwarding, reverse forwarding, or Unix-socket forwarding;
+- SFTP, OpenSSH session-scoped agent forwarding, reverse forwarding, or arbitrary Unix-socket forwarding (issue 68's explicit workspace-scoped agent capability is separate);
 - destructive workspace/repository deletion commands;
-- Git pull, branch, reset, clean, stash, or credential management;
+- Git pull, branch, reset, clean, stash, or general credential-store management; issue 68 permits only explicitly granted lookup-only Git credentials, a selected SSH agent, and separate author identity defaults;
 - snapshots or background synchronization;
 - automatic process-based port discovery or an embedded browser/preview UI;
 - guaranteed editor-server support in every image, especially minimal/musl images;
@@ -611,6 +619,7 @@ forward
 lock
 proxy
 doctor
+credentials
 ```
 
 ### 10.1 `create`
@@ -822,6 +831,40 @@ Exit nonzero when a required invariant fails. V1 `doctor` diagnoses but does not
 
 ---
 
+### 10.13 `credentials`
+
+```text
+cdenv credentials enable NAME git-https [--host HTTPS_ORIGIN ...]
+cdenv credentials enable NAME ssh-agent [--socket auto|ABSOLUTE_HOST_SOCKET]
+cdenv credentials enable NAME git-identity
+cdenv credentials allow NAME git-https HTTPS_ORIGIN ...
+cdenv credentials deny NAME git-https HTTPS_ORIGIN ...
+cdenv credentials disable NAME [CAPABILITY ...]
+cdenv credentials status NAME [--json]
+```
+
+This host-only permission group is independent of repository profile parsing.
+Permissions are off by default; unknown capabilities and schemas fail closed.
+An initial staged HTTPS enable needs explicit origins. Explicit-name clone binds
+staged permission to the installation/root and exact workspace receipt, without
+checkout writes. Failed clones preserve staged permission, replacement identities
+cannot inherit old grants, and disable discards revoked authority.
+
+Permission schema 1 lives in `<root>/credentials/NAME.json`, with a private
+workspace binding receipt outside the checkout. Existing unsafe permission
+paths/modes are rejected rather than automatically tightened. Status/list/doctor
+inspect the same staged/bound/stale facts without helper or login operations.
+
+Only the permission/parser foundation is currently implemented. Active-generation
+enable saves consent but returns nonzero because integration is unavailable.
+Disable/deny persist revocation and require proof of a stopped supervisor; they
+never claim a live acknowledgement or signal an unverified PID. Complete live
+reconciliation, transport/protocol versions, backend health, and runtime ownership
+are still required by issue 68. See [ADR 0002](docs/adr/0002-opt-in-host-capabilities.md)
+for implemented limits, DevPod comparison, and outstanding release evidence.
+
+---
+
 ## 11. Dev Container Compatibility Profile
 
 ### 11.1 Versioned contract and lifecycle authority
@@ -941,7 +984,7 @@ Execute lifecycle stages in specification order, with Feature-contributed comman
 
 String commands run through the applicable `/bin/sh`; array commands execute directly; object entries execute concurrently and all must succeed. Synchronous string/array forms may inherit interactive stdin. Parallel object forms and background stages receive closed stdin. Prefix multiplexed logs by stable command key without changing the command’s own byte stream.
 
-Honor `waitFor`. Once its selected stage succeeds, cdenv may provision its agent, capture environment, and establish forwarding while later lifecycle stages continue under `cdenv-agent lifecycle-runner`. The runner stores the generation’s immutable effective lifecycle/runtime plan, restricted before/after checkpoints, and bounded logs inside the container and exits when work completes; an intentionally long-running later command remains healthy/running. Later stages never run after failure.
+Honor `waitFor`. For issue 68's credential-enrolled flows, provision/verify the agent, establish the workspace credential bridge, and enroll the effective environment **before the first container lifecycle stage**, not after `waitFor` or at SSH attachment. This ordering is pending production integration. After the selected stage succeeds, cdenv may establish declared forwarding while later lifecycle stages continue under `cdenv-agent lifecycle-runner`. The runner stores the generation’s immutable effective lifecycle/runtime plan, restricted before/after checkpoints, and bounded logs inside the container and exits when work completes; an intentionally long-running later command remains healthy/running. Later stages never run after failure.
 
 Successful `up` means the selected stage, cdenv provisioning, environment capture, and forwarding listener startup have completed. A later lifecycle failure:
 

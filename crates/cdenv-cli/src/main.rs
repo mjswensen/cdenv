@@ -80,6 +80,9 @@ fn main() -> ExitCode {
             }
         };
     }
+    if matches!(command_line.command(), CliCommand::Credentials(_)) {
+        return credentials_exit(&command_line);
+    }
     let mut stdout = io::stdout().lock();
     let mut stderr = io::stderr().lock();
     if let Some(exit_code) = render_reporting_application(&command_line, &mut stdout, &mut stderr) {
@@ -101,6 +104,22 @@ fn main() -> ExitCode {
     }
 
     render_application_result(output_format, result, &mut stdout, &mut stderr)
+}
+
+fn credentials_exit(command_line: &CommandLine) -> ExitCode {
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
+    match CdenvRoot::resolve(command_line.root(), &ProcessEnvironment) {
+        Ok(root) => {
+            cdenv_cli::render_credentials_application(command_line, &root, &mut stdout, &mut stderr)
+        }
+        Err(error) => render_application_result(
+            command_line.output_format(),
+            Err(error.into()),
+            &mut stdout,
+            &mut stderr,
+        ),
+    }
 }
 
 fn private_supervisor_exit(manifest: &Path) -> ExitCode {

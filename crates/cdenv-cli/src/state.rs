@@ -847,6 +847,12 @@ impl WorkspaceState {
         }
     }
 
+    /// Returns the immutable creation timestamp used when binding host permissions.
+    #[must_use]
+    pub const fn created_at(&self) -> &StateTimestamp {
+        &self.created_at
+    }
+
     /// Returns the current schema version.
     #[must_use]
     pub const fn schema_version(&self) -> u32 {

@@ -82,7 +82,7 @@ impl DoctorReport {
 /// Collects independent checks without mutating the root, Docker, or processes.
 #[must_use]
 pub fn doctor_report(root: &CdenvRoot) -> DoctorReport {
-    let checks = vec![
+    let mut checks = vec![
         root_check(root.as_path()),
         installation_check(root),
         directory_check("workspace-state", &root.workspaces_dir()),
@@ -92,6 +92,31 @@ pub fn doctor_report(root: &CdenvRoot) -> DoctorReport {
         executable_check("compose", "docker", &["compose", "version"]),
         ssh_config_check(&root.ssh().config()),
     ];
+    match crate::credentials::credential_reports(root) {
+        Ok(reports) if reports.is_empty() => checks.push(DoctorCheck::new(
+            "credentials",
+            DoctorOutcome::Pass,
+            "no credential permissions; no backend inspection performed",
+        )),
+        Ok(reports) => checks.extend(reports.into_iter().map(|report| {
+            DoctorCheck::new(
+                "credentials",
+                if report.is_unavailable() {
+                    DoctorOutcome::Fail
+                } else if report.grants().is_empty() {
+                    DoctorOutcome::Pass
+                } else {
+                    DoctorOutcome::Warn
+                },
+                report.diagnostic_summary(),
+            )
+        })),
+        Err(error) => checks.push(DoctorCheck::new(
+            "credentials",
+            DoctorOutcome::Fail,
+            error.to_string(),
+        )),
+    }
     DoctorReport { checks }
 }
 

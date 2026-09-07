@@ -203,6 +203,32 @@ attach/TTY modes. At minimum `-f`/`--file`, `-t`/`--tag`, `-o`/`--output`,
 `--iidfile`, `--metadata-file`, and cdenv identity labels are reserved in build
 options. The exact conflicting argument is reported.
 
+## Host credential capabilities
+
+Issue 68 adds a host-owned opt-in permission layer, not a Dev Container property
+or secret provider. `git-https`, `ssh-agent`, and `git-identity` are independent
+permissions under `cdenv credentials`. Repository `customizations`, `secrets`,
+`remoteEnv`, remotes, and submodules cannot grant or expand them. Existing accepted
+V1 configuration behavior is unchanged, including the removal of all arbitrary
+`SSH_` entries from reusable environment snapshots.
+
+**Currently implemented:** private staged/bound permission management,
+explicit-name binding after successful host clone, exact HTTPS origin validation,
+read-only permission facts, and bounded/redacted Git credential parser types.
+**Not implemented:** live host-helper delegation, an Exec credential bridge,
+managed Git helper/configuration ownership, SSH-agent relay/environment injection,
+identity defaults, and lifecycle/rebuild integration. A saved grant must not be
+interpreted as working container authentication. Production lifecycle command
+composition remains a prerequisite; see [ADR 0002](adr/0002-opt-in-host-capabilities.md)
+and the [operations guide](operations.md#host-credential-permissions-issue-68).
+
+The future runtime guarantee is limited to managed lifecycle/SSH processes and
+their descendants in the verified primary container. It excludes arbitrary
+`docker exec`, other users, entrypoints, and Compose sidecars. It will not alter
+profile defaults, perform Git mutations, or enable signing/GPG/Docker capabilities.
+An observable change to existing profile semantics still requires the revision
+policy below.
+
 ## Change policy
 
 - Bug fixes and newly implemented properties/values may be additive within V1

@@ -88,6 +88,10 @@ fn main() -> ExitCode {
     if let Some(exit_code) = render_reporting_application(&command_line, &mut stdout, &mut stderr) {
         return exit_code;
     }
+    // Workflows may mirror child diagnostics from helper threads. Do not hold
+    // the process-wide stdio locks while those threads are running.
+    drop(stdout);
+    drop(stderr);
     let mut result = invoke(&command_line);
     if result.is_ok()
         && matches!(
@@ -103,6 +107,8 @@ fn main() -> ExitCode {
         );
     }
 
+    let mut stdout = io::stdout().lock();
+    let mut stderr = io::stderr().lock();
     render_application_result(output_format, result, &mut stdout, &mut stderr)
 }
 

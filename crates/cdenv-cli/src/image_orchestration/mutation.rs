@@ -170,6 +170,66 @@ impl<D: ImageDockerCli, E: ImageDockerEngine> ImageContainerOrchestrator<D, E> {
         }
     }
 
+    /// Verifies an unchanged, uniquely resolved, already-running recorded container.
+    ///
+    /// # Errors
+    ///
+    /// Returns unsafe discovery, inspection, verification, or architecture errors.
+    pub async fn verify_recorded(
+        &self,
+        request: &RecordedContainerRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<ImageContainerFacts, ImageContainerError> {
+        check_cancellation(cancellation)?;
+        let containers = self
+            .engine
+            .discover(request.identity.installation, request.identity.workspace)
+            .await
+            .map_err(|source| ImageContainerError::Bollard {
+                operation: "discovery",
+                source,
+            })?;
+        let correlated = correlate_containers(
+            &containers,
+            &[WorkspaceCorrelation {
+                workspace: request.identity.workspace,
+                generation: request.identity.generation,
+                recorded_container: Some(request.container),
+            }],
+        );
+        let state = classify_image_container_matches(&correlated[0], Some(request.container));
+        if state != ImageContainerMatchState::RecordedRunning {
+            return Err(ImageContainerError::UnsafeContainerState { state });
+        }
+        let running = self
+            .inspect_and_verify(
+                request.container,
+                request.container_name,
+                request.image,
+                request.identity,
+                request.runtime,
+                request.ports,
+                true,
+            )
+            .await?;
+        let image = self
+            .engine
+            .inspect_image(running.image_id.as_str())
+            .await
+            .map_err(|source| ImageContainerError::Bollard {
+                operation: "inspect recorded image",
+                source,
+            })?;
+        Ok(ImageContainerFacts {
+            container: request.container.clone(),
+            image: request.image.clone(),
+            architecture: image.architecture,
+            generation: request.identity.generation,
+            running: true,
+            host_warnings: Vec::new(),
+        })
+    }
+
     /// Starts an unchanged, uniquely resolved, recorded stopped image container directly.
     ///
     /// # Errors

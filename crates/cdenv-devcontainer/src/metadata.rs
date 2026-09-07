@@ -66,6 +66,30 @@ impl std::fmt::Debug for ImageMetadata {
 }
 
 impl ImageMetadata {
+    /// Converts one resolved Feature's effective metadata contributions into an image contribution.
+    #[must_use]
+    pub fn from_feature(feature: &crate::ResolvedFeature) -> Self {
+        let contributions = &feature.metadata.contributions;
+        let common = RawCommon {
+            container_env: contributions.container_env.clone(),
+            mounts: contributions.mounts.clone(),
+            cap_add: contributions.cap_add.clone(),
+            security_opt: contributions.security_opt.clone(),
+            lifecycle: contributions.lifecycle.clone(),
+            customizations: contributions.customizations.clone(),
+            init: contributions.init,
+            privileged: contributions.privileged,
+            ..RawCommon::default()
+        };
+        Self {
+            source: feature.reference.as_str().to_owned(),
+            common,
+            entrypoint: contributions.entrypoint.clone(),
+            override_command: None,
+            shutdown_action: None,
+        }
+    }
+
     /// Parses and validates one already-inspected metadata object.
     ///
     /// The caller owns image inspection and label JSON decoding. This function performs no I/O.

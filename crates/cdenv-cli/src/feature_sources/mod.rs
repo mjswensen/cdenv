@@ -69,7 +69,7 @@ impl Default for FeatureSourceLimits {
 pub struct VerifiedFeature {
     /// Package input for the pure Feature planner.
     pub package: FeaturePackage,
-    /// Verified digest-addressed archive in the cache, or the local source directory.
+    /// Verified cache artifact/extraction directory, or the local source directory.
     pub artifact: PathBuf,
 }
 
@@ -315,7 +315,7 @@ impl FeatureSourceResolver {
                 digest,
                 integrity: Some(record.integrity.clone()),
             },
-            artifact: path,
+            artifact: extracted,
         })
     }
 }

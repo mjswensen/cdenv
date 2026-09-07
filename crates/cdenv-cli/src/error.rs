@@ -23,6 +23,12 @@ pub enum ApplicationError {
         /// Sanitized create-transaction message.
         message: String,
     },
+    /// Production environment creation or reconciliation failed.
+    #[error("environment failed: {message}")]
+    EnvironmentFailed {
+        /// Credential-safe workflow summary.
+        message: String,
+    },
     /// Explicit Feature lock generation failed.
     #[error("lock failed: {message}")]
     LockFailed {
@@ -68,6 +74,7 @@ impl ApplicationError {
         match self {
             Self::RootResolution(_) => "root_resolution_failed",
             Self::CreateFailed { .. } => "create_failed",
+            Self::EnvironmentFailed { .. } => "environment_failed",
             Self::LockFailed { .. } => "lock_failed",
             Self::ListFailed { .. } => "list_failed",
             Self::StatusFailed { .. } => "status_failed",
@@ -83,6 +90,7 @@ impl ApplicationError {
         match self {
             Self::RootResolution(_)
             | Self::CreateFailed { .. }
+            | Self::EnvironmentFailed { .. }
             | Self::LockFailed { .. }
             | Self::ListFailed { .. }
             | Self::StatusFailed { .. }

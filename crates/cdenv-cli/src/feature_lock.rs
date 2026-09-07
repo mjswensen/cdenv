@@ -204,7 +204,7 @@ pub async fn generate_feature_lock(
     Ok(target)
 }
 
-fn root_requests(profile: &RawProfile) -> Result<Vec<FeatureRequest>, FeatureLockError> {
+pub(crate) fn root_requests(profile: &RawProfile) -> Result<Vec<FeatureRequest>, FeatureLockError> {
     profile
         .common
         .features

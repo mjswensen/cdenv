@@ -628,13 +628,13 @@ fn is_scp_like(source: &str) -> bool {
         && !prefix.chars().any(char::is_whitespace)
 }
 
-fn random_operation_id() -> Result<String, CreateWorkspaceError> {
+pub(crate) fn random_operation_id() -> Result<String, CreateWorkspaceError> {
     let mut bytes = [0_u8; 16];
     getrandom::fill(&mut bytes).map_err(|source| CreateWorkspaceError::Random { source })?;
     Ok(hex::encode(bytes))
 }
 
-fn current_timestamp() -> Result<StateTimestamp, CreateWorkspaceError> {
+pub(crate) fn current_timestamp() -> Result<StateTimestamp, CreateWorkspaceError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|source| CreateWorkspaceError::Clock(source.to_string()))?

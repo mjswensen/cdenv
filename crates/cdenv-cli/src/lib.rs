@@ -40,6 +40,7 @@ mod locking;
 mod output;
 mod paths;
 mod process;
+mod production;
 mod proxy;
 mod rebuild;
 mod reconciliation;
@@ -187,6 +188,7 @@ pub use process::{
     CancellationToken, CapturedOutput, OperationId, ProcessDeadline, ProcessEnvironmentVariable,
     ProcessError, ProcessRequest, ProcessResult, ProcessRunner,
 };
+pub use production::{ProductionWorkflowError, reconcile_production};
 pub use proxy::{
     ProxyEngine, ProxyError, ProxyRuntimeError, ProxyTarget, run_proxy_stdio, run_proxy_transport,
 };
@@ -472,27 +474,41 @@ pub fn invoke_with_environment(
 ///
 /// # Errors
 ///
-/// Runs checkout creation for `create`. Other parsed commands return
-/// [`ApplicationError::CommandUnavailable`] until their workflow chunk lands.
+/// Runs the selected production workflow for `create` and `up`. Other parsed
+/// commands return [`ApplicationError::CommandUnavailable`] until their
+/// workflow chunk lands.
 pub fn invoke_with_root(
     command_line: &CommandLine,
     root: &CdenvRoot,
 ) -> Result<(), ApplicationError> {
     match command_line.command() {
-        CliCommand::Create(arguments) => create_workspace(
-            root,
-            CreateWorkspaceRequest {
-                source: &arguments.git_source,
-                name: arguments.name.as_ref(),
-                config: arguments.config.as_ref(),
-            },
-            &GitAdapter::system(),
-            &CancellationToken::default(),
-        )
-        .map(|_| ())
-        .map_err(|error| ApplicationError::CreateFailed {
-            message: error.to_string(),
-        }),
+        CliCommand::Create(arguments) => {
+            let created = create_workspace(
+                root,
+                CreateWorkspaceRequest {
+                    source: &arguments.git_source,
+                    name: arguments.name.as_ref(),
+                    config: arguments.config.as_ref(),
+                },
+                &GitAdapter::system(),
+                &CancellationToken::default(),
+            )
+            .map_err(|error| ApplicationError::CreateFailed {
+                message: error.to_string(),
+            })?;
+            reconcile_production(root, created.name(), arguments.config.as_ref()).map_err(|error| {
+                ApplicationError::EnvironmentFailed {
+                    message: error.to_string(),
+                }
+            })
+        }
+        CliCommand::Up(arguments) => {
+            reconcile_production(root, &arguments.name, arguments.config.as_ref()).map_err(
+                |error| ApplicationError::EnvironmentFailed {
+                    message: error.to_string(),
+                },
+            )
+        }
         CliCommand::Credentials(arguments) => mutate_credentials(root, &arguments.command)
             .map(|_| ())
             .map_err(|error| ApplicationError::CredentialsFailed {
@@ -519,7 +535,10 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{ApplicationError, CommandLine, RootEnvironment, invoke_with_environment};
+    use super::{
+        ApplicationError, CdenvRoot, CommandLine, RootEnvironment, invoke_with_environment,
+        invoke_with_root,
+    };
 
     struct CountingEnvironment {
         cdenv_home_reads: Cell<usize>,
@@ -536,6 +555,24 @@ mod tests {
             self.home_reads.set(self.home_reads.get() + 1);
             Some(PathBuf::from("/must/not/be/read"))
         }
+    }
+
+    #[test]
+    fn production_up_dispatches_to_the_workflow_instead_of_command_unavailable() {
+        let temporary = tempfile::tempdir().expect("temporary root");
+        let path = temporary.path().join("cdenv");
+        let environment = CountingEnvironment {
+            cdenv_home_reads: Cell::new(0),
+            home_reads: Cell::new(0),
+        };
+        let root = CdenvRoot::resolve(Some(&path), &environment).expect("root");
+        let command_line =
+            CommandLine::try_parse_from(["cdenv", "up", "project"]).expect("up command");
+
+        assert!(matches!(
+            invoke_with_root(&command_line, &root),
+            Err(ApplicationError::EnvironmentFailed { .. })
+        ));
     }
 
     #[test]

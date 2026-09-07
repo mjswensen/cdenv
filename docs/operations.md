@@ -138,12 +138,14 @@ matrix; inspect it separately from cdenv forwarding.
 ## Host credential permissions (issue 68)
 
 **Implementation status: permission management and bounded credential parsing
-only. Live forwarding is not available in this build.** The current CLI `create`
-workflow ends after cloning; production `up`, `down`, and `rebuild` dispatch is
-not yet wired to the library coordinators. Saving permission does not make Git
-in a container authenticate, and the first-hook workflow in issue 68 is not yet
-implemented. See [ADR 0002](adr/0002-opt-in-host-capabilities.md) for the precise
-implemented/pending boundary.
+only. Credential forwarding is not available in this build.** Production
+`create` and `up` compose planning, Docker/Compose reconciliation, agent and SSH
+provisioning, lifecycle execution, environment capture, and declared forwarding
+when capabilities are disabled. Configured credential capabilities fail during
+early preflight, before container lifecycle execution. Production `down` and
+`rebuild` dispatch remains owned by issue 70. Saving permission does not make Git
+in a container authenticate. See [ADR 0002](adr/0002-opt-in-host-capabilities.md)
+for the credential-specific boundary.
 
 Permissions are independent, off by default, installation/workspace-scoped, and
 never derived from `devcontainer.json`, `customizations`, `remoteEnv`, or

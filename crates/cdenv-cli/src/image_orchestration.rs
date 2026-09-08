@@ -186,6 +186,35 @@ impl<A: BollardApi> ImageDockerEngine for BollardAdapter<A> {
 }
 
 /// Borrowed inputs for one image or Dockerfile primary-container creation.
+pub struct ImageContainerBuildRequest<'a> {
+    /// Pure image or Dockerfile build plan.
+    pub build: &'a BuildPlan,
+    /// Canonical repository checkout.
+    pub checkout: &'a Path,
+    /// Required operation-owned tag for Dockerfile builds.
+    pub build_tag: Option<&'a str>,
+    /// Repository/generated build context selection.
+    pub build_context: &'a DockerBuildContext,
+    /// Repository/generated Dockerfile selection.
+    pub dockerfile: DockerfileInput<'a>,
+    /// Stable Docker identity labels.
+    pub identity: DockerResourceIdentity<'a>,
+    /// Disable `BuildKit` cache reads for a Dockerfile build.
+    pub no_cache: bool,
+}
+
+/// Exact image prepared and independently inspected before container mutation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedImage {
+    /// Content-addressed image identity.
+    pub image: ImageId,
+    /// Architecture required for agent provisioning.
+    pub architecture: ContainerArchitecture,
+    /// Whether this operation generated and owns the image.
+    pub generated: bool,
+}
+
+/// Borrowed inputs for one image or Dockerfile primary-container creation.
 pub struct ImageContainerCreateRequest<'a> {
     /// Pure image or Dockerfile build plan.
     pub build: &'a BuildPlan,
@@ -383,6 +412,7 @@ mod tests {
         fail: Option<&'static str>,
         cancel_on_build: bool,
         gpu_access: Option<cdenv_devcontainer::GpuAccessIntent>,
+        no_cache: Option<bool>,
     }
 
     impl FakeCli {
@@ -411,6 +441,10 @@ mod tests {
         fn gpu_access(&self) -> Option<cdenv_devcontainer::GpuAccessIntent> {
             self.state.lock().expect("CLI lock").gpu_access
         }
+
+        fn no_cache(&self) -> Option<bool> {
+            self.state.lock().expect("CLI lock").no_cache
+        }
     }
 
     impl ImageDockerCli for FakeCli {
@@ -431,11 +465,12 @@ mod tests {
 
         async fn build(
             &self,
-            _request: &DockerBuildRequest<'_>,
+            request: &DockerBuildRequest<'_>,
             cancellation: &CancellationToken,
         ) -> Result<ImageId, DockerCliError> {
             let mut state = self.state.lock().expect("CLI lock");
             state.calls.push("build");
+            state.no_cache = Some(request.no_cache);
             if state.cancel_on_build {
                 cancellation.cancel();
             }
@@ -785,6 +820,7 @@ mod tests {
             mounts,
             ports: inspected_ports,
             running,
+            healthy: running.then_some(true),
         }
     }
 
@@ -973,6 +1009,83 @@ mod tests {
             cli.gpu_access(),
             Some(cdenv_devcontainer::GpuAccessIntent::Requested)
         );
+    }
+
+    #[tokio::test]
+    async fn prepared_dockerfile_candidate_is_created_without_a_second_build() {
+        let plans = plans(r#"{"build":{"dockerfile":"Dockerfile"}}"#);
+        let (installation, workspace, profile, generation) = identities();
+        let cli = FakeCli::default();
+        let engine = FakeEngine::default()
+            .with_images([image(true), image(true)])
+            .with_containers([
+                inspection(&plans.runtime, &plans.ports, false),
+                inspection(&plans.runtime, &plans.ports, true),
+            ]);
+        let orchestrator = ImageContainerOrchestrator::new(cli.clone(), engine);
+        let caps = capabilities();
+        let prepared = PreparedImage {
+            image: ImageId::parse(IMAGE_ID).expect("image"),
+            architecture: ContainerArchitecture::X86_64,
+            generated: true,
+        };
+
+        orchestrator
+            .create_prepared(
+                &ImageContainerCreateRequest {
+                    build: &plans.docker.build,
+                    checkout: Path::new("/tmp"),
+                    build_tag: Some("cdenv/workspace:g2"),
+                    build_context: &DockerBuildContext::Repository,
+                    dockerfile: DockerfileInput::Repository,
+                    no_cache: false,
+                    container_name: "cdenv-workspace-2",
+                    identity: identity(&installation, &workspace, &profile, generation),
+                    runtime: &plans.runtime,
+                    create_options: &plans.docker.create,
+                    ports: &plans.ports,
+                    command: &[],
+                    cdenv_owned_targets: &[],
+                    host_requirements: None,
+                    host_capabilities: &caps,
+                    recorded_container: None,
+                },
+                &prepared,
+                &CancellationToken::default(),
+            )
+            .await
+            .expect("prepared candidate");
+
+        assert_eq!(cli.calls(), ["create"]);
+    }
+
+    #[tokio::test]
+    async fn image_preparation_propagates_cached_and_no_cache_build_modes() {
+        let plans = plans(r#"{"build":{"dockerfile":"Dockerfile"}}"#);
+        let (installation, workspace, profile, generation) = identities();
+        for no_cache in [false, true] {
+            let cli = FakeCli::default();
+            let engine = FakeEngine::default().with_images([image(true)]);
+            let orchestrator = ImageContainerOrchestrator::new(cli.clone(), engine);
+
+            orchestrator
+                .prepare_image(
+                    &ImageContainerBuildRequest {
+                        build: &plans.docker.build,
+                        checkout: Path::new("/tmp"),
+                        build_tag: Some("cdenv/workspace:g2"),
+                        build_context: &DockerBuildContext::Repository,
+                        dockerfile: DockerfileInput::Repository,
+                        identity: identity(&installation, &workspace, &profile, generation),
+                        no_cache,
+                    },
+                    &CancellationToken::default(),
+                )
+                .await
+                .expect("prepared image");
+
+            assert_eq!(cli.no_cache(), Some(no_cache));
+        }
     }
 
     #[tokio::test]

@@ -154,9 +154,10 @@ pub use generated_image::{
 };
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
 pub use image_orchestration::{
-    ImageCleanupFailure, ImageContainerCreateRequest, ImageContainerError, ImageContainerFacts,
-    ImageContainerMatchState, ImageContainerOrchestrator, ImageContainerStopOutcome,
-    RecordedContainerRequest, classify_image_container_matches,
+    ImageCleanupFailure, ImageContainerBuildRequest, ImageContainerCreateRequest,
+    ImageContainerError, ImageContainerFacts, ImageContainerMatchState, ImageContainerOrchestrator,
+    ImageContainerStopOutcome, PreparedImage, RecordedContainerRequest,
+    classify_image_container_matches,
 };
 pub use installation::{
     FingerprintKey, FingerprintKeyState, FingerprintKeyUnknownReason, INSTALLATION_SCHEMA_VERSION,
@@ -476,9 +477,9 @@ pub fn invoke_with_environment(
 ///
 /// # Errors
 ///
-/// Runs the selected production workflow for `create` and `up`. Other parsed
-/// commands return [`ApplicationError::CommandUnavailable`] until their
-/// workflow chunk lands.
+/// Runs the selected production workflow for `create`, `up`, `down`, and
+/// `rebuild`. Parsed commands without composition return
+/// [`ApplicationError::CommandUnavailable`].
 pub fn invoke_with_root(
     command_line: &CommandLine,
     root: &CdenvRoot,

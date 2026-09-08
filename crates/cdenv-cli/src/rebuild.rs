@@ -91,7 +91,11 @@ pub enum RebuildPhase {
 }
 
 /// Context supplied for best-effort restoration and operation-owned cleanup.
-pub struct RebuildRollbackRequest<'a> {
+pub struct RebuildRollbackRequest<'a, B> {
+    /// Build-first claim used to clean only operation-owned generated inputs.
+    pub build: &'a B,
+    /// Exact replacement generation owning candidate inputs.
+    pub generation: GenerationId,
     /// Last committed generation, if one existed.
     pub previous: Option<&'a ActiveGeneration>,
     /// Fully prepared candidate, if readiness completed.
@@ -161,7 +165,7 @@ pub trait RebuildEnvironment<P>: Send + Sync {
     /// Removes candidates and restores the old name/container where feasible.
     fn rollback<'a>(
         &'a self,
-        request: RebuildRollbackRequest<'a>,
+        request: RebuildRollbackRequest<'a, Self::Build>,
     ) -> impl Future<Output = Result<(), Self::Error>> + Send + 'a;
 
     /// Removes only operation-owned resources and safely selected generated-image history.
@@ -377,6 +381,7 @@ where
             &paths.state_file(),
             state,
             environment,
+            &build,
             previous.as_ref(),
             None,
             request.backup_name,
@@ -392,6 +397,7 @@ where
             &paths.state_file(),
             state,
             environment,
+            &build,
             previous.as_ref(),
             None,
             request.backup_name,
@@ -407,6 +413,7 @@ where
                 &paths.state_file(),
                 state,
                 environment,
+                &build,
                 previous.as_ref(),
                 None,
                 request.backup_name,
@@ -431,6 +438,7 @@ where
             &paths.state_file(),
             state,
             environment,
+            &build,
             previous.as_ref(),
             Some(&candidate),
             request.backup_name,
@@ -444,6 +452,7 @@ where
             &paths.state_file(),
             state,
             environment,
+            &build,
             previous.as_ref(),
             Some(&candidate),
             request.backup_name,
@@ -461,6 +470,7 @@ where
             &paths.state_file(),
             recovery_state,
             environment,
+            &build,
             previous.as_ref(),
             Some(&candidate),
             request.backup_name,
@@ -540,6 +550,7 @@ async fn fail_with_rollback<P, F, S, E, R, Plan, Output>(
     state_path: &Path,
     mut state: WorkspaceState,
     environment: &R,
+    build: &R::Build,
     previous: Option<&ActiveGeneration>,
     candidate: Option<&ActiveGeneration>,
     backup_name: &str,
@@ -555,6 +566,8 @@ where
 {
     let rollback = environment
         .rollback(RebuildRollbackRequest {
+            build,
+            generation: next_generation(previous)?,
             previous,
             candidate,
             backup_name,

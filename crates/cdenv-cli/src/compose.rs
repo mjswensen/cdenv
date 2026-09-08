@@ -179,15 +179,42 @@ impl ComposeAdapter {
         validate_project(request.project)?;
         validate_value("service", request.service)?;
         validate_value("base image tag", request.base_tag)?;
+        if request.has_build {
+            let pull = vec![
+                OsString::from("pull"),
+                OsString::from("--include-deps"),
+                OsString::from("--ignore-buildable"),
+                OsString::from(request.service),
+            ];
+            let arguments = compose_arguments_os(request.project, None, &pull)?;
+            let result = self
+                .run(
+                    "compose-pull-dependencies",
+                    &arguments,
+                    request.project.working_directory,
+                    false,
+                    &[],
+                    cancellation,
+                )
+                .await?;
+            ensure_success("pull image dependencies", &result)?;
+        }
         let command = if request.has_build {
-            let mut command = vec![OsString::from("build")];
+            let mut command = vec![
+                OsString::from("build"),
+                OsString::from("--with-dependencies"),
+            ];
             if request.no_cache {
                 command.push(OsString::from("--no-cache"));
             }
             command.push(OsString::from(request.service));
             command
         } else {
-            vec![OsString::from("pull"), OsString::from(request.service)]
+            vec![
+                OsString::from("pull"),
+                OsString::from("--include-deps"),
+                OsString::from(request.service),
+            ]
         };
         let arguments = compose_arguments_os(request.project, None, &command)?;
         let result = self

@@ -884,6 +884,7 @@ mod tests {
                 mounts: Vec::new(),
                 ports: Vec::new(),
                 running,
+                healthy: running.then_some(true),
             })
         }
 

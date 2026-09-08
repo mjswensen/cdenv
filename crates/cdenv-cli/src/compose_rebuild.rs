@@ -505,6 +505,11 @@ impl<R> ComposeRebuildOrchestrator<R> {
                 source,
                 evidence: ComposePartialEvidence::Inspected(partial.clone()),
             })?;
+        if cancellation.is_cancelled() {
+            return Err(self
+                .cancelled(ComposeRebuildPhase::Forwarding, &request)
+                .await);
+        }
         self.runtime
             .commit_active(&active, &managed)
             .await

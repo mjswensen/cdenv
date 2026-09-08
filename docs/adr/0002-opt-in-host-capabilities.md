@@ -13,12 +13,11 @@ container. Copying credential stores, SSH configuration, private keys, keychains
 or host sockets is not an acceptable shortcut. Host author identity is a distinct,
 non-authentication capability. Repository configuration cannot supply consent.
 
-The current production CLI dispatch in `crates/cdenv-cli/src/lib.rs` wires
-`create` only through checkout creation. `up`, `down`, and `rebuild` still return
-`CommandUnavailable`. The provisioning, environment, lifecycle, rebuild, and
-forwarding coordinators exist as library/test seams but have no production
-command composition. In particular, no production caller currently invokes
-`capture_for_readiness` or `start_detached_supervisor`.
+At the time this ADR was accepted, production CLI dispatch wired `create` only
+through checkout creation; `up`, `down`, and `rebuild` still returned
+`CommandUnavailable`, and the lifecycle coordinators had no production caller.
+That historical prerequisite has since landed. Credential broker leases and their
+lifecycle handoff remain outside the implemented production composition.
 
 Issue 68 therefore cannot yet provide its first-hook, reconnect, down/up, and
 rebuild workflows. This change does **not** resolve issue 68 or advertise a

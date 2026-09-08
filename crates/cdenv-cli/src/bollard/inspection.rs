@@ -279,6 +279,9 @@ pub struct ContainerInspection {
     pub ports: Vec<InspectedPortBinding>,
     /// Whether Docker reports the container running.
     pub running: bool,
+    /// Healthcheck result: `None` while starting/unknown, otherwise healthy or unhealthy.
+    /// Containers without a healthcheck are healthy once running.
+    pub healthy: Option<bool>,
 }
 
 /// Authoritative typed image inspection.
@@ -653,6 +656,18 @@ pub(super) fn map_container(
         mounts,
         ports,
         running: state.running.unwrap_or(false),
+        healthy: match state.health.and_then(|health| health.status) {
+            None
+            | Some(
+                bollard::models::HealthStatusEnum::NONE
+                | bollard::models::HealthStatusEnum::HEALTHY,
+            ) => Some(true),
+            Some(bollard::models::HealthStatusEnum::UNHEALTHY) => Some(false),
+            Some(
+                bollard::models::HealthStatusEnum::EMPTY
+                | bollard::models::HealthStatusEnum::STARTING,
+            ) => None,
+        },
     })
 }
 

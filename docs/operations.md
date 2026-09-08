@@ -117,10 +117,13 @@ Lifecycle checkpoints are generation-scoped. Successful one-time stages are not
 repeated; `postStartCommand` follows an actual start and `postAttachCommand`
 follows each new SSH transport. A definitely pending operation may retry. A
 cancelled/crashed one-time stage left running is indeterminate: preserve the
-checkout and named volumes and use `rebuild` rather than editing state. Compose
-replacement is build-first but not atomic; partial replacement is reported as
-interrupted/drifted. Ordinary `down` stops only the persisted managed set and does
-not delete project networks or named volumes.
+checkout and named volumes and use `rebuild` rather than editing state. The current
+state schema records the stage but not an authenticated Docker Exec runner identity,
+so `down` and `rebuild` never guess a process or PID; they report the runner as
+indeterminate when safe bounded cancellation cannot be proven. Compose replacement
+is build-first but not atomic; exact per-service partial evidence is persisted after
+post-recreation failure or cancellation. Ordinary `down` stops only the persisted
+managed set and does not delete project networks or named volumes.
 
 cdenv asks before adding its exact `Include` to the user SSH configuration.
 Declining (`--no-modify-ssh-config`) does not block `cdenv ssh <name>` or

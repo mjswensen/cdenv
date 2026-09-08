@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fmt;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use cdenv_core::{
     ContainerId, ForegroundOperation, ForwardingEndpoint, ForwardingEndpointAssignment,
@@ -29,25 +30,28 @@ use crate::{
     ActiveForwarding, ActiveGeneration, ActiveScenario, AgentArtifactIdentity,
     AgentArtifactProvider, AgentEnvironmentCapturer, AgentEnvironmentRequest,
     AgentProvisionRequest, AgentProvisioner, BOLLARD_CONTROL_TIMEOUT, BollardAdapter,
-    CancellationToken, CategoryDrift, CdenvRoot, ComposeAdapter, ComposeBaseRequest,
-    ComposeLifecycleOrchestrator, ComposeProject, ComposeUpRequest, CreateComposeRequest,
-    DeclaredForward, DesiredForwardingPlan, DockerBuildContext, DockerBuildRequest,
-    DockerCommandProbe, DockerEndpoint, DockerResourceIdentity, DockerfileInput, DownRequest,
-    EnvironmentReconciler, EnvironmentReconciliationRequest, EnvironmentStopOutcome,
-    EnvironmentTransition, FeatureSourcePolicy, FeatureSourceResolver, FingerprintKeyState,
-    GeneratedFeature, GeneratedImagePlan, GeneratedUidGidUpdate, HostLifecycleExecutor,
-    ImageContainerCreateRequest, ImageContainerError, ImageContainerOrchestrator, ImageId,
-    Installation, LifecycleCheckpoint, LifecycleInput, LifecycleRunnerStop, LifecycleStage,
-    LifecycleStopOutcome, LockBehavior, LockGuard, LockMode, ManagedEnvironmentStop,
-    OperationState, PlanFingerprintCategory, PlanFingerprints, PreparedDesiredPlan,
-    ProcessDockerEnvironment, ProcessRunner, ProvisionedState, ReadyEnvironment,
-    ReconciliationPlanner, ReconciliationRequest, RecordedComposeRequest, RepoRelativeConfigPath,
-    RuntimeReconciliation, SanitizedSummary, ScopedForwardingSupervisor, SupervisorClaim,
-    SupervisorForward, SupervisorManifest, UidGidMutation, WorkspaceState, WorkspaceStateError,
-    credential_status, discover_and_read_config, down_workspace, ensure_workspace_ssh_identity,
-    load_supervisor_state, load_workspace_ssh_assets, load_workspace_state,
-    persist_workspace_state, reconcile_workspace, start_detached_supervisor, stop_supervisor,
-    supervisor_control_token, supervisor_status,
+    CancellationToken, CdenvRoot, ComposeAdapter, ComposeBaseRequest, ComposeCleanupKind,
+    ComposeLifecycleFacts, ComposeLifecycleOrchestrator, ComposeProject, ComposeRebuildError,
+    ComposeRebuildOrchestrator, ComposeRebuildRequest, ComposeRebuildRuntime, ComposeServiceHealth,
+    ComposeUpRequest, CreateComposeRequest, DeclaredForward, DesiredForwardingPlan,
+    DockerBuildContext, DockerBuildRequest, DockerCommandProbe, DockerEndpoint,
+    DockerResourceIdentity, DockerfileInput, DownRequest, EnvironmentReconciler,
+    EnvironmentReconciliationRequest, EnvironmentStopOutcome, EnvironmentTransition,
+    FeatureSourcePolicy, FeatureSourceResolver, FingerprintKeyState, ForwardingSupervisorStop,
+    GeneratedFeature, GeneratedImagePlan, GeneratedUidGidUpdate, GitAdapter, HostLifecycleExecutor,
+    ImageContainerBuildRequest, ImageContainerCreateRequest, ImageContainerError,
+    ImageContainerOrchestrator, ImageId, Installation, LifecycleCheckpoint, LifecycleInput,
+    LifecycleRunnerStop, LifecycleStage, LifecycleStopOutcome, ManagedEnvironmentStop,
+    ObservedComposeService, OperationState, PlanFingerprintCategory, PlanFingerprints,
+    PreparedDesiredPlan, PreparedImage, PreparedRebuildPlan, ProcessDockerEnvironment,
+    ProcessRunner, ProvisionedState, ReadyEnvironment, RebuildCleanupRequest, RebuildEnvironment,
+    RebuildPlanner, RebuildRequest, RebuildRollbackRequest, ReconciliationPlanner,
+    ReconciliationRequest, RecordedComposeRequest, RepoRelativeConfigPath, RuntimeReconciliation,
+    ScopedForwardingSupervisor, SupervisorClaim, SupervisorForward, SupervisorManifest,
+    UidGidMutation, WorkspaceState, WorkspaceStateError, credential_status,
+    discover_and_read_config, down_workspace, ensure_workspace_ssh_identity, load_supervisor_state,
+    load_workspace_ssh_assets, load_workspace_state, rebuild_workspace, reconcile_workspace,
+    start_detached_supervisor, stop_supervisor, supervisor_control_token, supervisor_status,
 };
 
 const PROFILE: &str = "cdenv-devcontainer-v1";
@@ -133,11 +137,13 @@ impl ReconciliationPlanner for ProductionPlanner<'_> {
         current: &WorkspaceState,
         _feature_policy: FeatureSourcePolicy,
     ) -> Result<PreparedDesiredPlan<Self::Plan>, Self::PlanError> {
-        let selected = explicit.map_or_else(
-            || PathBuf::from(current.desired_devcontainer_config().as_str()),
-            Path::to_path_buf,
-        );
-        let source = discover_and_read_config(checkout, Some(&selected))
+        let selected = explicit.map(Path::to_path_buf).or_else(|| {
+            current
+                .active()
+                .is_some()
+                .then(|| PathBuf::from(current.desired_devcontainer_config().as_str()))
+        });
+        let source = discover_and_read_config(checkout, selected.as_deref())
             .map_err(message)?
             .ok_or_else(|| message("no Dev Container configuration found"))?;
         let document =
@@ -461,12 +467,70 @@ impl ReconciliationPlanner for ProductionPlanner<'_> {
     }
 }
 
+impl RebuildPlanner for ProductionPlanner<'_> {
+    type Plan = ProductionPlan;
+    type PlanError = WorkflowMessage;
+    type PreflightError = WorkflowMessage;
+
+    fn prepare(
+        &self,
+        checkout: &Path,
+        explicit: Option<&Path>,
+        current: &WorkspaceState,
+    ) -> Result<PreparedRebuildPlan<Self::Plan>, Self::PlanError> {
+        let desired = ReconciliationPlanner::prepare(
+            self,
+            checkout,
+            explicit,
+            current,
+            FeatureSourcePolicy::FrozenOffline,
+        )?;
+        Ok(PreparedRebuildPlan {
+            profile: desired.profile,
+            config: desired.config,
+            fingerprints: desired.fingerprints,
+            plan: desired.plan,
+        })
+    }
+
+    async fn validate_frozen(
+        &self,
+        desired: &PreparedRebuildPlan<Self::Plan>,
+    ) -> Result<(), Self::PreflightError> {
+        let credentials = credential_status(self.root, self.workspace);
+        if !credentials.grants().is_empty() {
+            return Err(message(
+                "configured credential capabilities require integration that is unavailable; container lifecycle was not started",
+            ));
+        }
+        if self.cancellation.is_cancelled() {
+            return Err(message("environment reconciliation was cancelled"));
+        }
+        let endpoint = DockerEndpoint::resolve(&ProcessDockerEnvironment).map_err(message)?;
+        let probe = DockerCommandProbe::system(endpoint, ProcessRunner::new(self.root.logs_dir()));
+        if desired.plan.compose.is_some() {
+            probe
+                .probe_compose(&desired.plan.checkout, self.cancellation)
+                .await
+                .map(|_| ())
+                .map_err(message)
+        } else {
+            probe
+                .probe_docker(&desired.plan.checkout, self.cancellation)
+                .await
+                .map(|_| ())
+                .map_err(message)
+        }
+    }
+}
+
 struct ProductionEnvironment<'a> {
     root: &'a CdenvRoot,
     workspace: &'a WorkspaceName,
     installation: cdenv_core::InstallationId,
     cancellation: &'a CancellationToken,
     no_cache: bool,
+    prepared_image: Option<&'a PreparedImage>,
 }
 
 impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
@@ -731,13 +795,15 @@ impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
                     host_capabilities: &plan.capabilities,
                     recorded_container: None,
                 };
-                (
+                let facts = if let Some(prepared) = self.prepared_image {
                     orchestrator
-                        .create(&create, self.cancellation)
+                        .create_prepared(&create, prepared, self.cancellation)
                         .await
-                        .map_err(message)?,
-                    EnvironmentTransition::Created,
-                )
+                } else {
+                    orchestrator.create(&create, self.cancellation).await
+                }
+                .map_err(message)?;
+                (facts, EnvironmentTransition::Created)
             };
             (
                 EnvironmentFacts {
@@ -751,7 +817,15 @@ impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
         };
         let initial_creation = request.active.is_none();
         let readiness = self
-            .finish_readiness(request, facts.clone(), transition, engine.clone())
+            .finish_readiness(
+                plan,
+                &request.desired.fingerprints,
+                request.active,
+                request.drift.runtime,
+                facts.clone(),
+                transition,
+                engine.clone(),
+            )
             .await;
         if readiness.is_err() && initial_creation && plan.compose.is_none() {
             let name = format!("cdenv-{}-{generation}", self.workspace);
@@ -802,14 +876,20 @@ impl ProductionEnvironment<'_> {
         clippy::similar_names,
         reason = "provisioning and provisioned facts are distinct ordered readiness stages"
     )]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "readiness receives each commit boundary explicitly"
+    )]
     async fn finish_readiness(
         &self,
-        request: EnvironmentReconciliationRequest<'_, ProductionPlan>,
+        plan: &ProductionPlan,
+        fingerprints: &PlanFingerprints,
+        previous: Option<&ActiveGeneration>,
+        runtime_drift: bool,
         facts: EnvironmentFacts,
         transition: EnvironmentTransition,
         engine: BollardAdapter,
     ) -> Result<ReadyEnvironment, WorkflowMessage> {
-        let plan = &request.desired.plan;
         ensure_workspace_ssh_identity(self.root, self.workspace).map_err(message)?;
         let ssh = load_workspace_ssh_assets(self.root, self.workspace).map_err(message)?;
         let assets = ssh.provision_assets(AGENT_HOST_KEY, AGENT_AUTHORIZED_KEY);
@@ -854,7 +934,7 @@ impl ProductionEnvironment<'_> {
             plan.runtime.workspace.folder.as_str(),
             &plan.lifecycle,
             transition,
-            request.active.is_none(),
+            previous.is_none(),
             LifecycleExecution::Foreground,
             self.cancellation,
         )
@@ -870,7 +950,7 @@ impl ProductionEnvironment<'_> {
             &facts,
             &provisioned,
             &plan.ports,
-            request.active.map(ActiveGeneration::forwarding),
+            previous.map(ActiveGeneration::forwarding),
         )
         .await?;
         execute_lifecycle(
@@ -882,24 +962,15 @@ impl ProductionEnvironment<'_> {
             plan.runtime.workspace.folder.as_str(),
             &plan.lifecycle,
             transition,
-            request.active.is_none(),
+            previous.is_none(),
             LifecycleExecution::Background,
             self.cancellation,
         )
         .await?;
         let running = [
-            request
-                .active
-                .is_none()
-                .then_some(&plan.lifecycle.on_create),
-            request
-                .active
-                .is_none()
-                .then_some(&plan.lifecycle.update_content),
-            request
-                .active
-                .is_none()
-                .then_some(&plan.lifecycle.post_create),
+            previous.is_none().then_some(&plan.lifecycle.on_create),
+            previous.is_none().then_some(&plan.lifecycle.update_content),
+            previous.is_none().then_some(&plan.lifecycle.post_create),
             (transition != EnvironmentTransition::AlreadyRunning)
                 .then_some(&plan.lifecycle.post_start),
         ]
@@ -923,7 +994,7 @@ impl ProductionEnvironment<'_> {
             plan.scenario.clone(),
             facts.container,
             facts.image.as_str().to_owned(),
-            request.desired.fingerprints.clone(),
+            fingerprints.clone(),
             plan.feature_digests.clone(),
             checkpoint,
             forwarding,
@@ -932,7 +1003,7 @@ impl ProductionEnvironment<'_> {
         Ok(ReadyEnvironment {
             active,
             transition,
-            runtime: if request.drift.runtime {
+            runtime: if runtime_drift {
                 RuntimeReconciliation::Applied
             } else {
                 RuntimeReconciliation::Current
@@ -1599,8 +1670,567 @@ pub fn down_production(
             signal.abort();
             result
         })
-        .map(|_| ())
+        .map(|outcome| {
+            for warning in outcome.warnings {
+                eprintln!("cdenv: warning: {warning:?}");
+            }
+        })
         .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))
+}
+
+struct ProductionImageRebuild<'a> {
+    root: &'a CdenvRoot,
+    workspace: &'a WorkspaceName,
+    installation: cdenv_core::InstallationId,
+    profile: ProfileId,
+    cancellation: &'a CancellationToken,
+    engine: BollardAdapter,
+    docker: crate::DockerCliAdapter,
+    forwarding: ScopedForwardingSupervisor,
+}
+
+impl ProductionImageRebuild<'_> {
+    fn identity<'a>(
+        &'a self,
+        plan: &'a ProductionPlan,
+        generation: GenerationId,
+    ) -> DockerResourceIdentity<'a> {
+        DockerResourceIdentity {
+            installation: &self.installation,
+            workspace: self.workspace,
+            generation,
+            profile: &plan.profile,
+        }
+    }
+
+    async fn restore_previous_forwarding(
+        &self,
+        previous: &ActiveGeneration,
+    ) -> Result<(), WorkflowMessage> {
+        if previous.forwarding().requested().is_empty() {
+            return Ok(());
+        }
+        let facts = EnvironmentFacts {
+            container: previous.container_id().clone(),
+            image: ImageId::parse(previous.image_id()).map_err(message)?,
+            architecture: previous.provisioned().container_architecture(),
+            generation: previous.generation(),
+        };
+        start_forwarding_supervisor_from_provisioned(
+            self.root,
+            self.workspace,
+            &self.installation,
+            &facts,
+            previous.provisioned(),
+            previous.forwarding().requested(),
+        )
+        .await
+        .map(|_| ())
+    }
+}
+
+impl RebuildEnvironment<ProductionPlan> for ProductionImageRebuild<'_> {
+    type Build = PreparedImage;
+    type Error = WorkflowMessage;
+
+    async fn build(
+        &self,
+        desired: &PreparedRebuildPlan<ProductionPlan>,
+        generation: GenerationId,
+        no_cache: bool,
+    ) -> Result<Self::Build, Self::Error> {
+        let plan = &desired.plan;
+        if plan.compose.is_some() {
+            return Err(message("image rebuild adapter received a Compose plan"));
+        }
+        let identity = self.identity(plan, generation);
+        let orchestrator =
+            ImageContainerOrchestrator::new(self.docker.clone(), self.engine.clone());
+        if let Some(base) = &plan.base_build {
+            let context = DockerBuildContext::Repository;
+            let tag = format!("cdenv/{}-feature-base:{generation}", self.workspace);
+            let claim = self
+                .docker
+                .build(
+                    &DockerBuildRequest {
+                        plan: base,
+                        checkout: &plan.checkout,
+                        tag: &tag,
+                        identity,
+                        context: &context,
+                        dockerfile: DockerfileInput::Repository,
+                        no_cache,
+                    },
+                    self.cancellation,
+                )
+                .await
+                .map_err(message)?;
+            let inspection = self
+                .engine
+                .inspect_image(claim.image_id.as_str())
+                .await
+                .map_err(message)?;
+            if inspection.id != claim.image_id
+                || inspection
+                    .labels
+                    .get("cdenv.installation")
+                    .map(String::as_str)
+                    != Some(self.installation.as_str())
+                || inspection.labels.get("cdenv.workspace").map(String::as_str)
+                    != Some(self.workspace.as_str())
+                || inspection
+                    .labels
+                    .get("cdenv.generation")
+                    .map(String::as_str)
+                    != Some(generation.to_string().as_str())
+                || inspection.labels.get("cdenv.profile").map(String::as_str)
+                    != Some(plan.profile.as_str())
+                || inspection.labels.get("cdenv.generated").map(String::as_str) != Some("true")
+            {
+                return Err(message("feature base build image identity mismatch"));
+            }
+        }
+        let context = plan.generated.as_ref().map_or_else(
+            || DockerBuildContext::Repository,
+            |generated| DockerBuildContext::Generated(generated.files().to_vec()),
+        );
+        let dockerfile = plan
+            .generated
+            .as_ref()
+            .map_or(DockerfileInput::Repository, |generated| {
+                DockerfileInput::Generated(generated.dockerfile())
+            });
+        let build_tag = matches!(plan.docker.build, BuildPlan::Dockerfile(_))
+            .then(|| format!("cdenv/{}:{generation}", self.workspace));
+        orchestrator
+            .prepare_image(
+                &ImageContainerBuildRequest {
+                    build: &plan.docker.build,
+                    checkout: &plan.checkout,
+                    build_tag: build_tag.as_deref(),
+                    build_context: &context,
+                    dockerfile,
+                    identity,
+                    no_cache,
+                },
+                self.cancellation,
+            )
+            .await
+            .map_err(message)
+    }
+
+    async fn quiesce(&self, previous: Option<&ActiveGeneration>) -> Result<(), Self::Error> {
+        if self.cancellation.is_cancelled() {
+            return Err(message("rebuild was cancelled before quiescing"));
+        }
+        self.forwarding
+            .stop(self.workspace, previous)
+            .await
+            .map_err(message)?;
+        match ProductionLifecycleStop
+            .cancel(previous, crate::LIFECYCLE_STOP_GRACE)
+            .await?
+        {
+            LifecycleStopOutcome::NotRunning | LifecycleStopOutcome::Graceful => Ok(()),
+            LifecycleStopOutcome::Forced => Err(message(
+                "lifecycle runner required forced cancellation without persisted runner identity",
+            )),
+            LifecycleStopOutcome::Indeterminate => Err(message(
+                "background lifecycle runner identity is not persisted; safe cancellation is indeterminate",
+            )),
+        }
+    }
+
+    async fn backup(
+        &self,
+        previous: &ActiveGeneration,
+        backup_name: &str,
+    ) -> Result<(), Self::Error> {
+        if self.cancellation.is_cancelled() {
+            return Err(message(
+                "rebuild was cancelled before old-primary replacement",
+            ));
+        }
+        let image = ImageId::parse(previous.image_id()).map_err(message)?;
+        let original_name = format!("cdenv-{}-{}", self.workspace, previous.generation());
+        let inspection = self
+            .engine
+            .inspect_container(previous.container_id())
+            .await
+            .map_err(message)?;
+        crate::bollard::verify_container(
+            &inspection,
+            crate::ContainerExpectation {
+                id: previous.container_id(),
+                name: &original_name,
+                image_id: &image,
+                installation: &self.installation,
+                workspace: self.workspace,
+                generation: previous.generation(),
+                profile: &self.profile,
+                project: None,
+                service: None,
+                running: None,
+            },
+        )
+        .map_err(message)?;
+        if inspection.running {
+            self.engine
+                .stop(previous.container_id(), crate::CONTAINER_STOP_GRACE)
+                .await
+                .map_err(message)?;
+        }
+        let stopped = self
+            .engine
+            .inspect_container(previous.container_id())
+            .await
+            .map_err(message)?;
+        if stopped.running || stopped.id != *previous.container_id() {
+            return Err(message(
+                "old primary did not reach a verified stopped state",
+            ));
+        }
+        self.engine
+            .rename(previous.container_id(), backup_name)
+            .await
+            .map_err(message)?;
+        let renamed = self
+            .engine
+            .inspect_container(previous.container_id())
+            .await
+            .map_err(message)?;
+        if renamed.id != *previous.container_id() || renamed.name != backup_name || renamed.running
+        {
+            return Err(message("old primary backup rename was not verified"));
+        }
+        Ok(())
+    }
+
+    async fn create_ready(
+        &self,
+        desired: &PreparedRebuildPlan<ProductionPlan>,
+        build: &Self::Build,
+        generation: GenerationId,
+    ) -> Result<ActiveGeneration, Self::Error> {
+        let plan = &desired.plan;
+        HostLifecycleExecutor
+            .initialize(
+                &plan.lifecycle.initialize,
+                &plan.checkout,
+                LifecycleInput::Inherit,
+                self.cancellation,
+            )
+            .await
+            .map_err(message)?;
+        let identity = self.identity(plan, generation);
+        let orchestrator =
+            ImageContainerOrchestrator::new(self.docker.clone(), self.engine.clone());
+        let context = plan.generated.as_ref().map_or_else(
+            || DockerBuildContext::Repository,
+            |generated| DockerBuildContext::Generated(generated.files().to_vec()),
+        );
+        let dockerfile = plan
+            .generated
+            .as_ref()
+            .map_or(DockerfileInput::Repository, |generated| {
+                DockerfileInput::Generated(generated.dockerfile())
+            });
+        let command = if plan.runtime.override_command {
+            vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "trap 'exit 0' TERM; while sleep 3600; do :; done".to_owned(),
+            ]
+        } else {
+            Vec::new()
+        };
+        let name = format!("cdenv-{}-{generation}", self.workspace);
+        let build_tag = format!("cdenv/{}:{generation}", self.workspace);
+        let facts = orchestrator
+            .create_prepared(
+                &ImageContainerCreateRequest {
+                    build: &plan.docker.build,
+                    checkout: &plan.checkout,
+                    build_tag: matches!(plan.docker.build, BuildPlan::Dockerfile(_))
+                        .then_some(build_tag.as_str()),
+                    build_context: &context,
+                    dockerfile,
+                    container_name: &name,
+                    identity,
+                    runtime: &plan.runtime,
+                    create_options: &plan.docker.create,
+                    ports: &plan.ports,
+                    command: &command,
+                    no_cache: false,
+                    cdenv_owned_targets: &plan.owned_targets,
+                    host_requirements: plan.host_requirements.as_ref(),
+                    host_capabilities: &plan.capabilities,
+                    recorded_container: None,
+                },
+                build,
+                self.cancellation,
+            )
+            .await
+            .map_err(message)?;
+        let environment = ProductionEnvironment {
+            root: self.root,
+            workspace: self.workspace,
+            installation: self.installation.clone(),
+            cancellation: self.cancellation,
+            no_cache: false,
+            prepared_image: Some(build),
+        };
+        let ready = environment
+            .finish_readiness(
+                plan,
+                &desired.fingerprints,
+                None,
+                false,
+                EnvironmentFacts {
+                    container: facts.container,
+                    image: facts.image,
+                    architecture: facts.architecture,
+                    generation: facts.generation,
+                },
+                EnvironmentTransition::Created,
+                self.engine.clone(),
+            )
+            .await?;
+        if ready.active.generation() != generation {
+            return Err(message("prepared candidate generation mismatch"));
+        }
+        Ok(ready.active)
+    }
+
+    async fn handoff(
+        &self,
+        _previous: Option<&ActiveGeneration>,
+        replacement: &ActiveGeneration,
+    ) -> Result<(), Self::Error> {
+        if self.cancellation.is_cancelled() {
+            return Err(message("rebuild was cancelled during forwarding handoff"));
+        }
+        if replacement.forwarding().requested().is_empty() {
+            return Ok(());
+        }
+        let paths = self.root.workspace(self.workspace);
+        let state = load_supervisor_state(&paths.supervisor_state_file()).map_err(message)?;
+        let host_build = AgentArtifactProvider::embedded_identity().map_err(message)?;
+        let claim = SupervisorClaim {
+            installation: &self.installation,
+            workspace: self.workspace,
+            generation: replacement.generation(),
+            host_build_id: &host_build,
+            agent_build_id: replacement.provisioned().agent_build_id(),
+            agent_protocol: replacement.provisioned().protocol_version(),
+        };
+        supervisor_status(
+            &paths.supervisor_socket(),
+            supervisor_control_token(&state),
+            &claim,
+        )
+        .await
+        .map(|_| ())
+        .map_err(message)
+    }
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "candidate cleanup and exact old-primary restoration remain auditable together"
+    )]
+    async fn rollback(
+        &self,
+        request: RebuildRollbackRequest<'_, Self::Build>,
+    ) -> Result<(), Self::Error> {
+        let mut failures = Vec::new();
+        if let Some(candidate) = request.candidate {
+            match self.forwarding.stop(self.workspace, Some(candidate)).await {
+                Ok(
+                    crate::ForwardingStopOutcome::Stopped | crate::ForwardingStopOutcome::Missing,
+                ) => {}
+                Ok(crate::ForwardingStopOutcome::Degraded) => failures.push(
+                    "candidate forwarding state was degraded and could not be stopped safely"
+                        .to_owned(),
+                ),
+                Err(error) => failures.push(error.to_string()),
+            }
+            let name = format!("cdenv-{}-{}", self.workspace, candidate.generation());
+            let image = ImageId::parse(candidate.image_id()).map_err(message)?;
+            if let Ok(inspection) = self
+                .engine
+                .inspect_container(candidate.container_id())
+                .await
+            {
+                let expected = crate::ContainerExpectation {
+                    id: candidate.container_id(),
+                    name: &name,
+                    image_id: &image,
+                    installation: &self.installation,
+                    workspace: self.workspace,
+                    generation: candidate.generation(),
+                    profile: &self.profile,
+                    project: None,
+                    service: None,
+                    running: None,
+                };
+                if crate::bollard::verify_container(&inspection, expected).is_ok() {
+                    if inspection.running
+                        && let Err(error) = self
+                            .engine
+                            .stop(candidate.container_id(), crate::CONTAINER_STOP_GRACE)
+                            .await
+                    {
+                        failures.push(error.to_string());
+                    }
+                    if let Err(error) = self.engine.cleanup_container(expected).await {
+                        failures.push(error.to_string());
+                    }
+                }
+            }
+        }
+        if request.build.generated
+            && let Err(error) = self
+                .engine
+                .cleanup_image(crate::ImageCleanupExpectation {
+                    id: &request.build.image,
+                    installation: &self.installation,
+                    workspace: self.workspace,
+                    generation: request.generation,
+                    profile: &self.profile,
+                })
+                .await
+        {
+            failures.push(error.to_string());
+        }
+        if let Some(previous) = request.previous {
+            let original_name = format!("cdenv-{}-{}", self.workspace, previous.generation());
+            let image = ImageId::parse(previous.image_id()).map_err(message)?;
+            match self.engine.inspect_container(previous.container_id()).await {
+                Ok(inspection)
+                    if inspection.name == request.backup_name
+                        || inspection.name == original_name =>
+                {
+                    let expected_name = inspection.name.clone();
+                    let expected = crate::ContainerExpectation {
+                        id: previous.container_id(),
+                        name: &expected_name,
+                        image_id: &image,
+                        installation: &self.installation,
+                        workspace: self.workspace,
+                        generation: previous.generation(),
+                        profile: &self.profile,
+                        project: None,
+                        service: None,
+                        running: None,
+                    };
+                    if let Err(error) = crate::bollard::verify_container(&inspection, expected) {
+                        failures.push(error.to_string());
+                    } else if inspection.name == request.backup_name {
+                        if inspection.running {
+                            failures.push(
+                                "verified old backup unexpectedly remained running".to_owned(),
+                            );
+                        } else if let Err(error) = self
+                            .engine
+                            .rename(previous.container_id(), &original_name)
+                            .await
+                        {
+                            failures.push(error.to_string());
+                        } else if let Err(error) = self.engine.start(previous.container_id()).await
+                        {
+                            failures.push(error.to_string());
+                        }
+                    } else if !inspection.running
+                        && let Err(error) = self.engine.start(previous.container_id()).await
+                    {
+                        failures.push(error.to_string());
+                    }
+                }
+                Ok(_) => {
+                    failures
+                        .push("verified old primary had an unexpected name or state".to_owned());
+                }
+                Err(error) => failures.push(error.to_string()),
+            }
+            if failures.is_empty()
+                && let Err(error) = self.restore_previous_forwarding(previous).await
+            {
+                failures.push(error.to_string());
+            }
+        }
+        if failures.is_empty() {
+            Ok(())
+        } else {
+            Err(message(format!(
+                "rollback incomplete: {}",
+                failures.join("; ")
+            )))
+        }
+    }
+
+    async fn cleanup(
+        &self,
+        request: RebuildCleanupRequest<'_, Self::Build>,
+    ) -> Result<(), Self::Error> {
+        let Some(previous) = request.previous else {
+            return Ok(());
+        };
+        let image = ImageId::parse(previous.image_id()).map_err(message)?;
+        self.engine
+            .cleanup_container(crate::ContainerExpectation {
+                id: previous.container_id(),
+                name: request.backup_name,
+                image_id: &image,
+                installation: &self.installation,
+                workspace: self.workspace,
+                generation: previous.generation(),
+                profile: &self.profile,
+                project: None,
+                service: None,
+                running: Some(false),
+            })
+            .await
+            .map_err(message)
+    }
+}
+
+async fn start_forwarding_supervisor_from_provisioned(
+    root: &CdenvRoot,
+    workspace: &WorkspaceName,
+    installation: &cdenv_core::InstallationId,
+    facts: &EnvironmentFacts,
+    provisioned: &ProvisionedState,
+    requested: &[DeclaredForward],
+) -> Result<crate::SupervisorState, WorkflowMessage> {
+    let endpoint = DockerEndpoint::resolve(&ProcessDockerEnvironment).map_err(message)?;
+    let paths = root.workspace(workspace);
+    let host_build = AgentArtifactProvider::embedded_identity().map_err(message)?;
+    let forwards = requested
+        .iter()
+        .map(|forward| SupervisorForward {
+            requested_port: forward.requested().port().get(),
+            require_local_port: forward.require_local_port(),
+            target_host: forward.target_host().to_owned(),
+            target_port: forward.target_port().get(),
+        })
+        .collect();
+    let manifest = SupervisorManifest::new(
+        installation.clone(),
+        workspace.clone(),
+        facts.generation,
+        host_build,
+        provisioned.agent_build_id().clone(),
+        provisioned.protocol_version(),
+        facts.container.clone(),
+        provisioned.agent_path().to_owned(),
+        endpoint.socket_path().to_path_buf(),
+        paths.supervisor_socket(),
+        paths.supervisor_state_file(),
+        paths.supervisor_lifetime_lock(),
+        forwards,
+    )
+    .map_err(message)?;
+    start_detached_supervisor(&manifest).await.map_err(message)
 }
 
 /// Replaces a production workspace with a newly planned generation.
@@ -1612,10 +2242,6 @@ pub fn down_production(
 /// # Errors
 ///
 /// Returns planning, shutdown, Docker, readiness, invariant, or persistence failures.
-#[expect(
-    clippy::too_many_lines,
-    reason = "the production replacement and failure persistence boundaries remain visible"
-)]
 pub fn rebuild_production(
     root: &CdenvRoot,
     workspace: &WorkspaceName,
@@ -1627,7 +2253,14 @@ pub fn rebuild_production(
         return Err(ProductionWorkflowError::MissingWorkspace(workspace.clone()));
     }
     let initial = load_workspace_state(&paths.state_file())?.into_state();
-    let previous = initial.active().cloned();
+    if matches!(
+        initial.active().map(ActiveGeneration::scenario),
+        Some(ActiveScenario::Compose { .. })
+    ) {
+        return rebuild_compose_production(root, workspace, config, no_cache);
+    }
+    let installation = initial.installation_id().clone();
+    let profile = initial.devcontainer_profile().clone();
     let cancellation = CancellationToken::default();
     let planner = ProductionPlanner {
         root,
@@ -1635,104 +2268,556 @@ pub fn rebuild_production(
         cancellation: &cancellation,
         replacement: true,
     };
-    let desired = planner
-        .prepare(
-            &paths.checkout(),
-            config.map(RepoRelativeConfigPath::as_path),
-            &initial,
-            FeatureSourcePolicy::FrozenOffline,
-        )
+    let endpoint = DockerEndpoint::resolve(&ProcessDockerEnvironment)
         .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
-    let runtime = tokio::runtime::Builder::new_multi_thread()
-        .enable_all()
-        .build()
+    let connector = endpoint
+        .bollard_connector(BOLLARD_CONTROL_TIMEOUT)
         .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
-    runtime
-        .block_on(planner.preflight(&desired, FeatureSourcePolicy::FrozenOffline))
+    let engine = BollardAdapter::from_connector(&connector);
+    let host_build = AgentArtifactProvider::embedded_identity()
         .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
-
-    // This operation intentionally preserves containers, images, volumes, networks, checkout
-    // changes, SSH identity, and credential grants. Only verified active resources are stopped.
-    down_production(root, workspace)?;
-
-    let _lock = LockGuard::acquire(&paths.lock_file(), LockMode::Exclusive, LockBehavior::Wait)
-        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
-    let mut state = load_workspace_state(&paths.state_file())?.into_state();
+    let environment = ProductionImageRebuild {
+        root,
+        workspace,
+        installation: installation.clone(),
+        profile,
+        cancellation: &cancellation,
+        engine,
+        docker: crate::DockerCliAdapter::system(
+            endpoint,
+            ProcessRunner::new(root.logs_dir()),
+            root.temp_dir(),
+        ),
+        forwarding: ScopedForwardingSupervisor::new(root.clone(), installation, host_build),
+    };
     let completed_at = crate::create::current_timestamp()
         .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
     let operation_id = crate::create::random_operation_id()
         .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
     let operation = OperationState::active(
         ForegroundOperation::Rebuilding,
-        operation_id,
+        operation_id.clone(),
         completed_at.clone(),
     )
     .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
-    state.update_desired(
-        desired.profile.clone(),
-        desired.config.clone(),
-        desired.fingerprints.clone(),
-    );
-    state.set_operation(operation);
-    state.set_last_error(None);
-    persist_workspace_state(&paths.state_file(), &state)?;
-
-    let environment = ProductionEnvironment {
-        root,
-        workspace,
-        installation: state.installation_id().clone(),
-        cancellation: &cancellation,
-        no_cache,
-    };
-    let result = runtime.block_on(async {
-        let signal_cancellation = cancellation.clone();
-        let signal = tokio::spawn(async move {
-            if tokio::signal::ctrl_c().await.is_ok() {
-                signal_cancellation.cancel();
-            }
-        });
-        let result = environment
-            .reconcile(EnvironmentReconciliationRequest {
-                desired: &desired,
-                active: None,
-                drift: CategoryDrift::default(),
-            })
+    let backup_name = format!("cdenv-backup-{operation_id}");
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let outcome = runtime
+        .block_on(async {
+            let signal_cancellation = cancellation.clone();
+            let signal = tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    signal_cancellation.cancel();
+                }
+            });
+            let result = rebuild_workspace(
+                root,
+                RebuildRequest {
+                    workspace,
+                    config,
+                    operation,
+                    backup_name: &backup_name,
+                    no_cache,
+                    completed_at,
+                },
+                &planner,
+                &GitAdapter::system(),
+                &environment,
+            )
             .await;
-        signal.abort();
-        result
-    });
-    match result {
-        Ok(ready)
-            if ready.active.generation() == desired.plan.generation
-                && previous.as_ref().is_none_or(|old| {
-                    old.container_id() != ready.active.container_id()
-                        && ready.active.generation().get() > old.generation().get()
-                }) =>
-        {
-            state.commit_active(ready.active, completed_at);
-            persist_workspace_state(&paths.state_file(), &state)?;
-            Ok(())
-        }
-        Ok(_) => {
-            // Keep rebuilding intent durable: an invariant violation may leave an owned candidate
-            // requiring authenticated recovery rather than an ordinary lifecycle retry.
-            state.set_last_error(Some(SanitizedSummary::redact(
-                "rebuild replacement identity invariant failed",
-                [],
-            )));
-            persist_workspace_state(&paths.state_file(), &state)?;
-            Err(ProductionWorkflowError::Workflow(
-                "rebuild replacement identity invariant failed".to_owned(),
-            ))
-        }
-        Err(error) => {
-            // Compose recreation is non-atomic, and image rollback can require a later verified
-            // restart. Retain explicit interrupted intent instead of claiming an idle outcome.
-            state.set_last_error(Some(SanitizedSummary::redact(&error.to_string(), [])));
-            persist_workspace_state(&paths.state_file(), &state)?;
-            Err(ProductionWorkflowError::Workflow(error.to_string()))
+            signal.abort();
+            result
+        })
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    if let Some(warning) = outcome.cleanup_warning {
+        eprintln!("cdenv: warning: post-rebuild cleanup failed safely: {warning}");
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ProductionComposeBuild {
+    image: ImageId,
+}
+
+struct ProductionComposeRebuild<'a> {
+    root: &'a CdenvRoot,
+    workspace: &'a WorkspaceName,
+    installation: cdenv_core::InstallationId,
+    previous: Option<ActiveGeneration>,
+    cancellation: &'a CancellationToken,
+    adapter: ComposeAdapter,
+    engine: BollardAdapter,
+    state: Mutex<WorkspaceState>,
+    completed_at: crate::StateTimestamp,
+    created: Mutex<Option<ComposeLifecycleFacts>>,
+}
+
+impl ProductionComposeRebuild<'_> {
+    fn identity<'a>(
+        &'a self,
+        plan: &'a ProductionPlan,
+        generation: GenerationId,
+    ) -> DockerResourceIdentity<'a> {
+        DockerResourceIdentity {
+            installation: &self.installation,
+            workspace: self.workspace,
+            generation,
+            profile: &plan.profile,
         }
     }
+
+    fn compose(plan: &ProductionPlan) -> Result<&ProductionComposePlan, WorkflowMessage> {
+        plan.compose
+            .as_ref()
+            .ok_or_else(|| message("Compose rebuild adapter received an image plan"))
+    }
+}
+
+impl ComposeRebuildRuntime<PreparedRebuildPlan<ProductionPlan>> for ProductionComposeRebuild<'_> {
+    type Build = ProductionComposeBuild;
+    type Error = WorkflowMessage;
+
+    async fn build_complete(
+        &self,
+        desired: &PreparedRebuildPlan<ProductionPlan>,
+        generation: GenerationId,
+        no_cache: bool,
+    ) -> Result<Self::Build, Self::Error> {
+        let plan = &desired.plan;
+        let compose = Self::compose(plan)?;
+        let project = ComposeProject {
+            files: &compose.files,
+            project_name: compose.plan.project_name(),
+            working_directory: &plan.checkout,
+        };
+        let base = self
+            .adapter
+            .prepare_base(
+                &ComposeBaseRequest {
+                    project,
+                    service: &compose.primary_service,
+                    has_build: compose.primary_has_build,
+                    base_tag: &compose.base_tag,
+                    no_cache,
+                },
+                self.cancellation,
+            )
+            .await
+            .map_err(message)?;
+        let image = if let Some(generated) = &plan.generated {
+            let BuildPlan::Dockerfile(build) = &plan.docker.build else {
+                return Err(message("internal generated Compose plan mismatch"));
+            };
+            crate::DockerCliAdapter::system(
+                self.adapter.endpoint().clone(),
+                ProcessRunner::new(self.root.logs_dir()),
+                self.root.temp_dir(),
+            )
+            .build(
+                &DockerBuildRequest {
+                    plan: build,
+                    checkout: &plan.checkout,
+                    tag: &format!("cdenv/{}:{generation}", self.workspace),
+                    identity: self.identity(plan, generation),
+                    context: &DockerBuildContext::Generated(generated.files().to_vec()),
+                    dockerfile: DockerfileInput::Generated(generated.dockerfile()),
+                    no_cache,
+                },
+                self.cancellation,
+            )
+            .await
+            .map_err(message)?
+            .image_id
+        } else {
+            base.image_id
+        };
+        let inspected = self
+            .engine
+            .inspect_image(image.as_str())
+            .await
+            .map_err(message)?;
+        if inspected.id != image {
+            return Err(message("Compose replacement image identity mismatch"));
+        }
+        Ok(ProductionComposeBuild { image })
+    }
+
+    async fn force_recreate(
+        &self,
+        desired: &PreparedRebuildPlan<ProductionPlan>,
+        build: &Self::Build,
+        generation: GenerationId,
+    ) -> Result<(), Self::Error> {
+        let plan = &desired.plan;
+        let compose = Self::compose(plan)?;
+        HostLifecycleExecutor
+            .initialize(
+                &plan.lifecycle.initialize,
+                &plan.checkout,
+                LifecycleInput::Inherit,
+                self.cancellation,
+            )
+            .await
+            .map_err(message)?;
+        let host_build = AgentArtifactProvider::embedded_identity().map_err(message)?;
+        ScopedForwardingSupervisor::new(self.root.clone(), self.installation.clone(), host_build)
+            .stop(self.workspace, self.previous.as_ref())
+            .await
+            .map_err(message)?;
+        match ProductionLifecycleStop
+            .cancel(self.previous.as_ref(), crate::LIFECYCLE_STOP_GRACE)
+            .await?
+        {
+            LifecycleStopOutcome::NotRunning | LifecycleStopOutcome::Graceful => {}
+            LifecycleStopOutcome::Forced | LifecycleStopOutcome::Indeterminate => {
+                return Err(message(
+                    "background lifecycle runner identity is not persisted; safe cancellation is indeterminate",
+                ));
+            }
+        }
+        if self.cancellation.is_cancelled() {
+            return Err(message("Compose rebuild was cancelled before recreation"));
+        }
+        let orchestrator =
+            ComposeLifecycleOrchestrator::new(self.adapter.clone(), self.engine.clone());
+        let facts = orchestrator
+            .create_or_rebuild(
+                &CreateComposeRequest {
+                    up: ComposeUpRequest {
+                        project: ComposeProject {
+                            files: &compose.files,
+                            project_name: compose.plan.project_name(),
+                            working_directory: &plan.checkout,
+                        },
+                        plan: &compose.plan,
+                        force_recreate: true,
+                    },
+                    identity: self.identity(plan, generation),
+                    primary_image: &build.image,
+                    ports: &plan.ports,
+                },
+                self.cancellation,
+            )
+            .await
+            .map_err(message)?;
+        *self
+            .created
+            .lock()
+            .map_err(|_| message("Compose rebuild claim lock was poisoned"))? = Some(facts);
+        Ok(())
+    }
+
+    async fn inspect_services(
+        &self,
+        generation: GenerationId,
+    ) -> Result<Vec<ObservedComposeService>, Self::Error> {
+        let discovered = self
+            .engine
+            .discover(crate::ContainerDiscoveryScope {
+                installation: &self.installation,
+                workspace: Some(self.workspace),
+                generation: Some(generation),
+            })
+            .await
+            .map_err(message)?;
+        let mut observed = Vec::new();
+        for container in discovered {
+            let Some(service) = container.labels.get(COMPOSE_SERVICE_LABEL) else {
+                continue;
+            };
+            let inspection = self
+                .engine
+                .inspect_container(&container.id)
+                .await
+                .map_err(message)?;
+            observed.push(ObservedComposeService {
+                service: service.clone(),
+                container: container.id,
+                running: inspection.running,
+                health: match inspection.healthy {
+                    Some(true) if inspection.running => ComposeServiceHealth::Healthy,
+                    Some(false) => ComposeServiceHealth::Unhealthy,
+                    None | Some(true) => ComposeServiceHealth::Unknown,
+                },
+            });
+        }
+        Ok(observed)
+    }
+
+    async fn complete_readiness(
+        &self,
+        desired: &PreparedRebuildPlan<ProductionPlan>,
+        build: &Self::Build,
+        generation: GenerationId,
+        managed: &BTreeMap<String, ContainerId>,
+    ) -> Result<ActiveGeneration, Self::Error> {
+        let created = self
+            .created
+            .lock()
+            .map_err(|_| message("Compose rebuild claim lock was poisoned"))?
+            .clone()
+            .ok_or_else(|| message("Compose recreation did not retain a verified claim"))?;
+        if &created.managed != managed {
+            return Err(message(
+                "Compose rediscovery differed from the verified recreation claim",
+            ));
+        }
+        let image = self
+            .engine
+            .inspect_image(build.image.as_str())
+            .await
+            .map_err(message)?;
+        let environment = ProductionEnvironment {
+            root: self.root,
+            workspace: self.workspace,
+            installation: self.installation.clone(),
+            cancellation: self.cancellation,
+            no_cache: false,
+            prepared_image: None,
+        };
+        environment
+            .finish_readiness(
+                &desired.plan,
+                &desired.fingerprints,
+                None,
+                false,
+                EnvironmentFacts {
+                    container: created.primary,
+                    image: build.image.clone(),
+                    architecture: image.architecture,
+                    generation,
+                },
+                EnvironmentTransition::Created,
+                self.engine.clone(),
+            )
+            .await
+            .map(|ready| ready.active)
+    }
+
+    async fn handoff_forwarding(&self, active: &ActiveGeneration) -> Result<(), Self::Error> {
+        if self.cancellation.is_cancelled() {
+            return Err(message(
+                "Compose rebuild was cancelled during forwarding handoff",
+            ));
+        }
+        if active.forwarding().requested().is_empty() {
+            return Ok(());
+        }
+        let paths = self.root.workspace(self.workspace);
+        let state = load_supervisor_state(&paths.supervisor_state_file()).map_err(message)?;
+        let host_build = AgentArtifactProvider::embedded_identity().map_err(message)?;
+        supervisor_status(
+            &paths.supervisor_socket(),
+            supervisor_control_token(&state),
+            &SupervisorClaim {
+                installation: &self.installation,
+                workspace: self.workspace,
+                generation: active.generation(),
+                host_build_id: &host_build,
+                agent_build_id: active.provisioned().agent_build_id(),
+                agent_protocol: active.provisioned().protocol_version(),
+            },
+        )
+        .await
+        .map(|_| ())
+        .map_err(message)
+    }
+
+    async fn commit_active(
+        &self,
+        active: &ActiveGeneration,
+        managed: &BTreeMap<String, ContainerId>,
+    ) -> Result<(), Self::Error> {
+        let Some((_, expected)) = active.scenario().compose() else {
+            return Err(message(
+                "Compose readiness returned a non-Compose active scenario",
+            ));
+        };
+        if expected.iter().ne(managed.keys()) {
+            return Err(message(
+                "Compose active managed set differs from rediscovery",
+            ));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| message("workspace state lock was poisoned"))?;
+        state.commit_active(active.clone(), self.completed_at.clone());
+        crate::persist_workspace_state(&self.root.workspace(self.workspace).state_file(), &state)
+            .map_err(message)
+    }
+
+    async fn remove_orphans(
+        &self,
+        _desired_managed: &BTreeMap<String, ContainerId>,
+    ) -> Result<(), Self::Error> {
+        // No production orphan removal is attempted until exact orphan IDs can be independently
+        // verified. Leaving an orphan is safer than broad Compose project mutation.
+        Ok(())
+    }
+
+    async fn cleanup_generated_images(&self) -> Result<(), Self::Error> {
+        // Generated image discovery does not yet expose repository-tag/reference evidence. A safe
+        // no-op preserves user, base, tagged, cache, and referenced images.
+        Ok(())
+    }
+}
+
+#[expect(
+    clippy::too_many_lines,
+    reason = "the locked Compose transaction and durable recovery boundary remain visible"
+)]
+fn rebuild_compose_production(
+    root: &CdenvRoot,
+    workspace: &WorkspaceName,
+    config: Option<&RepoRelativeConfigPath>,
+    no_cache: bool,
+) -> Result<(), ProductionWorkflowError> {
+    let cancellation = CancellationToken::default();
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    runtime
+        .block_on(async {
+            let signal_cancellation = cancellation.clone();
+            let signal = tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    signal_cancellation.cancel();
+                }
+            });
+            let result = async {
+                let paths = root.workspace(workspace);
+                let _lock = crate::LockGuard::acquire(
+                    &paths.lock_file(),
+                    crate::LockMode::Exclusive,
+                    crate::LockBehavior::Wait,
+                )
+                .map_err(message)?;
+                let mut state = load_workspace_state(&paths.state_file())
+                    .map_err(message)?
+                    .into_state();
+                let previous = state.active().cloned();
+                let planner = ProductionPlanner {
+                    root,
+                    workspace,
+                    cancellation: &cancellation,
+                    replacement: true,
+                };
+                let desired = RebuildPlanner::prepare(
+                    &planner,
+                    &paths.checkout(),
+                    config.map(RepoRelativeConfigPath::as_path),
+                    &state,
+                )?;
+                planner.validate_frozen(&desired).await?;
+                let compose = ProductionComposeRebuild::compose(&desired.plan)?;
+                let generation_value = previous
+                    .as_ref()
+                    .map_or(1, |active| active.generation().get().saturating_add(1));
+                if previous
+                    .as_ref()
+                    .is_some_and(|active| generation_value == active.generation().get())
+                {
+                    return Err(message("active generation cannot be incremented"));
+                }
+                let generation = GenerationId::new(generation_value).map_err(message)?;
+                let completed_at = crate::create::current_timestamp().map_err(message)?;
+                let operation_id = crate::create::random_operation_id().map_err(message)?;
+                state.update_desired(
+                    desired.profile.clone(),
+                    desired.config.clone(),
+                    desired.fingerprints.clone(),
+                );
+                state.set_operation(
+                    OperationState::active(
+                        ForegroundOperation::Rebuilding,
+                        operation_id,
+                        completed_at.clone(),
+                    )
+                    .map_err(message)?,
+                );
+                state.set_last_error(None);
+                crate::persist_workspace_state(&paths.state_file(), &state).map_err(message)?;
+                let endpoint =
+                    DockerEndpoint::resolve(&ProcessDockerEnvironment).map_err(message)?;
+                let connector = endpoint
+                    .bollard_connector(BOLLARD_CONTROL_TIMEOUT)
+                    .map_err(message)?;
+                let adapter = ComposeAdapter::system(
+                    endpoint,
+                    ProcessRunner::new(root.logs_dir()),
+                    root.temp_dir(),
+                );
+                let production = ProductionComposeRebuild {
+                    root,
+                    workspace,
+                    installation: state.installation_id().clone(),
+                    previous: previous.clone(),
+                    cancellation: &cancellation,
+                    adapter,
+                    engine: BollardAdapter::from_connector(&connector),
+                    state: Mutex::new(state),
+                    completed_at,
+                    created: Mutex::new(None),
+                };
+                let orchestrator = ComposeRebuildOrchestrator::new(production);
+                let request = ComposeRebuildRequest {
+                    desired: &desired,
+                    managed_services: compose.plan.managed_services(),
+                    primary_service: &compose.primary_service,
+                    generation,
+                    previous_primary: previous.as_ref().map(ActiveGeneration::container_id),
+                    no_cache,
+                };
+                match orchestrator.rebuild(request, &cancellation).await {
+                    Ok(outcome) => {
+                        for warning in outcome.cleanup_warnings {
+                            let kind = match warning.kind {
+                                ComposeCleanupKind::Orphans => "orphan",
+                                ComposeCleanupKind::GeneratedImages => "generated-image",
+                            };
+                            eprintln!(
+                                "cdenv: warning: {kind} cleanup failed safely: {}",
+                                warning.source
+                            );
+                        }
+                        Ok(())
+                    }
+                    Err(error) => {
+                        let recovery = error.recovery(generation);
+                        let mut state = load_workspace_state(&paths.state_file())
+                            .map_err(message)?
+                            .into_state();
+                        if recovery.is_some() {
+                            state.set_interrupted_compose_rebuild(recovery);
+                        }
+                        state.set_last_error(Some(crate::SanitizedSummary::redact(
+                            &error.to_string(),
+                            [],
+                        )));
+                        if matches!(
+                            error,
+                            ComposeRebuildError::Build { .. }
+                                | ComposeRebuildError::CancelledBeforeRecreation
+                        ) {
+                            state.set_operation(OperationState::idle());
+                        }
+                        crate::persist_workspace_state(&paths.state_file(), &state)
+                            .map_err(message)?;
+                        Err(message(error))
+                    }
+                }
+            }
+            .await;
+            signal.abort();
+            result
+        })
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))
 }
 
 /// Runs the common post-checkout production transaction.
@@ -1775,6 +2860,7 @@ pub fn reconcile_production(
         installation,
         cancellation: &cancellation,
         no_cache: false,
+        prepared_image: None,
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -1805,4 +2891,26 @@ pub fn reconcile_production(
         })
         .map(|_| ())
         .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lifecycle_stop_fails_closed_without_persisted_runner_control_identity() {
+        let state = crate::decode_workspace_state(
+            Path::new("fixture.json"),
+            include_bytes!("../tests/fixtures/state-compose-background.json"),
+        )
+        .expect("state fixture")
+        .into_state();
+
+        let outcome = ProductionLifecycleStop
+            .cancel(state.active(), crate::LIFECYCLE_STOP_GRACE)
+            .await
+            .expect("non-selecting lifecycle inspection");
+
+        assert_eq!(outcome, LifecycleStopOutcome::Indeterminate);
+    }
 }

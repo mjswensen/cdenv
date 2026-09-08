@@ -9,8 +9,9 @@ use super::planning::{
     ImageContainerMatchState, classify_image_container_matches, verify_built_image, verify_runtime,
 };
 use super::{
-    ImageCleanupFailure, ImageContainerCreateRequest, ImageContainerError, ImageContainerFacts,
-    ImageContainerOrchestrator, ImageContainerStopOutcome, ImageDockerCli, ImageDockerEngine,
+    ImageCleanupFailure, ImageContainerBuildRequest, ImageContainerCreateRequest,
+    ImageContainerError, ImageContainerFacts, ImageContainerOrchestrator,
+    ImageContainerStopOutcome, ImageDockerCli, ImageDockerEngine, PreparedImage,
     RecordedContainerRequest,
 };
 use crate::{
@@ -27,6 +28,106 @@ struct OwnedResources {
 }
 
 impl<D: ImageDockerCli, E: ImageDockerEngine> ImageContainerOrchestrator<D, E> {
+    /// Pulls or builds and independently verifies an exact image without touching containers.
+    ///
+    /// # Errors
+    ///
+    /// Returns cancellation, Docker CLI, image inspection, or identity-verification failures.
+    pub async fn prepare_image(
+        &self,
+        request: &ImageContainerBuildRequest<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<PreparedImage, ImageContainerError> {
+        check_cancellation(cancellation)?;
+        let (image, generated) = match request.build {
+            BuildPlan::Image { image } => {
+                self.docker
+                    .pull(image, request.checkout, cancellation)
+                    .await
+                    .map_err(|source| ImageContainerError::DockerCli {
+                        operation: "pull",
+                        source,
+                    })?;
+                check_cancellation(cancellation)?;
+                (
+                    self.engine.inspect_image(image).await.map_err(|source| {
+                        ImageContainerError::Bollard {
+                            operation: "inspect pulled image",
+                            source,
+                        }
+                    })?,
+                    false,
+                )
+            }
+            BuildPlan::Dockerfile(plan) => {
+                let tag = request
+                    .build_tag
+                    .ok_or(ImageContainerError::MissingBuildTag)?;
+                let claim = self
+                    .docker
+                    .build(
+                        &DockerBuildRequest {
+                            plan,
+                            checkout: request.checkout,
+                            tag,
+                            identity: request.identity,
+                            context: request.build_context,
+                            dockerfile: request.dockerfile,
+                            no_cache: request.no_cache,
+                        },
+                        cancellation,
+                    )
+                    .await
+                    .map_err(|source| ImageContainerError::DockerCli {
+                        operation: "build",
+                        source,
+                    })?;
+                let result = async {
+                    check_cancellation(cancellation)?;
+                    let image =
+                        self.engine
+                            .inspect_image(claim.as_str())
+                            .await
+                            .map_err(|source| ImageContainerError::Bollard {
+                                operation: "inspect built image",
+                                source,
+                            })?;
+                    verify_built_image(&image, &claim, request.identity)?;
+                    Ok(image)
+                }
+                .await;
+                match result {
+                    Ok(image) => (image, true),
+                    Err(primary) => {
+                        let cleanup = self
+                            .engine
+                            .cleanup_image(ImageCleanupExpectation {
+                                id: &claim,
+                                installation: request.identity.installation,
+                                workspace: request.identity.workspace,
+                                generation: request.identity.generation,
+                                profile: request.identity.profile,
+                            })
+                            .await;
+                        return match cleanup {
+                            Ok(()) => Err(primary),
+                            Err(error) => Err(ImageContainerError::CleanupFailed {
+                                primary: Box::new(primary),
+                                failures: vec![ImageCleanupFailure::Image(error)],
+                            }),
+                        };
+                    }
+                }
+            }
+            BuildPlan::Compose => return Err(ImageContainerError::ComposeUnsupported),
+        };
+        Ok(PreparedImage {
+            image: image.id,
+            architecture: image.architecture,
+            generated,
+        })
+    }
+
     /// Creates, starts, and independently verifies one image/Dockerfile primary container.
     ///
     /// The method returns facts only. It does not write workspace state or mark a generation active.
@@ -72,6 +173,162 @@ impl<D: ImageDockerCli, E: ImageDockerEngine> ImageContainerOrchestrator<D, E> {
             .create_after_discovery(request, &host, cancellation, &mut owned)
             .await
         {
+            Ok(facts) => Ok(facts),
+            Err(primary) => {
+                let failures = self.cleanup(request, &owned).await;
+                if failures.is_empty() {
+                    Err(primary)
+                } else {
+                    Err(ImageContainerError::CleanupFailed {
+                        primary: Box::new(primary),
+                        failures,
+                    })
+                }
+            }
+        }
+    }
+
+    /// Creates and verifies a candidate from an already prepared image without rebuilding it.
+    ///
+    /// # Errors
+    ///
+    /// Returns host-evaluation, unsafe discovery, cancellation, create, or verification failures.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "the prebuilt candidate mutation and cleanup sequence remains auditable"
+    )]
+    pub async fn create_prepared(
+        &self,
+        request: &ImageContainerCreateRequest<'_>,
+        prepared: &PreparedImage,
+        cancellation: &CancellationToken,
+    ) -> Result<ImageContainerFacts, ImageContainerError> {
+        let host =
+            evaluate_host_requirements(request.host_requirements, request.host_capabilities)?;
+        check_cancellation(cancellation)?;
+        let containers = self
+            .engine
+            .discover(request.identity.installation, request.identity.workspace)
+            .await
+            .map_err(|source| ImageContainerError::Bollard {
+                operation: "discovery",
+                source,
+            })?;
+        let correlated = correlate_containers(
+            &containers,
+            &[WorkspaceCorrelation {
+                workspace: request.identity.workspace,
+                generation: request.identity.generation,
+                recorded_container: request.recorded_container,
+            }],
+        );
+        let state = classify_image_container_matches(&correlated[0], request.recorded_container);
+        if !matches!(
+            state,
+            ImageContainerMatchState::Missing | ImageContainerMatchState::StaleOnly
+        ) {
+            return Err(ImageContainerError::UnsafeContainerState { state });
+        }
+        let inspected = self
+            .engine
+            .inspect_image(prepared.image.as_str())
+            .await
+            .map_err(|source| ImageContainerError::Bollard {
+                operation: "inspect prepared image",
+                source,
+            })?;
+        if inspected.id != prepared.image || inspected.architecture != prepared.architecture {
+            return Err(ImageContainerError::ImageMismatch {
+                field: "prepared image identity",
+            });
+        }
+        let mut owned = OwnedResources {
+            container_image: Some(prepared.image.clone()),
+            ..OwnedResources::default()
+        };
+        let result = async {
+            check_cancellation(cancellation)?;
+            let container = self
+                .docker
+                .create(
+                    &DockerCreateRequest {
+                        name: request.container_name,
+                        image: prepared.image.as_str(),
+                        identity: request.identity,
+                        runtime: request.runtime,
+                        options: request.create_options,
+                        ports: request.ports,
+                        gpu_access: host.gpu_access,
+                        command: request.command,
+                        cdenv_owned_targets: request.cdenv_owned_targets,
+                    },
+                    request.checkout,
+                    cancellation,
+                )
+                .await
+                .map_err(|source| ImageContainerError::DockerCli {
+                    operation: "create",
+                    source,
+                })?;
+            owned.container = Some(container.clone());
+            check_cancellation(cancellation)?;
+            let created = self
+                .inspect_and_verify(
+                    &container,
+                    request.container_name,
+                    &prepared.image,
+                    request.identity,
+                    request.runtime,
+                    request.ports,
+                    false,
+                )
+                .await?;
+            let container_image = self
+                .engine
+                .inspect_image(created.image_id.as_str())
+                .await
+                .map_err(|source| ImageContainerError::Bollard {
+                    operation: "inspect container image",
+                    source,
+                })?;
+            if container_image.id != prepared.image
+                || container_image.architecture != prepared.architecture
+            {
+                return Err(ImageContainerError::ImageMismatch {
+                    field: "prepared image identity",
+                });
+            }
+            check_cancellation(cancellation)?;
+            self.engine
+                .start(&container)
+                .await
+                .map_err(|source| ImageContainerError::Bollard {
+                    operation: "start candidate",
+                    source,
+                })?;
+            check_cancellation(cancellation)?;
+            let running = self
+                .inspect_and_verify(
+                    &container,
+                    request.container_name,
+                    &prepared.image,
+                    request.identity,
+                    request.runtime,
+                    request.ports,
+                    true,
+                )
+                .await?;
+            Ok(ImageContainerFacts {
+                container: running.id,
+                image: prepared.image.clone(),
+                architecture: prepared.architecture,
+                generation: request.identity.generation,
+                running: true,
+                host_warnings: host.warnings.clone(),
+            })
+        }
+        .await;
+        match result {
             Ok(facts) => Ok(facts),
             Err(primary) => {
                 let failures = self.cleanup(request, &owned).await;

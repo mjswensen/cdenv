@@ -28,6 +28,26 @@ const QUALITY_COMMANDS: &[&[&str]] = &[
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AgentTarget {
+    platform: &'static str,
+    name: &'static str,
+    machine: u16,
+}
+
+const AGENT_TARGETS: [AgentTarget; 2] = [
+    AgentTarget {
+        platform: "linux/amd64",
+        name: "cdenv-agent-x86_64",
+        machine: 62,
+    },
+    AgentTarget {
+        platform: "linux/arm64",
+        name: "cdenv-agent-aarch64",
+        machine: 183,
+    },
+];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IntegrationSuite {
     DevcontainerV1,
     Openssh,
@@ -70,8 +90,10 @@ fn main() -> ExitCode {
 
     match command.to_str() {
         Some("check") if arguments.next().is_none() => run_quality_gate(),
-        Some("build" | "dist") if arguments.next().is_none() => build_distribution(false),
-        Some("stage-agents") if arguments.next().is_none() => build_distribution(true),
+        Some("build" | "dist") if arguments.next().is_none() => build_distribution(false, None),
+        Some("stage-agents") if arguments.next().is_none() => build_distribution(true, None),
+        Some("stage-agent") => stage_agent(arguments),
+        Some("finalize-agents") => finalize_agents(arguments),
         Some("test-package") => {
             let paths = arguments.collect::<Vec<_>>();
             let [archive] = paths.as_slice() else {
@@ -113,7 +135,7 @@ fn main() -> ExitCode {
     clippy::too_many_lines,
     reason = "the release pipeline keeps its ordered Docker staging steps auditable in one place"
 )]
-fn build_distribution(agents_only: bool) -> ExitCode {
+fn build_distribution(agents_only: bool, selected_target: Option<AgentTarget>) -> ExitCode {
     let build_id = match package::build_id() {
         Ok(id) => id,
         Err(error) => {
@@ -132,13 +154,15 @@ fn build_distribution(agents_only: bool) -> ExitCode {
         eprintln!("xtask: cannot create staging directory: {error}");
         return ExitCode::FAILURE;
     }
-    for (platform, name, machine) in [
-        ("linux/amd64", "cdenv-agent-x86_64", 62_u16),
-        ("linux/arm64", "cdenv-agent-aarch64", 183_u16),
-    ] {
-        if supplied_stage.is_some() {
+    for target in AGENT_TARGETS {
+        if supplied_stage.is_some() || selected_target.is_some_and(|selected| selected != target) {
             continue;
         }
+        let AgentTarget {
+            platform,
+            name,
+            machine,
+        } = target;
         let tag = format!("cdenv-agent-{build_id}-{name}");
         let built = Command::new("docker")
             .current_dir(&root)
@@ -173,7 +197,7 @@ fn build_distribution(agents_only: bool) -> ExitCode {
             return ExitCode::FAILURE;
         }
         let container = format!("{tag}-extract");
-        if !matches!(Command::new("docker").args(["create", "--name", &container, &tag]).status(), Ok(status) if status.success())
+        if !matches!(Command::new("docker").args(["create", "--platform", platform, "--name", &container, &tag]).status(), Ok(status) if status.success())
         {
             eprintln!("xtask: could not create {platform} artifact container");
             return ExitCode::FAILURE;
@@ -203,6 +227,9 @@ fn build_distribution(agents_only: bool) -> ExitCode {
             );
             return ExitCode::FAILURE;
         }
+    }
+    if selected_target.is_some() {
+        return ExitCode::SUCCESS;
     }
     let report = match package::agent_report(&stage, &build_id) {
         Ok(report) => report,
@@ -253,6 +280,68 @@ fn build_distribution(agents_only: bool) -> ExitCode {
         Ok(status) => ExitCode::from(u8::try_from(status.code().unwrap_or(1)).unwrap_or(1)),
         Err(error) => {
             eprintln!("xtask: failed to build host: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn stage_agent(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
+    if env::var_os("CDENV_AGENT_ARTIFACT_DIR").is_some() {
+        eprintln!("xtask: stage-agent cannot use a supplied agent artifact directory");
+        return ExitCode::FAILURE;
+    }
+    let Some(flag) = arguments.next() else {
+        eprintln!("xtask: stage-agent requires --platform <linux/amd64|linux/arm64>");
+        return ExitCode::FAILURE;
+    };
+    let Some(value) = arguments.next() else {
+        eprintln!("xtask: --platform requires a platform");
+        return ExitCode::FAILURE;
+    };
+    if flag != "--platform" || arguments.next().is_some() {
+        eprintln!("xtask: stage-agent requires exactly --platform <linux/amd64|linux/arm64>");
+        return ExitCode::FAILURE;
+    }
+    let Some(platform) = value.to_str() else {
+        eprintln!("xtask: agent platform must be valid UTF-8");
+        return ExitCode::FAILURE;
+    };
+    let Some(target) = AGENT_TARGETS
+        .iter()
+        .copied()
+        .find(|target| target.platform == platform)
+    else {
+        eprintln!("xtask: unsupported agent platform `{platform}`");
+        return ExitCode::FAILURE;
+    };
+    build_distribution(true, Some(target))
+}
+
+fn finalize_agents(arguments: impl Iterator<Item = OsString>) -> ExitCode {
+    let paths = arguments.collect::<Vec<_>>();
+    let [stage] = paths.as_slice() else {
+        eprintln!("xtask: finalize-agents requires exactly one staging directory");
+        return ExitCode::FAILURE;
+    };
+    let build_id = match package::build_id() {
+        Ok(id) => id,
+        Err(error) => {
+            eprintln!("xtask: cannot create build ID: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let stage = Path::new(stage);
+    let report = match package::agent_report(stage, &build_id) {
+        Ok(report) => report,
+        Err(error) => {
+            eprintln!("xtask: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    match fs::write(stage.join("agents.json"), report.to_string()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("xtask: cannot write staged agent manifest: {error}");
             ExitCode::FAILURE
         }
     }
@@ -604,7 +693,7 @@ fn print_command(cargo: &OsStr, arguments: &[&str]) {
 
 fn print_help() {
     eprintln!(
-        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask stage-agents\n  cargo xtask test-package <archive.tar>\n  cargo xtask test-installed <archive.tar>\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing or below-baseline dependencies never skip the suite."
+        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask stage-agents\n  cargo xtask stage-agent --platform <linux/amd64|linux/arm64>\n  cargo xtask finalize-agents <staging-directory>\n  cargo xtask test-package <archive.tar>\n  cargo xtask test-installed <archive.tar>\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing or below-baseline dependencies never skip the suite."
     );
 }
 

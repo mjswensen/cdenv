@@ -8,7 +8,9 @@ reviewed targeted mutants to be killed or explicitly owned and time-limited.
 
 From a clean checkout with the pinned Rust toolchain, run `cargo xtask dist`.
 The Cargo alias and all release builds use `--locked`. Docker Buildx and QEMU
-support for both Linux architectures are required when building agents locally.
+support for both Linux architectures are required when building both agents
+locally on one architecture. CI instead builds each agent on its matching native
+Linux runner with `cargo xtask stage-agent --platform <platform>`.
 
 The command builds and runs the `version` command of both Linux musl agents,
 checks their exact build/version/protocol identity and static ELF architecture,
@@ -73,13 +75,17 @@ command continues to use the latest published, non-prerelease release until a
 maintainer publishes the new release. Mark release candidates as prereleases
 before publishing them so they do not become the default installation.
 
-`.github/workflows/release.yml` builds the two agents once on Linux using
-`cargo xtask stage-agents`. Each clean native host job downloads that same verified
-manifest and pair of agents under `target/`, sets `CDENV_AGENT_ARTIFACT_DIR`, then
-runs `cargo xtask dist`. Supplied agents must match the current commit and manifest
-hashes and pass ELF validation again. The three supported hosts are Linux x86_64,
-Linux aarch64, and macOS aarch64 (Apple Silicon). Each job rebuilds the host to
-check identical archive checksums and uploads the archive and its adjacent
-metadata. No Docker daemon is needed for macOS package construction. Docker Desktop runtime
-behavior is recorded manually with the versioned checklist because hosted macOS
-packaging is not an automated Docker Desktop guarantee.
+`.github/workflows/release.yml` builds the two agents concurrently on native
+x86_64 and ARM64 Linux runners. Each build executes and validates its matching
+static agent without CPU emulation. An assembly job downloads both verified
+artifacts, runs `cargo xtask finalize-agents` to validate their ELF identities and
+create the shared manifest, and uploads the complete set. Each clean native host
+job downloads that same manifest and pair of agents under `target/`, sets
+`CDENV_AGENT_ARTIFACT_DIR`, then runs `cargo xtask dist`. Supplied agents must match
+the current commit and manifest hashes and pass ELF validation again. The three
+supported hosts are Linux x86_64, Linux aarch64, and macOS aarch64 (Apple Silicon).
+Each job rebuilds the host to check identical archive checksums and uploads the
+archive and its adjacent metadata. No Docker daemon is needed for macOS package
+construction. Docker Desktop runtime behavior is recorded manually with the
+versioned checklist because hosted macOS packaging is not an automated Docker
+Desktop guarantee.

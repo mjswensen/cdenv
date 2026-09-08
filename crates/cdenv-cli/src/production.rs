@@ -1,4 +1,4 @@
-//! Production composition for the `create` and `up` command paths.
+//! Production composition for environment lifecycle command paths.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -22,27 +22,31 @@ use cdenv_devcontainer::{
 use thiserror::Error;
 
 use crate::agent_provisioning::AgentProvisioningEngine;
+use crate::bollard::{COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL};
 use crate::image_orchestration::ImageContainerMatchState;
 use crate::lifecycle_orchestration::HostLifecycle;
 use crate::{
     ActiveForwarding, ActiveGeneration, ActiveScenario, AgentArtifactIdentity,
     AgentArtifactProvider, AgentEnvironmentCapturer, AgentEnvironmentRequest,
     AgentProvisionRequest, AgentProvisioner, BOLLARD_CONTROL_TIMEOUT, BollardAdapter,
-    CancellationToken, CdenvRoot, ComposeAdapter, ComposeBaseRequest, ComposeLifecycleOrchestrator,
-    ComposeProject, ComposeUpRequest, CreateComposeRequest, DeclaredForward, DesiredForwardingPlan,
-    DockerBuildContext, DockerBuildRequest, DockerCommandProbe, DockerEndpoint,
-    DockerResourceIdentity, DockerfileInput, EnvironmentReconciler,
-    EnvironmentReconciliationRequest, EnvironmentTransition, FeatureSourcePolicy,
-    FeatureSourceResolver, FingerprintKeyState, GeneratedFeature, GeneratedImagePlan,
-    GeneratedUidGidUpdate, HostLifecycleExecutor, ImageContainerCreateRequest, ImageContainerError,
-    ImageContainerOrchestrator, ImageId, Installation, LifecycleCheckpoint, LifecycleInput,
-    LifecycleStage, OperationState, PlanFingerprintCategory, PlanFingerprints, PreparedDesiredPlan,
+    CancellationToken, CategoryDrift, CdenvRoot, ComposeAdapter, ComposeBaseRequest,
+    ComposeLifecycleOrchestrator, ComposeProject, ComposeUpRequest, CreateComposeRequest,
+    DeclaredForward, DesiredForwardingPlan, DockerBuildContext, DockerBuildRequest,
+    DockerCommandProbe, DockerEndpoint, DockerResourceIdentity, DockerfileInput, DownRequest,
+    EnvironmentReconciler, EnvironmentReconciliationRequest, EnvironmentStopOutcome,
+    EnvironmentTransition, FeatureSourcePolicy, FeatureSourceResolver, FingerprintKeyState,
+    GeneratedFeature, GeneratedImagePlan, GeneratedUidGidUpdate, HostLifecycleExecutor,
+    ImageContainerCreateRequest, ImageContainerError, ImageContainerOrchestrator, ImageId,
+    Installation, LifecycleCheckpoint, LifecycleInput, LifecycleRunnerStop, LifecycleStage,
+    LifecycleStopOutcome, LockBehavior, LockGuard, LockMode, ManagedEnvironmentStop,
+    OperationState, PlanFingerprintCategory, PlanFingerprints, PreparedDesiredPlan,
     ProcessDockerEnvironment, ProcessRunner, ProvisionedState, ReadyEnvironment,
     ReconciliationPlanner, ReconciliationRequest, RecordedComposeRequest, RepoRelativeConfigPath,
-    RuntimeReconciliation, SupervisorClaim, SupervisorForward, SupervisorManifest, UidGidMutation,
-    WorkspaceState, WorkspaceStateError, credential_status, discover_and_read_config,
-    ensure_workspace_ssh_identity, load_supervisor_state, load_workspace_ssh_assets,
-    load_workspace_state, reconcile_workspace, start_detached_supervisor, stop_supervisor,
+    RuntimeReconciliation, SanitizedSummary, ScopedForwardingSupervisor, SupervisorClaim,
+    SupervisorForward, SupervisorManifest, UidGidMutation, WorkspaceState, WorkspaceStateError,
+    credential_status, discover_and_read_config, down_workspace, ensure_workspace_ssh_identity,
+    load_supervisor_state, load_workspace_ssh_assets, load_workspace_state,
+    persist_workspace_state, reconcile_workspace, start_detached_supervisor, stop_supervisor,
     supervisor_control_token, supervisor_status,
 };
 
@@ -95,6 +99,7 @@ struct ProductionPlan {
     host_requirements: Option<cdenv_devcontainer::HostRequirements>,
     capabilities: HostCapabilities,
     owned_targets: Vec<ContainerPath>,
+    generation: GenerationId,
 }
 
 struct ProductionComposePlan {
@@ -109,6 +114,7 @@ struct ProductionPlanner<'a> {
     root: &'a CdenvRoot,
     workspace: &'a WorkspaceName,
     cancellation: &'a CancellationToken,
+    replacement: bool,
 }
 
 impl ReconciliationPlanner for ProductionPlanner<'_> {
@@ -158,10 +164,17 @@ impl ReconciliationPlanner for ProductionPlanner<'_> {
         let labels =
             StableIdentityLabels::new(current.installation_id().as_str(), current.name().as_str());
         let profile_id = ProfileId::parse(PROFILE).map_err(message)?;
-        let generation = current
-            .active()
-            .map_or_else(|| GenerationId::new(1), |active| Ok(active.generation()))
-            .map_err(message)?;
+        let generation = if self.replacement {
+            let next = current
+                .active()
+                .map_or(1, |active| active.generation().get().saturating_add(1));
+            GenerationId::new(next).map_err(message)?
+        } else {
+            current
+                .active()
+                .map_or_else(|| GenerationId::new(1), |active| Ok(active.generation()))
+                .map_err(message)?
+        };
         let config_directory_path = configuration_directory;
         let mut compose_input = None;
         let scenario_user = if let RawScenario::Compose(scenario) = &profile.scenario {
@@ -411,6 +424,7 @@ impl ReconciliationPlanner for ProductionPlanner<'_> {
                 host_requirements: effective.host_requirements,
                 capabilities: unknown_host_capabilities(),
                 owned_targets,
+                generation,
             },
         })
     }
@@ -452,6 +466,7 @@ struct ProductionEnvironment<'a> {
     workspace: &'a WorkspaceName,
     installation: cdenv_core::InstallationId,
     cancellation: &'a CancellationToken,
+    no_cache: bool,
 }
 
 impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
@@ -487,8 +502,7 @@ impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
         let engine = BollardAdapter::from_connector(&connector);
         let generation = request
             .active
-            .map_or_else(|| GenerationId::new(1), |active| Ok(active.generation()))
-            .map_err(message)?;
+            .map_or(plan.generation, ActiveGeneration::generation);
         let identity = DockerResourceIdentity {
             installation: &self.installation,
             workspace: self.workspace,
@@ -557,7 +571,7 @@ impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
                             service: &compose.primary_service,
                             has_build: compose.primary_has_build,
                             base_tag: &compose.base_tag,
-                            no_cache: false,
+                            no_cache: self.no_cache,
                         },
                         self.cancellation,
                     )
@@ -582,7 +596,7 @@ impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
                             identity,
                             context: &generated_context,
                             dockerfile: DockerfileInput::Generated(generated.dockerfile()),
-                            no_cache: false,
+                            no_cache: self.no_cache,
                         },
                         self.cancellation,
                     )
@@ -642,7 +656,7 @@ impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
                             identity,
                             context: &context,
                             dockerfile: DockerfileInput::Repository,
-                            no_cache: false,
+                            no_cache: self.no_cache,
                         },
                         self.cancellation,
                     )
@@ -711,7 +725,7 @@ impl EnvironmentReconciler<ProductionPlan> for ProductionEnvironment<'_> {
                     create_options: &plan.docker.create,
                     ports: &plan.ports,
                     command: &command,
-                    no_cache: false,
+                    no_cache: self.no_cache,
                     cdenv_owned_targets: &plan.owned_targets,
                     host_requirements: plan.host_requirements.as_ref(),
                     host_capabilities: &plan.capabilities,
@@ -1346,6 +1360,381 @@ fn unknown_host_capabilities() -> HostCapabilities {
     }
 }
 
+struct ProductionLifecycleStop;
+
+impl LifecycleRunnerStop for ProductionLifecycleStop {
+    type Error = WorkflowMessage;
+
+    async fn cancel(
+        &self,
+        active: Option<&ActiveGeneration>,
+        _grace: std::time::Duration,
+    ) -> Result<LifecycleStopOutcome, Self::Error> {
+        Ok(
+            if active.is_some_and(|active| active.lifecycle().running().is_some()) {
+                // Production currently has no authenticated runner-control record. Never guess an
+                // exec identity: retain the one-time-work ambiguity for a required rebuild.
+                LifecycleStopOutcome::Indeterminate
+            } else {
+                LifecycleStopOutcome::NotRunning
+            },
+        )
+    }
+}
+
+struct ProductionManagedStop<'a> {
+    installation: &'a cdenv_core::InstallationId,
+    workspace: &'a WorkspaceName,
+    profile: &'a ProfileId,
+    engine: BollardAdapter,
+    cancellation: &'a CancellationToken,
+}
+
+impl ManagedEnvironmentStop for ProductionManagedStop<'_> {
+    type Error = WorkflowMessage;
+
+    #[expect(
+        clippy::too_many_lines,
+        reason = "selection, verification, stop, and post-stop verification remain auditable"
+    )]
+    async fn stop(
+        &self,
+        active: Option<&ActiveGeneration>,
+        grace: std::time::Duration,
+    ) -> Result<EnvironmentStopOutcome, Self::Error> {
+        let Some(active) = active else {
+            return Ok(EnvironmentStopOutcome::Missing);
+        };
+        if self.cancellation.is_cancelled() {
+            return Err(message("managed shutdown was cancelled"));
+        }
+        let discovered = self
+            .engine
+            .discover(crate::ContainerDiscoveryScope {
+                installation: self.installation,
+                workspace: Some(self.workspace),
+                generation: Some(active.generation()),
+            })
+            .await
+            .map_err(message)?;
+        let mut selected = Vec::new();
+        match active.scenario() {
+            ActiveScenario::Image | ActiveScenario::Dockerfile => {
+                let matches = discovered
+                    .iter()
+                    .filter(|container| container.id == *active.container_id())
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
+                    return Ok(EnvironmentStopOutcome::Missing);
+                }
+                if matches.len() != 1 || discovered.len() != 1 {
+                    return Err(message("recorded image container identity is ambiguous"));
+                }
+                selected.push((None, active.container_id().clone()));
+            }
+            ActiveScenario::Compose {
+                project,
+                managed_services,
+            } => {
+                for service in managed_services {
+                    let matches = discovered
+                        .iter()
+                        .filter(|container| {
+                            container
+                                .labels
+                                .get(COMPOSE_PROJECT_LABEL)
+                                .map(String::as_str)
+                                == Some(project.as_str())
+                                && container
+                                    .labels
+                                    .get(COMPOSE_SERVICE_LABEL)
+                                    .map(String::as_str)
+                                    == Some(service.as_str())
+                        })
+                        .collect::<Vec<_>>();
+                    if matches.len() != 1 {
+                        return Err(message(format!(
+                            "recorded Compose service `{service}` is missing or ambiguous"
+                        )));
+                    }
+                    selected.push((
+                        Some((project.as_str(), service.as_str())),
+                        matches[0].id.clone(),
+                    ));
+                }
+                let primary_matches = selected
+                    .iter()
+                    .filter(|(_, id)| id == active.container_id())
+                    .count();
+                if primary_matches != 1 {
+                    return Err(message(
+                        "recorded Compose primary identity was not verified",
+                    ));
+                }
+            }
+        }
+
+        let image = ImageId::parse(active.image_id()).map_err(message)?;
+        let mut running = Vec::new();
+        for (compose, id) in &selected {
+            let inspection = self.engine.inspect_container(id).await.map_err(message)?;
+            let expected_image = if id == active.container_id() {
+                &image
+            } else {
+                &inspection.image_id
+            };
+            crate::bollard::verify_container(
+                &inspection,
+                crate::ContainerExpectation {
+                    id,
+                    name: &inspection.name,
+                    image_id: expected_image,
+                    installation: self.installation,
+                    workspace: self.workspace,
+                    generation: active.generation(),
+                    profile: self.profile,
+                    project: compose.map(|value| value.0),
+                    service: compose.map(|value| value.1),
+                    running: None,
+                },
+            )
+            .map_err(message)?;
+            if inspection.running {
+                running.push(id.clone());
+            }
+        }
+        for id in &running {
+            if self.cancellation.is_cancelled() {
+                return Err(message("managed shutdown was cancelled"));
+            }
+            self.engine.stop(id, grace).await.map_err(message)?;
+        }
+        for (compose, id) in &selected {
+            let inspection = self.engine.inspect_container(id).await.map_err(message)?;
+            crate::bollard::verify_container(
+                &inspection,
+                crate::ContainerExpectation {
+                    id,
+                    name: &inspection.name,
+                    image_id: &inspection.image_id,
+                    installation: self.installation,
+                    workspace: self.workspace,
+                    generation: active.generation(),
+                    profile: self.profile,
+                    project: compose.map(|value| value.0),
+                    service: compose.map(|value| value.1),
+                    running: Some(false),
+                },
+            )
+            .map_err(message)?;
+        }
+        Ok(if running.is_empty() {
+            EnvironmentStopOutcome::AlreadyStopped
+        } else {
+            EnvironmentStopOutcome::Stopped
+        })
+    }
+}
+
+/// Stops one production workspace using persisted, verified resource identity.
+///
+/// # Errors
+///
+/// Returns workspace, Docker, supervisor, cancellation, or state failures.
+pub fn down_production(
+    root: &CdenvRoot,
+    workspace: &WorkspaceName,
+) -> Result<(), ProductionWorkflowError> {
+    let paths = root.workspace(workspace);
+    if !paths.root().exists() {
+        return Err(ProductionWorkflowError::MissingWorkspace(workspace.clone()));
+    }
+    let state = load_workspace_state(&paths.state_file())?.into_state();
+    let installation = state.installation_id().clone();
+    let profile = state.devcontainer_profile().clone();
+    let host_build = AgentArtifactProvider::embedded_identity()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let cancellation = CancellationToken::default();
+    let endpoint = DockerEndpoint::resolve(&ProcessDockerEnvironment)
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let connector = endpoint
+        .bollard_connector(BOLLARD_CONTROL_TIMEOUT)
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let engine = BollardAdapter::from_connector(&connector);
+    let forwarding =
+        ScopedForwardingSupervisor::new(root.clone(), installation.clone(), host_build);
+    let managed = ProductionManagedStop {
+        installation: &installation,
+        workspace,
+        profile: &profile,
+        engine,
+        cancellation: &cancellation,
+    };
+    let time = crate::create::current_timestamp()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let id = crate::create::random_operation_id()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let operation = OperationState::active(ForegroundOperation::Stopping, id, time)
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    runtime
+        .block_on(async {
+            let signal_cancellation = cancellation.clone();
+            let signal = tokio::spawn(async move {
+                if tokio::signal::ctrl_c().await.is_ok() {
+                    signal_cancellation.cancel();
+                }
+            });
+            let result = down_workspace(
+                root,
+                DownRequest::new(workspace, operation),
+                &forwarding,
+                &ProductionLifecycleStop,
+                &managed,
+            )
+            .await;
+            signal.abort();
+            result
+        })
+        .map(|_| ())
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))
+}
+
+/// Replaces a production workspace with a newly planned generation.
+///
+/// Planning and frozen-input validation complete before the old generation is stopped. Image
+/// scenarios retain the stopped old generation as rollback evidence; Compose failures retain the
+/// coordinator's non-atomic failure rather than adopting an unverified service.
+///
+/// # Errors
+///
+/// Returns planning, shutdown, Docker, readiness, invariant, or persistence failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the production replacement and failure persistence boundaries remain visible"
+)]
+pub fn rebuild_production(
+    root: &CdenvRoot,
+    workspace: &WorkspaceName,
+    config: Option<&RepoRelativeConfigPath>,
+    no_cache: bool,
+) -> Result<(), ProductionWorkflowError> {
+    let paths = root.workspace(workspace);
+    if !paths.root().exists() {
+        return Err(ProductionWorkflowError::MissingWorkspace(workspace.clone()));
+    }
+    let initial = load_workspace_state(&paths.state_file())?.into_state();
+    let previous = initial.active().cloned();
+    let cancellation = CancellationToken::default();
+    let planner = ProductionPlanner {
+        root,
+        workspace,
+        cancellation: &cancellation,
+        replacement: true,
+    };
+    let desired = planner
+        .prepare(
+            &paths.checkout(),
+            config.map(RepoRelativeConfigPath::as_path),
+            &initial,
+            FeatureSourcePolicy::FrozenOffline,
+        )
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    runtime
+        .block_on(planner.preflight(&desired, FeatureSourcePolicy::FrozenOffline))
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+
+    // This operation intentionally preserves containers, images, volumes, networks, checkout
+    // changes, SSH identity, and credential grants. Only verified active resources are stopped.
+    down_production(root, workspace)?;
+
+    let _lock = LockGuard::acquire(&paths.lock_file(), LockMode::Exclusive, LockBehavior::Wait)
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let mut state = load_workspace_state(&paths.state_file())?.into_state();
+    let completed_at = crate::create::current_timestamp()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let operation_id = crate::create::random_operation_id()
+        .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    let operation = OperationState::active(
+        ForegroundOperation::Rebuilding,
+        operation_id,
+        completed_at.clone(),
+    )
+    .map_err(|error| ProductionWorkflowError::Workflow(error.to_string()))?;
+    state.update_desired(
+        desired.profile.clone(),
+        desired.config.clone(),
+        desired.fingerprints.clone(),
+    );
+    state.set_operation(operation);
+    state.set_last_error(None);
+    persist_workspace_state(&paths.state_file(), &state)?;
+
+    let environment = ProductionEnvironment {
+        root,
+        workspace,
+        installation: state.installation_id().clone(),
+        cancellation: &cancellation,
+        no_cache,
+    };
+    let result = runtime.block_on(async {
+        let signal_cancellation = cancellation.clone();
+        let signal = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                signal_cancellation.cancel();
+            }
+        });
+        let result = environment
+            .reconcile(EnvironmentReconciliationRequest {
+                desired: &desired,
+                active: None,
+                drift: CategoryDrift::default(),
+            })
+            .await;
+        signal.abort();
+        result
+    });
+    match result {
+        Ok(ready)
+            if ready.active.generation() == desired.plan.generation
+                && previous.as_ref().is_none_or(|old| {
+                    old.container_id() != ready.active.container_id()
+                        && ready.active.generation().get() > old.generation().get()
+                }) =>
+        {
+            state.commit_active(ready.active, completed_at);
+            persist_workspace_state(&paths.state_file(), &state)?;
+            Ok(())
+        }
+        Ok(_) => {
+            // Keep rebuilding intent durable: an invariant violation may leave an owned candidate
+            // requiring authenticated recovery rather than an ordinary lifecycle retry.
+            state.set_last_error(Some(SanitizedSummary::redact(
+                "rebuild replacement identity invariant failed",
+                [],
+            )));
+            persist_workspace_state(&paths.state_file(), &state)?;
+            Err(ProductionWorkflowError::Workflow(
+                "rebuild replacement identity invariant failed".to_owned(),
+            ))
+        }
+        Err(error) => {
+            // Compose recreation is non-atomic, and image rollback can require a later verified
+            // restart. Retain explicit interrupted intent instead of claiming an idle outcome.
+            state.set_last_error(Some(SanitizedSummary::redact(&error.to_string(), [])));
+            persist_workspace_state(&paths.state_file(), &state)?;
+            Err(ProductionWorkflowError::Workflow(error.to_string()))
+        }
+    }
+}
+
 /// Runs the common post-checkout production transaction.
 ///
 /// # Errors
@@ -1378,12 +1767,14 @@ pub fn reconcile_production(
         root,
         workspace,
         cancellation: &cancellation,
+        replacement: false,
     };
     let environment = ProductionEnvironment {
         root,
         workspace,
         installation,
         cancellation: &cancellation,
+        no_cache: false,
     };
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

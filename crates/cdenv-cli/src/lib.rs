@@ -188,7 +188,9 @@ pub use process::{
     CancellationToken, CapturedOutput, OperationId, ProcessDeadline, ProcessEnvironmentVariable,
     ProcessError, ProcessRequest, ProcessResult, ProcessRunner,
 };
-pub use production::{ProductionWorkflowError, reconcile_production};
+pub use production::{
+    ProductionWorkflowError, down_production, rebuild_production, reconcile_production,
+};
 pub use proxy::{
     ProxyEngine, ProxyError, ProxyRuntimeError, ProxyTarget, run_proxy_stdio, run_proxy_transport,
 };
@@ -509,6 +511,20 @@ pub fn invoke_with_root(
                 },
             )
         }
+        CliCommand::Down(arguments) => down_production(root, &arguments.name).map_err(|error| {
+            ApplicationError::EnvironmentFailed {
+                message: error.to_string(),
+            }
+        }),
+        CliCommand::Rebuild(arguments) => rebuild_production(
+            root,
+            &arguments.name,
+            arguments.config.as_ref(),
+            arguments.no_cache,
+        )
+        .map_err(|error| ApplicationError::EnvironmentFailed {
+            message: error.to_string(),
+        }),
         CliCommand::Credentials(arguments) => mutate_credentials(root, &arguments.command)
             .map(|_| ())
             .map_err(|error| ApplicationError::CredentialsFailed {

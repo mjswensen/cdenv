@@ -55,6 +55,33 @@ fn create_reaches_production_planning_and_retains_checkout_on_failure() {
     );
 }
 
+#[test]
+fn down_and_rebuild_reach_production_wiring() {
+    let temporary = tempfile::tempdir().expect("temporary directory");
+    let root = temporary.path().join("root");
+
+    for command in [["down", "missing"], ["rebuild", "missing"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_cdenv"))
+            .arg("--root")
+            .arg(&root)
+            .args(command)
+            .stdin(Stdio::null())
+            .output()
+            .expect("installed cdenv invocation");
+
+        assert!(!output.status.success());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("workspace `missing` does not exist"),
+            "{stderr}"
+        );
+        assert!(
+            !stderr.contains("not implemented in this build"),
+            "{stderr}"
+        );
+    }
+}
+
 fn run_git(repository: &std::path::Path, arguments: &[&str]) {
     let status = Command::new("git")
         .args(arguments)

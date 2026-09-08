@@ -3,9 +3,9 @@
 use std::process::ExitCode;
 
 use cdenv_cli::{
-    ApplicationError, CommandKind, ErrorEnvelope, OutputFormat, OutputRenderError, SuccessEnvelope,
-    invoke, port_output_warnings, render_application_result, render_json_error,
-    render_json_success,
+    ApplicationError, CdenvRoot, CommandKind, ErrorEnvelope, OutputFormat, OutputRenderError,
+    ProcessEnvironment, SuccessEnvelope, invoke_with_root, port_output_warnings,
+    render_application_result, render_json_error, render_json_success,
 };
 use cdenv_devcontainer::{PortPlanningWarning, PortPlanningWarningKind};
 use clap::Parser;
@@ -134,16 +134,17 @@ fn application_error_exposes_stable_message_code_and_exit_status() {
 }
 
 #[test]
-fn invoke_returns_a_typed_error_without_running_a_workflow() {
+fn invoke_dispatches_down_to_the_production_workflow() {
+    let temporary = tempfile::tempdir().expect("temporary root");
+    let root = CdenvRoot::resolve(Some(&temporary.path().join("root")), &ProcessEnvironment)
+        .expect("test root");
     let command_line = cdenv_cli::CommandLine::try_parse_from(["cdenv", "down", "project"])
         .expect("the command should parse");
 
-    assert_eq!(
-        invoke(&command_line),
-        Err(ApplicationError::CommandUnavailable {
-            command: CommandKind::Down
-        })
-    );
+    assert!(matches!(
+        invoke_with_root(&command_line, &root),
+        Err(ApplicationError::EnvironmentFailed { .. })
+    ));
 }
 
 struct FailingPayload;

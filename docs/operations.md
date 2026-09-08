@@ -143,8 +143,9 @@ only. Credential forwarding is not available in this build.** Production
 provisioning, lifecycle execution, environment capture, and declared forwarding
 when capabilities are disabled. Configured credential capabilities fail during
 early preflight, before container lifecycle execution. Production `down` and
-`rebuild` dispatch remains owned by issue 70. Saving permission does not make Git
-in a container authenticate. See [ADR 0002](adr/0002-opt-in-host-capabilities.md)
+`rebuild` are wired for workspaces without configured credential capabilities;
+they do not claim credential leases or broker handoff. Saving permission does not
+make Git in a container authenticate. See [ADR 0002](adr/0002-opt-in-host-capabilities.md)
 for the credential-specific boundary.
 
 Permissions are independent, off by default, installation/workspace-scoped, and

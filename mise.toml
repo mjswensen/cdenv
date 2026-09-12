@@ -12,4 +12,4 @@ run = "curl -fsSL https://raw.githubusercontent.com/mjswensen/web-agent/main/ins
 depends = ["cargo-deny-install", "web-agent-install"]
 
 [tasks.web-agent]
-run = "tmux new-session -d -s web-agent 'web-agent --host 0.0.0.0 --port 6500'"
+run = "tmux new-session -d -s web-agent 'web-agent --host 0.0.0.0 --port 6500 --allow-web-auth --allow-terminal'"

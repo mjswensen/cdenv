@@ -1412,14 +1412,8 @@ fn resolve_feature_plan(
 }
 
 const fn host_architecture() -> cdenv_core::ContainerArchitecture {
-    #[cfg(target_arch = "aarch64")]
-    {
-        cdenv_core::ContainerArchitecture::Aarch64
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        cdenv_core::ContainerArchitecture::X86_64
-    }
+    // x86_64 host support is intentionally disabled while cdenv targets ARM hosts only.
+    cdenv_core::ContainerArchitecture::Aarch64
 }
 
 fn unknown_host_capabilities() -> HostCapabilities {

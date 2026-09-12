@@ -158,10 +158,8 @@ fn validate_package_artifacts() -> ExitCode {
     let result = (|| {
         let build_id = AgentArtifactProvider::embedded_identity().map_err(|e| e.to_string())?;
         let mut agents = serde_json::Map::new();
-        for (name, architecture) in [
-            ("x86_64", ContainerArchitecture::X86_64),
-            ("aarch64", ContainerArchitecture::Aarch64),
-        ] {
+        // x86_64 package validation is intentionally disabled for ARM-only releases.
+        for (name, architecture) in [("aarch64", ContainerArchitecture::Aarch64)] {
             let bytes = AgentArtifactProvider::embedded()
                 .artifact(architecture)
                 .map_err(|e| e.to_string())?;

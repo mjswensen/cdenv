@@ -72,11 +72,11 @@ python3 .github/scripts/security-mutations.py transport
 python3 .github/scripts/security-mutations.py archive-integrity
 ```
 
-CI runs these three **named shards on Ubuntu 24.04 x86_64**, with fail-fast disabled
+CI runs these three **named shards on Ubuntu 24.04 ARM64**, with fail-fast disabled
 and a 20-minute job limit. All three `Security mutations (...)` checks are required;
 a single shard cannot stand in for the complete gate. These CPU/file-only security
 checks do not need to duplicate the release-suite dependency/architecture matrix.
-The local baseline is not a claim that the GitHub-hosted x86_64 run has executed.
+The local baseline is not a claim that the GitHub-hosted ARM64 run has executed.
 
 Within each shard the runner uses exact anchored name selection, source order
 (`--no-shuffle`), one mutation worker, a 300-second build limit, a 60-second test
@@ -150,7 +150,7 @@ owner/expiry/reason, never relabeling it caught. Remove obsolete exceptions.
 
 ## Reports and baseline changes
 
-Each job uploads `security-mutations-linux-x86_64-<shard>` for **14 days**, even on
+Each job uploads `security-mutations-linux-arm64-<shard>` for **14 days**, even on
 failure, with missing files treated as an error. Under
 `target/security-mutations/<shard>/`:
 

@@ -8,11 +8,12 @@ import sys
 
 def expected_ids():
     return [f"workspace-{platform}" for platform in (
-        "linux-x86_64", "linux-arm64", "macos-arm64"
+        "linux-arm64", "macos-arm64"
     )] + [
         f"{suite}-linux-{arch}-{baseline}"
         for suite in ("devcontainer-v1", "openssh")
-        for arch in ("x86_64", "arm64")
+        # x86_64 is intentionally disabled while cdenv targets ARM hosts only.
+        for arch in ("arm64",)
         for baseline in ("minimum", "pinned")
     ]
 

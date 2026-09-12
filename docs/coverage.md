@@ -12,11 +12,11 @@ failures are errors, not informational successes.
 
 ## Matrix and artifacts
 
-`.github/workflows/ci.yml` produces eleven artifacts, retained for **14 days**:
+`.github/workflows/ci.yml` produces seven artifacts, retained for **14 days**:
 
-- `coverage-workspace-{linux-x86_64,linux-arm64,macos-arm64}`: locked ordinary
-  workspace tests (`--all-targets`, default features, debug profile).
-- `coverage-{devcontainer-v1,openssh}-linux-{x86_64,arm64}-{minimum,pinned}`:
+- `coverage-workspace-{linux-arm64,macos-arm64}`: locked ordinary workspace
+  tests (`--all-targets`, default features, debug profile).
+- `coverage-{devcontainer-v1,openssh}-linux-arm64-{minimum,pinned}`:
   locked release-profile suite reruns in the same native jobs and selected
   Docker/Compose/OpenSSH baselines as the required gates.
 - Additionally, `coverage-index` contains `index.md` and `index.json`, a combined,
@@ -131,5 +131,5 @@ CDENV_INTEGRATION=1 CDENV_INTEGRATION_ARCH=arm64 \
   COVERAGE_ID=openssh-local bash .github/scripts/coverage.sh openssh
 ```
 
-Use the native `x86_64` declaration on x86_64 hosts. Local IDs are for inspection,
+Use the native `arm64` declaration on ARM64 hosts. Local IDs are for inspection,
 not inputs to the CI matrix inventory. Reports are under `target/coverage/<ID>/`.

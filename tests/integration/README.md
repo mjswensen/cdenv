@@ -12,7 +12,7 @@ Run the standard OpenSSH interoperability gate with:
 cargo xtask test-integration --suite openssh
 ```
 
-The command requires Linux x86_64 or arm64, Docker Engine 29.6.2/API 1.55,
+The command requires Linux arm64, Docker Engine 29.6.2/API 1.55,
 Docker CLI 29.7.1, Compose V2 5.3.1, and OpenSSH 10.0p2 or newer. CI also declares
 `CDENV_INTEGRATION_ARCH`; an unsupported or mismatched runner fails. Missing or
 below-baseline dependencies, unknown suites, missing required fixtures, zero

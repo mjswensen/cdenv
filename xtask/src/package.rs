@@ -35,7 +35,8 @@ pub fn valid_agent_version(bytes: &[u8], build_id: &str) -> bool {
 
 pub fn agent_report(stage: &Path, build_id: &str) -> io::Result<Value> {
     let mut agents = serde_json::Map::new();
-    for (arch, machine) in [("x86_64", 62), ("aarch64", 183)] {
+    // x86_64 is intentionally disabled while cdenv targets ARM hosts only.
+    for (arch, machine) in [("aarch64", 183)] {
         let bytes = fs::read(stage.join(format!("cdenv-agent-{arch}")))?;
         super::validate_static_elf(&bytes, machine)
             .map_err(|error| io::Error::other(format!("invalid static {arch} agent: {error}")))?;
@@ -56,16 +57,12 @@ fn platform() -> String {
 
 fn validate_host(bytes: &[u8], platform: &str) -> io::Result<()> {
     let valid = match platform {
-        "linux-x86_64" | "linux-aarch64" => {
-            let machine = if platform.ends_with("x86_64") {
-                62
-            } else {
-                183
-            };
+        // Linux/x86_64 host validation is intentionally disabled.
+        "linux-aarch64" => {
             bytes.len() >= 64
                 && &bytes[..6] == b"\x7fELF\x02\x01"
                 && matches!(u16::from_le_bytes([bytes[16], bytes[17]]), 2 | 3)
-                && u16::from_le_bytes([bytes[18], bytes[19]]) == machine
+                && u16::from_le_bytes([bytes[18], bytes[19]]) == 183
                 && bytes[24..32] != [0; 8]
         }
         "macos-aarch64" => {
@@ -227,7 +224,7 @@ mod tests {
         let mut bytes = vec![0; 64];
         bytes[..6].copy_from_slice(b"\x7fELF\x02\x01");
         bytes[16] = 3;
-        bytes[18] = 62;
+        bytes[18] = 183;
         bytes[24] = 1;
         bytes
     }
@@ -235,29 +232,41 @@ mod tests {
     #[test]
     fn archive_is_deterministic_and_contains_only_canonical_executable() {
         let bytes = archive_bytes(&elf()).expect("archive");
-        assert_eq!(unpack_checked(&bytes, "linux-x86_64").expect("host"), elf());
+        assert_eq!(
+            unpack_checked(&bytes, "linux-aarch64").expect("host"),
+            elf()
+        );
         assert_eq!(bytes, archive_bytes(&elf()).expect("repeat"));
     }
 
     #[test]
     fn rejects_empty_wrong_format_and_wrong_architecture_hosts() {
-        for bytes in [vec![], b"#!/bin/sh".to_vec(), elf()] {
+        for bytes in [vec![], b"#!/bin/sh".to_vec()] {
             assert!(
                 unpack_checked(&archive_bytes(&bytes).expect("archive"), "linux-aarch64").is_err()
             );
         }
+        let mut wrong_architecture = elf();
+        wrong_architecture[18] = 62;
+        assert!(
+            unpack_checked(
+                &archive_bytes(&wrong_architecture).expect("archive"),
+                "linux-aarch64"
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn rejects_missing_host() {
-        assert!(unpack_checked(&[0; 1024], "linux-x86_64").is_err());
+        assert!(unpack_checked(&[0; 1024], "linux-aarch64").is_err());
     }
 
     #[test]
     fn rejects_unexpected_trailing_files() {
         let mut bytes = archive_bytes(&elf()).expect("archive");
         bytes.extend(archive_bytes(b"unexpected").expect("extra"));
-        assert!(unpack_checked(&bytes, "linux-x86_64").is_err());
+        assert!(unpack_checked(&bytes, "linux-aarch64").is_err());
     }
 
     #[test]
@@ -282,7 +291,7 @@ mod tests {
                     .expect("duplicate");
             }
             assert!(
-                unpack_checked(&builder.into_inner().expect("archive"), "linux-x86_64").is_err()
+                unpack_checked(&builder.into_inner().expect("archive"), "linux-aarch64").is_err()
             );
         }
     }

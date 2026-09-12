@@ -12,8 +12,8 @@ import tempfile
 import unittest
 
 INSTALLER = Path(__file__).resolve().parents[2] / "install.sh"
-HOSTS = [("Linux", "x86_64", "linux-x86_64", "sha256sum"),
-         ("Linux", "aarch64", "linux-aarch64", "sha256sum"),
+# x86_64 is intentionally disabled while cdenv targets ARM hosts only.
+HOSTS = [("Linux", "aarch64", "linux-aarch64", "sha256sum"),
          ("Darwin", "arm64", "macos-aarch64", "shasum")]
 
 

@@ -10,8 +10,8 @@ outside that profile.
 ## Supported hosts and exact dependency baseline
 
 Release archives and complete automated Docker/OpenSSH suites cover Linux
-x86_64 and Linux arm64. A macOS arm64 archive is released only with a recorded
-Apple Silicon Docker Desktop smoke. Intel macOS and other hosts are unsupported.
+Linux arm64 and macOS arm64. x86_64 hosts are temporarily unsupported. A macOS
+arm64 archive is released only with a recorded Apple Silicon Docker Desktop smoke.
 
 | Dependency | Minimum verified V1 baseline |
 |---|---:|
@@ -22,15 +22,15 @@ Apple Silicon Docker Desktop smoke. Intel macOS and other hosts are unsupported.
 | OpenSSH client | 10.0p2 |
 | Git | required by `create` |
 
-CI runs clean, locked x86_64/arm64 checkouts against explicit minimum and pinned
+CI runs clean, locked arm64 checkouts against explicit minimum and pinned
 Docker/Compose/OpenSSH jobs. Missing dependencies, wrong architectures, missing
 fixtures, zero tests, skips, and below-baseline versions fail. Node.js, an editor,
 and the reference Dev Container CLI are not runtime or release-suite dependencies.
 
 ## Install, root selection, and uninstall
 
-The simplest installation uses the release installer. It detects Linux x86_64,
-Linux arm64, and macOS arm64, downloads the matching release archive, verifies
+The simplest installation uses the release installer. It detects Linux arm64 and
+macOS arm64, downloads the matching release archive, verifies
 its adjacent SHA-256 checksum, and installs `cdenv` into a writable directory
 already present in `PATH`:
 

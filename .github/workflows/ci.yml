@@ -16,7 +16,8 @@ env:
 jobs:
   quality:
     name: Strict Rust and cargo-deny quality gate
-    runs-on: ubuntu-24.04
+    # Keep tool validation on the supported ARM runner.
+    runs-on: ubuntu-24.04-arm
     steps:
       - name: Check out clean locked repository
         uses: actions/checkout@v4
@@ -40,7 +41,8 @@ jobs:
 
   security-mutations:
     name: Security mutations (${{ matrix.shard }})
-    runs-on: ubuntu-24.04
+    # Keep security checks on the supported ARM runner.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -63,7 +65,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: security-mutations-linux-x86_64-${{ matrix.shard }}
+          name: security-mutations-linux-arm64-${{ matrix.shard }}
           path: target/security-mutations/${{ matrix.shard }}/
           if-no-files-found: error
           retention-days: 14
@@ -74,8 +76,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            platform: linux-x86_64
+          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
           - runner: ubuntu-24.04-arm
             platform: linux-arm64
           - runner: macos-15
@@ -105,13 +106,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: x86_64
-            runner: ubuntu-24.04
-            baseline: minimum
-            docker: v29.6.2
-            docker_cli_arch: x86_64
-            uname_arch: x86_64
-            docker_cli_sha256: 0fcea2a8b4d1b54ccc9010e3451b78504a369d414f37eb3bb79300e1b5c22ce6
+          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
           - arch: arm64
             runner: ubuntu-24.04-arm
             baseline: minimum
@@ -119,13 +114,6 @@ jobs:
             docker_cli_arch: aarch64
             uname_arch: aarch64
             docker_cli_sha256: 4eb4d1b21131897ed3990aac31039161bf4bdd07fcfb733e996010319ff4e069
-          - arch: x86_64
-            runner: ubuntu-24.04
-            baseline: pinned
-            docker: v29.7.1
-            docker_cli_arch: x86_64
-            uname_arch: x86_64
-            docker_cli_sha256: unused
           - arch: arm64
             runner: ubuntu-24.04-arm
             baseline: pinned
@@ -255,8 +243,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04
-            platform: linux/amd64
+          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}

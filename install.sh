@@ -8,7 +8,7 @@ version=${CDENV_VERSION:-latest}
 api_root=${CDENV_API_ROOT:-https://api.github.com}
 
 case "$(uname -s):$(uname -m)" in
-  Linux:x86_64) platform=linux-x86_64 ;;
+  # Linux/x86_64 is intentionally disabled while cdenv targets ARM hosts only.
   Linux:aarch64|Linux:arm64) platform=linux-aarch64 ;;
   Darwin:arm64) platform=macos-aarch64 ;;
   *)

@@ -20,7 +20,7 @@ class CoverageTests(unittest.TestCase):
             root = Path(temporary)
             self.assertTrue(INDEX.index(root / "absent", root / "index"))
             result = json.loads((root / "index/index.json").read_text())
-            self.assertEqual(len(result["errors"]), 11)
+            self.assertEqual(len(result["errors"]), 6)
 
     def test_inventory_accepts_low_coverage_but_not_missing_branches_or_failed_tests(self):
         with tempfile.TemporaryDirectory() as temporary:

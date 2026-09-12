@@ -34,18 +34,12 @@ struct AgentTarget {
     machine: u16,
 }
 
-const AGENT_TARGETS: [AgentTarget; 2] = [
-    AgentTarget {
-        platform: "linux/amd64",
-        name: "cdenv-agent-x86_64",
-        machine: 62,
-    },
-    AgentTarget {
-        platform: "linux/arm64",
-        name: "cdenv-agent-aarch64",
-        machine: 183,
-    },
-];
+// x86_64 is intentionally disabled while cdenv targets ARM hosts only.
+const AGENT_TARGETS: [AgentTarget; 1] = [AgentTarget {
+    platform: "linux/arm64",
+    name: "cdenv-agent-aarch64",
+    machine: 183,
+}];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum IntegrationSuite {
@@ -291,7 +285,7 @@ fn stage_agent(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
         return ExitCode::FAILURE;
     }
     let Some(flag) = arguments.next() else {
-        eprintln!("xtask: stage-agent requires --platform <linux/amd64|linux/arm64>");
+        eprintln!("xtask: stage-agent requires --platform <linux/arm64>");
         return ExitCode::FAILURE;
     };
     let Some(value) = arguments.next() else {
@@ -299,7 +293,7 @@ fn stage_agent(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
         return ExitCode::FAILURE;
     };
     if flag != "--platform" || arguments.next().is_some() {
-        eprintln!("xtask: stage-agent requires exactly --platform <linux/amd64|linux/arm64>");
+        eprintln!("xtask: stage-agent requires exactly --platform <linux/arm64>");
         return ExitCode::FAILURE;
     }
     let Some(platform) = value.to_str() else {
@@ -511,10 +505,11 @@ fn run_integration(mut arguments: impl Iterator<Item = OsString>) -> ExitCode {
 }
 
 fn integration_platform_supported() -> bool {
-    let supported = cfg!(target_os = "linux") && matches!(env::consts::ARCH, "x86_64" | "aarch64");
+    // x86_64 integration checks are intentionally disabled for ARM-only hosts.
+    let supported = cfg!(target_os = "linux") && env::consts::ARCH == "aarch64";
     if !supported {
         eprintln!(
-            "xtask: complete integration suites require Linux x86_64 or arm64, found {} {}",
+            "xtask: complete integration suites require Linux arm64, found {} {}",
             env::consts::OS,
             env::consts::ARCH
         );
@@ -522,7 +517,6 @@ fn integration_platform_supported() -> bool {
     }
     if let Ok(declared) = env::var("CDENV_INTEGRATION_ARCH") {
         let declared = match declared.as_str() {
-            "x86_64" | "amd64" => "x86_64",
             "arm64" | "aarch64" => "aarch64",
             _ => {
                 eprintln!("xtask: unsupported declared integration architecture `{declared}`");
@@ -693,7 +687,7 @@ fn print_command(cargo: &OsStr, arguments: &[&str]) {
 
 fn print_help() {
     eprintln!(
-        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask stage-agents\n  cargo xtask stage-agent --platform <linux/amd64|linux/arm64>\n  cargo xtask finalize-agents <staging-directory>\n  cargo xtask test-package <archive.tar>\n  cargo xtask test-installed <archive.tar>\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing or below-baseline dependencies never skip the suite."
+        "Usage:\n  cargo xtask check\n  cargo xtask dist\n  cargo xtask stage-agents\n  cargo xtask stage-agent --platform <linux/arm64>\n  cargo xtask finalize-agents <staging-directory>\n  cargo xtask test-package <archive.tar>\n  cargo xtask test-installed <archive.tar>\n  cargo xtask test-integration --suite <devcontainer-v1|openssh>\n\nIntegration suites run in release mode and require every discovered test to execute and pass. Docker Engine/CLI, Compose V2, and OpenSSH are mandatory; missing or below-baseline dependencies never skip the suite."
     );
 }
 

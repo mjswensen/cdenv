@@ -36,15 +36,14 @@ pub fn valid_agent_version(bytes: &[u8], build_id: &str) -> bool {
 pub fn agent_report(stage: &Path, build_id: &str) -> io::Result<Value> {
     let mut agents = serde_json::Map::new();
     // x86_64 is intentionally disabled while cdenv targets ARM hosts only.
-    for (arch, machine) in [("aarch64", 183)] {
-        let bytes = fs::read(stage.join(format!("cdenv-agent-{arch}")))?;
-        super::validate_static_elf(&bytes, machine)
-            .map_err(|error| io::Error::other(format!("invalid static {arch} agent: {error}")))?;
-        agents.insert(
-            arch.to_owned(),
-            json!(format!("{:x}", Sha256::digest(bytes))),
-        );
-    }
+    let (arch, machine) = ("aarch64", 183);
+    let bytes = fs::read(stage.join(format!("cdenv-agent-{arch}")))?;
+    super::validate_static_elf(&bytes, machine)
+        .map_err(|error| io::Error::other(format!("invalid static {arch} agent: {error}")))?;
+    agents.insert(
+        arch.to_owned(),
+        json!(format!("{:x}", Sha256::digest(bytes))),
+    );
     Ok(
         json!({"schemaVersion": 1, "version": env!("CARGO_PKG_VERSION"),
         "buildId": build_id, "protocolVersion": 1, "agents": agents}),

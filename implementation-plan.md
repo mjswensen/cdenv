@@ -11,12 +11,13 @@
 **Compose integration:** Docker Compose V2
 **Editor integration:** Standard OpenSSH; no editor-specific implementation
 
-**Issue 68 implementation status:** The opt-in credential permission commands,
-staged/bound host storage, and bounded Git credential parser are implemented.
-The live broker is not. Production command composition is a prerequisite:
-`create` currently ends after clone and `up`/`down`/`rebuild` still return
-`CommandUnavailable`, despite the available library coordinators. Runtime
-workflows below remain the target contract, not evidence of completed wiring.
+**Issue 68 implementation status:** The opt-in permission commands, staged/bound
+host storage, bounded credential parser, versioned multiplexed broker protocol,
+verified Docker Exec bridge, private static-agent endpoints, and active/candidate
+lease primitives are implemented. Production capability reconciliation and
+lifecycle handoff remain pending, as do the real HTTPS/SSH/identity backends and
+managed helper integration. Runtime workflows below remain the target contract,
+not evidence that saving a grant enables container authentication.
 See [ADR 0002](docs/adr/0002-opt-in-host-capabilities.md).
 
 ---
@@ -54,7 +55,7 @@ The container does not run OpenSSH `sshd` and does not publish port 22. OpenSSH 
 cdenv-agent ssh-server --stdio
 ```
 
-SSH protocol bytes flow through stdin/stdout. Each SSH connection has one host proxy process and one container agent process. There is no installation-wide daemon or permanent container SSH daemon. A workspace may have a scoped host forwarding supervisor while configuration-declared ports are active, and a temporary container lifecycle runner while background lifecycle work remains. Issue 68 extends this ownership design to independently granted host capabilities, including zero-port/zero-SSH-client workspaces; that runtime extension is pending.
+SSH protocol bytes flow through stdin/stdout. Each SSH connection has one host proxy process and one container agent process. There is no installation-wide daemon or permanent container SSH daemon. A workspace may have a scoped host supervisor while configuration-declared ports or a credential lease are active, and a temporary container lifecycle runner while background lifecycle work remains. Credential state is independent from listener state, so an authenticated static-agent bridge can remain available in zero-port/zero-SSH-client workspaces.
 
 ---
 

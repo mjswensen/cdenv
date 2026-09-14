@@ -38,6 +38,19 @@ async fn main() -> ExitCode {
         .await;
     }
     #[cfg(target_os = "linux")]
+    if let [command, runtime] = arguments.as_slice()
+        && command == "credential-bridge"
+    {
+        let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
+        return match cdenv_agent::serve_credential_bridge(stream, Path::new(runtime)).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("cdenv-agent: credential bridge failed: {error}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    #[cfg(target_os = "linux")]
     if let [command, manifest] = arguments.as_slice()
         && command == "post-attach"
     {
@@ -143,7 +156,7 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
                     lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))
                 }),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY>"
                     .to_owned(),
             ),
         })

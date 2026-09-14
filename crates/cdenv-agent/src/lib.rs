@@ -6,6 +6,8 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+#[cfg(target_os = "linux")]
+mod credential_bridge;
 mod environment;
 mod forwarding;
 #[cfg(target_os = "linux")]
@@ -15,6 +17,11 @@ mod pty_linux;
 #[cfg(target_os = "linux")]
 mod ssh;
 
+#[cfg(target_os = "linux")]
+pub use credential_bridge::{
+    CREDENTIAL_SOCKET_NAME, CredentialBridgeError, CredentialEndpointPaths, SSH_AGENT_SOCKET_NAME,
+    serve_credential_bridge,
+};
 pub use environment::{
     EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError, EnvironmentProbe,
     EnvironmentSnapshot, EnvironmentTemplate, EnvironmentTemplateSegment, capture_environment,

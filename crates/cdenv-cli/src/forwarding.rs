@@ -9,6 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use cdenv_core::credential_broker::{
+    BrokerFrameKind, CredentialLeaseIdentity, CredentialUserIdentity,
+};
 use cdenv_core::{
     AgentBuildId, ContainerId, GenerationId, InstallationId, ProtocolVersion, WorkspaceName,
 };
@@ -21,8 +24,10 @@ use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
 use crate::agent_artifacts::AgentArtifactProvider;
 use crate::bollard::{GENERATION_LABEL, INSTALLATION_LABEL, WORKSPACE_LABEL};
 use crate::{
-    BOLLARD_CONTROL_TIMEOUT, BollardAdapter, CancellationToken, DockerEndpoint, ExecCommand,
+    BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BrokerBackendError, BrokerBackendFuture,
+    BrokerByteStream, CancellationToken, CredentialBrokerBackend, DockerEndpoint, ExecCommand,
     ManagedMode, atomic_write, ensure_lock_file, ensure_private_directory,
+    serve_host_credential_broker,
 };
 use crate::{LockBehavior, LockGuard, LockMode};
 
@@ -46,6 +51,20 @@ pub struct SupervisorForward {
     pub target_host: String,
     /// Nonzero target port.
     pub target_port: u16,
+}
+
+/// Configuration for one generation-scoped credential service lease.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SupervisorCredentialLease {
+    /// Private workspace-record receipt.
+    pub workspace_receipt: String,
+    /// Effective numeric user selected and verified during provisioning.
+    pub user: CredentialUserIdentity,
+    /// Current positive grant revision.
+    pub grant_revision: u64,
+    /// Stable absolute container runtime directory for this user/generation.
+    pub runtime_directory: String,
 }
 
 /// Complete private supervisor startup identity and transport manifest.
@@ -80,6 +99,9 @@ pub struct SupervisorManifest {
     token: String,
     /// All listener requests, bound transactionally before readiness.
     pub forwards: Vec<SupervisorForward>,
+    /// Separately owned credential transport, independent from forwarding listeners.
+    #[serde(default)]
+    pub credential_lease: Option<SupervisorCredentialLease>,
 }
 
 /// Persisted, authenticated live supervisor state.
@@ -104,6 +126,9 @@ pub struct SupervisorState {
     pub pid: u32,
     /// Assigned loopback listener addresses.
     pub listeners: Vec<SocketAddr>,
+    /// Exact credential lease identity, when its independent service was requested.
+    #[serde(default)]
+    pub credential_lease: Option<CredentialLeaseIdentity>,
     /// Secret used only over the private control socket.
     token: String,
 }
@@ -270,7 +295,15 @@ impl SupervisorManifest {
             lifetime_lock,
             token: hex::encode(token),
             forwards,
+            credential_lease: None,
         })
+    }
+
+    /// Adds an independently configured credential lease; zero forwards remain valid.
+    #[must_use]
+    pub fn with_credential_lease(mut self, lease: SupervisorCredentialLease) -> Self {
+        self.credential_lease = Some(lease);
+        self
     }
 }
 
@@ -374,6 +407,11 @@ async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSu
             .map(TcpListener::local_addr)
             .collect::<Result<Vec<_>, _>>()
             .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?,
+        credential_lease: manifest
+            .credential_lease
+            .as_ref()
+            .map(|lease| credential_identity(&manifest, lease))
+            .transpose()?,
         token: manifest.token.clone(),
     };
     persist_state(&manifest.state_file, &state)?;
@@ -386,6 +424,15 @@ async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSu
     let adapter = BollardAdapter::from_connector(&connector);
 
     let mut accepts = tokio::task::JoinSet::new();
+    if let Some(lease) = manifest.credential_lease.clone() {
+        let adapter = adapter.clone();
+        let manifest = manifest.clone();
+        accepts.spawn(async move {
+            run_credential_exec(adapter, &manifest, &lease)
+                .await
+                .map_err(|error| io::Error::other(error.to_string()))
+        });
+    }
     for (listener, forward) in listeners.into_iter().zip(manifest.forwards.iter().cloned()) {
         let adapter = adapter.clone();
         let manifest = manifest.clone();
@@ -466,6 +513,131 @@ async fn forward_connection(
         )
         .await
         .map_err(|error| ForwardingSupervisorError::Transport(error.to_string()))
+}
+
+fn credential_identity(
+    manifest: &SupervisorManifest,
+    lease: &SupervisorCredentialLease,
+) -> Result<CredentialLeaseIdentity, ForwardingSupervisorError> {
+    if !lease.runtime_directory.starts_with('/') || lease.runtime_directory.contains('\0') {
+        return Err(ForwardingSupervisorError::Identity {
+            field: "credential runtime path",
+        });
+    }
+    let identity = CredentialLeaseIdentity {
+        installation: manifest.installation.clone(),
+        workspace: manifest.workspace.clone(),
+        workspace_receipt: lease.workspace_receipt.clone(),
+        container: manifest.container.clone(),
+        generation: manifest.generation,
+        user: lease.user,
+        host_build: manifest.host_build_id.clone(),
+        agent_build: manifest.agent_build_id.clone(),
+        agent_protocol: manifest.agent_protocol,
+        broker_protocol: cdenv_core::credential_broker::CREDENTIAL_BROKER_PROTOCOL,
+        grant_revision: lease.grant_revision,
+    };
+    identity
+        .validate()
+        .map_err(|_| ForwardingSupervisorError::Identity {
+            field: "credential lease",
+        })?;
+    Ok(identity)
+}
+
+#[derive(Default)]
+struct UnavailableCredentialBackend;
+
+impl CredentialBrokerBackend for UnavailableCredentialBackend {
+    fn is_authorized(
+        &self,
+        _identity: &CredentialLeaseIdentity,
+        _operation: BrokerFrameKind,
+    ) -> bool {
+        true
+    }
+
+    fn credential_lookup(&self, _body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
+        Box::pin(async { Err(BrokerBackendError) })
+    }
+
+    fn connect_agent(&self) -> BrokerBackendFuture<'_, std::pin::Pin<Box<dyn BrokerByteStream>>> {
+        Box::pin(async { Err(BrokerBackendError) })
+    }
+
+    fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>> {
+        Box::pin(async { Err(BrokerBackendError) })
+    }
+}
+
+async fn run_credential_exec(
+    adapter: BollardAdapter,
+    manifest: &SupervisorManifest,
+    lease: &SupervisorCredentialLease,
+) -> Result<(), ForwardingSupervisorError> {
+    let inspection = adapter
+        .inspect_container(&manifest.container)
+        .await
+        .map_err(|error| ForwardingSupervisorError::Transport(error.to_string()))?;
+    verify_container(&inspection, manifest)?;
+    let identity = credential_identity(manifest, lease)?;
+    let command = vec![
+        manifest.agent_path.clone(),
+        "credential-bridge".to_owned(),
+        lease.runtime_directory.clone(),
+    ];
+    let selected_user = format!("{}:{}", lease.user.uid, lease.user.gid);
+    let exec = adapter
+        .create_attached_exec(
+            &ExecCommand {
+                container: &manifest.container,
+                command: &command,
+                user: Some(&selected_user),
+                working_directory: None,
+                environment: &[],
+            },
+            true,
+        )
+        .await
+        .map_err(|error| ForwardingSupervisorError::Transport(error.to_string()))?;
+    let inspected = adapter
+        .inspect_exec(exec.id())
+        .await
+        .map_err(|error| ForwardingSupervisorError::Transport(error.to_string()))?;
+    if inspected.container != manifest.container || inspected.running {
+        return Err(ForwardingSupervisorError::Identity {
+            field: "credential Exec target",
+        });
+    }
+
+    let (protocol_input, mut docker_input) =
+        tokio::io::duplex(cdenv_core::credential_broker::MAX_BROKER_QUEUED_BYTES);
+    let (mut docker_output, protocol_output) =
+        tokio::io::duplex(cdenv_core::credential_broker::MAX_BROKER_QUEUED_BYTES);
+    let protocol = tokio::io::join(protocol_output, protocol_input);
+    let cancellation = CancellationToken::default();
+    let mut diagnostics = BoundedDiagnostics::default();
+    let transport = adapter.run_attached_exec(
+        &exec,
+        &mut docker_input,
+        &mut docker_output,
+        &mut diagnostics,
+        &cancellation,
+    );
+    let broker = serve_host_credential_broker(
+        protocol,
+        identity,
+        std::sync::Arc::new(UnavailableCredentialBackend),
+    );
+    tokio::pin!(transport);
+    tokio::pin!(broker);
+    tokio::select! {
+        result = &mut transport => result.map_err(|error| ForwardingSupervisorError::Transport(error.to_string())),
+        result = &mut broker => {
+            cancellation.cancel();
+            result.map_err(|error| ForwardingSupervisorError::Transport(error.to_string()))
+        }
+    }
 }
 
 fn verify_container(
@@ -711,6 +883,9 @@ fn validate_manifest_identity(
     )?;
     for forward in &manifest.forwards {
         validate_target(&forward.target_host, forward.target_port)?;
+    }
+    if let Some(lease) = &manifest.credential_lease {
+        credential_identity(manifest, lease)?;
     }
     Ok(())
 }

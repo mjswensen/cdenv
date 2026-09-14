@@ -140,16 +140,16 @@ matrix; inspect it separately from cdenv forwarding.
 
 ## Host credential permissions (issue 68)
 
-**Implementation status: permission management and bounded credential parsing
-only. Credential forwarding is not available in this build.** Production
-`create` and `up` compose planning, Docker/Compose reconciliation, agent and SSH
-provisioning, lifecycle execution, environment capture, and declared forwarding
-when capabilities are disabled. Configured credential capabilities fail during
-early preflight, before container lifecycle execution. Production `down` and
-`rebuild` are wired for workspaces without configured credential capabilities;
-they do not claim credential leases or broker handoff. Saving permission does not
-make Git in a container authenticate. See [ADR 0002](adr/0002-opt-in-host-capabilities.md)
-for the credential-specific boundary.
+**Implementation status: permission management and the credential transport
+substrate are implemented; production capability workflows are not yet wired.**
+The workspace supervisor can own a generation-scoped credential service with no
+TCP listeners or SSH clients. It creates one verified, selected-user Docker Exec
+to the static agent and a protocol-only bounded stdio bridge. The agent creates
+stable owner-only container Unix endpoints outside the checkout. Configured
+capabilities still fail production early preflight until issue 77 supplies lease
+authority and lifecycle handoff, and issues 72–75 supply real backends and helper
+integration. Saving permission alone therefore does not make Git authenticate.
+See [ADR 0002](adr/0002-opt-in-host-capabilities.md).
 
 Permissions are independent, off by default, installation/workspace-scoped, and
 never derived from `devcontainer.json`, `customizations`, `remoteEnv`, or
@@ -212,6 +212,16 @@ root or replacement workspace; copying/restoring directories can invalidate a
 binding. Unknown schemas/capabilities, unsafe owners/modes, symlinks, hard links,
 and oversized records are rejected, not repaired by credential commands.
 Existing workspace and agent schemas are unchanged.
+
+The private wire protocol is version 1 and permits only Git lookup, approved
+SSH-agent byte streams, identity metadata, health/cancellation, and lease stop.
+Its published limits are 64 KiB per frame, 32 active streams, 64 queued frames,
+512 KiB queued payload, four concurrent helper operations, a 5-second handshake,
+30-second operation timeout, 60-second idle timeout, and three reconnect attempts
+using 100 ms exponential backoff capped at two seconds. Unknown kinds/versions,
+wrong scoped identities or revisions, old generations, unsafe endpoints, and
+saturation fail closed. Payloads have redacted diagnostics and remain on private
+pipes/memory.
 
 Successful stage/enable means **permission saved**, not backend availability.
 For an existing active generation, enable/allow save permission but return

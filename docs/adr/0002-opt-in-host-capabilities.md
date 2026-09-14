@@ -138,9 +138,11 @@ is `username`/`password`, optional matching echoed context, and optional decimal
 `password_expiry_utc`. Missing or expired credentials return no result. A broker
 must recheck expiry immediately before release, not just at parsing time.
 
-The helper-operation type distinguishes `get`, `store`, and `erase`; it is not
-an installed container helper. Host delegation implements only `credential
-fill`; no host approve/store/reject/erase adapter exists. Each request executes
+The installed static helper distinguishes `get`, `store`, and `erase`. It
+validates a bounded `get` before using the private bridge; `store` and `erase`
+return successfully without reading or forwarding input. Host delegation
+implements only `credential fill`; no host approve/store/reject/erase adapter
+exists. Each request executes
 the current helper chain, so cdenv does not cache rotation. Broker protocol 1
 rejects unknown frame kinds, versions, identities, and old generations before
 backend dispatch. Production lifecycle authority and adapter dispatch are still
@@ -164,7 +166,8 @@ not a runtime interoperability test or a claim about DevPod Pro:
   it with the initial workspace path.
 - Its [helper configuration](https://github.com/loft-sh/devpod/blob/5a0efcbff6610ab114b421f68a890739a452e66b/pkg/gitcredentials/gitcredentials.go#L33-L93)
   motivates reversible, cdenv-owned integration rather than editing/removing
-  a generic credential section. This integration remains unimplemented.
+  a generic credential section. cdenv implements that as an owned fragment and
+  appended process configuration, scoped to exact granted origins.
 - Its [automatic SSH key loading](https://github.com/loft-sh/devpod/blob/5a0efcbff6610ab114b421f68a890739a452e66b/pkg/ssh/ssh_add.go#L18-L75)
   is deliberately not copied. Agent selection requires host consent and must
   never scan keys or run `ssh-add` automatically.
@@ -176,9 +179,8 @@ not a runtime interoperability test or a claim about DevPod Pro:
 ## Remaining implementation and release evidence
 
 Before issue 68 can close, compose the production lifecycle paths, dispatch the
-host adapter from the authorized supervisor/Exec broker, integrate the static
-helper and sockets, prove helper-chain ownership including Git approve/store,
-implement live revocation, and cover early/detached lifecycle and generation
+implemented authorized host adapter from the supervisor/Exec broker, implement
+live revocation, and cover early/detached lifecycle and generation
 handoff/rollback. SSH socket validation/refresh and missing-field-only author
 defaults also remain outstanding.
 

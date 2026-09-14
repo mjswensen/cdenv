@@ -11,6 +11,8 @@ mod credential_bridge;
 mod environment;
 mod forwarding;
 #[cfg(target_os = "linux")]
+mod git_credentials;
+#[cfg(target_os = "linux")]
 mod lifecycle;
 #[cfg(target_os = "linux")]
 mod pty_linux;
@@ -30,6 +32,11 @@ pub use environment::{
 pub use forwarding::{
     ForwardTarget, ForwardingError, MAXIMUM_FORWARD_HOST_BYTES, bridge_forwarding_stream,
     verify_forwarding_identity,
+};
+#[cfg(target_os = "linux")]
+pub use git_credentials::{
+    GIT_HELPER_TIMEOUT, GIT_INTEGRATION_CONFIG_NAME, GitCredentialHelperError, GitIntegrationError,
+    ManagedGitCredentialIntegration, run_git_credential_helper,
 };
 #[cfg(target_os = "linux")]
 pub use lifecycle::{

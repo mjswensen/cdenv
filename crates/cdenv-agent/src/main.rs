@@ -51,6 +51,10 @@ async fn main() -> ExitCode {
         };
     }
     #[cfg(target_os = "linux")]
+    if let Some(status) = git_credential_helper(&arguments) {
+        return status;
+    }
+    #[cfg(target_os = "linux")]
     if let [command, manifest] = arguments.as_slice()
         && command == "post-attach"
     {
@@ -111,6 +115,25 @@ async fn main() -> ExitCode {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn git_credential_helper(arguments: &[OsString]) -> Option<ExitCode> {
+    let [command, socket, operation] = arguments else {
+        return None;
+    };
+    if command != "git-credential-helper" {
+        return None;
+    }
+    Some(
+        match cdenv_agent::run_git_credential_helper(Path::new(socket), operation) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("cdenv-agent: Git credential helper failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
+    )
+}
+
 fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
     cdenv_agent::ensure_supported_platform()
         .map_err(|error| error.to_string())
@@ -156,7 +179,7 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
                     lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))
                 }),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY|git-credential-helper SOCKET get|store|erase>"
                     .to_owned(),
             ),
         })

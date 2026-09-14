@@ -147,10 +147,10 @@ TCP listeners or SSH clients. It creates one verified, selected-user Docker Exec
 to the static agent and a protocol-only bounded stdio bridge. The agent creates
 stable owner-only container Unix endpoints outside the checkout. Configured
 capabilities still fail production early preflight until issue 77 supplies lease
-authority and lifecycle handoff, and issues 73–75 supply helper/agent/identity
-integration. The host Git lookup backend from issue 72 is implemented but is not
-dispatched by production until
-those lease workflows are connected. Saving permission alone therefore does not
+authority and lifecycle handoff, and issues 74–75 supply agent/identity
+integration. The host Git lookup backend and static HTTPS helper integration are
+implemented but are not dispatched by production until those lease workflows are
+connected. Saving permission alone therefore does not
 make Git authenticate.
 See [ADR 0002](adr/0002-opt-in-host-capabilities.md).
 
@@ -252,11 +252,16 @@ which repositories its issuer permits. General SSH-agent access includes signing
 and is neither Git-only nor destination-scoped. Author name/email is separately
 enabled and must not inherit signing keys/configuration, GPG, or Docker credentials.
 
-The eventual managed integration must cover cdenv lifecycle/SSH children and
-their descendants, not arbitrary `docker exec`, entrypoints, other users, or
-Compose sidecars. It must preserve native helper behavior on ungranted origins
-and prevent granted-origin native store/cache helpers from receiving forwarded
-tokens. No such helper configuration is installed by this foundation.
+The managed HTTPS integration provides process-enrollment and refresh/removal
+seams for cdenv lifecycle/SSH children and their descendants; issue 77 invokes
+those seams in production. It does not cover arbitrary `docker exec`, entrypoints,
+other users, or Compose sidecars. A private mode-`0600` fragment outside the
+checkout is included by appending to (never replacing) existing `GIT_CONFIG_*`
+command-environment entries. For each exact granted origin it resets the effective
+helper chain, installs only the static cdenv helper, and enables
+`credential.useHttpPath`; ungranted origins retain all native behavior. Existing
+system/global/local/include files remain unchanged. Removing the owned fragment
+and enrollment restores underlying behavior for later processes.
 
 Host HTTPS lookup uses the explicit host launch context and runs `git credential
 fill` from a canonical neutral, non-repository directory. The environment is
@@ -297,9 +302,11 @@ the declared noninteractive environment are covered with local fixtures; live
 provider helpers and keychains are not claimed. No OpenSSH helper matrix,
 SSH-agent refresh/confirmation result, or macOS keychain smoke has yet been
 verified for live forwarding. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
-publishes the implemented parser and helper limits. Transport integration,
-backpressure, socket refresh, lifecycle handoff, and authenticated real Git/SSH
-fixtures remain required before shipping issue 68.
+publishes the implemented parser and helper limits. The static helper bounds and
+validates `get` before opening the private socket; `store` and `erase` are
+successful no-ops and unknown operations fail closed. Transport lifecycle
+handoff, SSH/identity integration, and authenticated real Git/SSH fixtures remain
+required before shipping issue 68.
 
 ## Diagnostics, retention, and release evidence
 

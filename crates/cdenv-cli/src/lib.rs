@@ -34,6 +34,7 @@ mod forwarding;
 mod forwarding_reconciliation;
 mod generated_image;
 mod git;
+mod git_credential_backend;
 mod host_git_credentials;
 mod image_orchestration;
 mod installation;
@@ -159,6 +160,7 @@ pub use generated_image::{
     UidGidMutation, UidGidUpdateError, plan_uid_gid_update,
 };
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
+pub use git_credential_backend::{AuthorizedHostGitBackend, GitCredentialAuthorizer};
 pub use host_git_credentials::{
     HOST_GIT_LOOKUP_TIMEOUT, HostGitContextError, HostGitCredentialAdapter,
     HostGitCredentialContext, HostGitCredentialError, HostGitCredentialOutcome,

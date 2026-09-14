@@ -215,12 +215,13 @@ V1 configuration behavior is unchanged, including the removal of all arbitrary
 **Currently implemented:** private staged/bound permission management,
 explicit-name binding after successful host clone, exact HTTPS origin validation,
 read-only permission facts, bounded/redacted Git credential types, and the
-versioned private Docker Exec transport. The static agent provisions owner-only,
-stable per-generation Unix endpoints and the workspace supervisor can own this
-service independently of TCP forwarding and SSH sessions.
-**Not implemented:** live host-helper delegation, managed Git helper/configuration
-ownership, production SSH-agent selection/environment injection, identity
-defaults, and lifecycle/rebuild lease handoff. A saved grant must not be
+versioned private Docker Exec transport, trusted noninteractive host Git lookup,
+and the static lookup-only helper with reversible exact-origin process
+configuration. The static agent provisions owner-only, stable per-generation Unix
+endpoints and the workspace supervisor can own this service independently of TCP
+forwarding and SSH sessions.
+**Not implemented:** production dispatch/revocation, SSH-agent selection and
+environment injection, identity defaults, and lifecycle/rebuild lease handoff. A saved grant must not be
 interpreted as working container authentication; see [ADR 0002](adr/0002-opt-in-host-capabilities.md)
 and the [operations guide](operations.md#host-credential-permissions-issue-68).
 

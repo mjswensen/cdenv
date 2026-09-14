@@ -13,6 +13,28 @@ depends-on:
 
 Provide reproducible, nonempty end-to-end and release evidence for the complete workspace credential product. Existing generic profile/OpenSSH tests and the permission/parser foundation's passing Linux arm64 tests are not evidence that live credential forwarding works.
 
+## Implementation status
+
+### Complete in source (`11b0651`, `Refs: 78`)
+
+- Added the named opt-in `credentials` integration suite to strict nonzero discovery, exact discovered/passed-count enforcement, locked release execution, coverage inventory, and Linux CI.
+- Added a packaged public-command workflow that validates embedded artifacts and exercises staged SSH-agent enable, explicit-name create, credential readiness before the first hook, pre-SSH `postAttachCommand`, managed SSH, zero-port ownership, status, down/up, rebuild, live disable, and absence of the revoked socket in a new SSH child. The fixture uses a controlled real host `ssh-agent` with an Ed25519 key and scans cdenv-managed state for a secret marker.
+- Added `tests/integration/fixtures/credential-coverage.json`, mapping issue-68 criteria to component/integration evidence and recording unverified criteria as blockers rather than passing evidence.
+- Restored Linux x86_64 support alongside arm64 for embedded static agents, host architecture selection, package/artifact validation, installer selection, release packaging, CI release matrices, integration architecture checks, and coverage inventory.
+- Expanded the declared Git/OpenSSH/helper compatibility matrix and noninteractive/provider limitations in the operations documentation.
+- Revised the Apple-silicon Docker Desktop checklist to require credential HTTPS/keychain, SSH-agent refresh/lifetime, revocation, and secret-surface observations. This is a checklist only; it is not a completed smoke record.
+- `cargo xtask check`, strict Clippy, xtask tests, installer tests, coverage-plumbing tests, and the traceability test pass. Both static agent architectures and an arm64 packaged host were built and artifact-validated locally.
+
+### Still required before this issue can close
+
+- Build a controlled authenticated smart-HTTP Git fixture with a real CA and hostname-valid TLS certificate. Exercise real container Git fetch/push, token rotation, two paths/accounts on one origin, private submodules, denied additional origins, stale-token recovery, and native-helper lookup/approve/store isolation without a public-network dependency.
+- Add controlled Git-over-SSH evidence with strict host-key verification and prove that the selected agent performs real identity/signing operations, including concurrent clients, empty/unavailable agents, confirmation timeout behavior, explicit versus automatic selection, changed automatic socket refresh, and same-path agent restart.
+- Expand packaged lifecycle coverage for detached work, PTY and non-PTY sessions, in-flight/old-client revocation, supervisor loss and explicit-up recovery, backend-degraded versus bridge-readiness failure, rebuild success and rollback, and credential-enabled Compose partial replacement.
+- Complete the secret-marker audit across intended private recipients plus persistence, logs, diagnostics/errors/JSON, process arguments and environment, snapshots, helper configuration, and native container helper storage.
+- Obtain passing required credential-suite runs on clean native Linux x86_64 and arm64 minimum and pinned dependency jobs. The local nested-container attempt correctly discovered two tests but could not execute Docker bind-mount workflow paths because its Docker Desktop daemon does not share the container-private temporary namespace; this is not release evidence or a skip.
+- Run and retain the revision-2 smoke record on actual Apple-silicon macOS with Docker Desktop and real host keychain/helper behavior. Record hardware, OS/build, all dependency versions, archive/checksum, date, simulated-versus-real provider/confirmation interactions, and outcome. Linux access to Docker Desktop cannot satisfy this item.
+- Update the traceability blockers to verified evidence only after those observations pass, then rerun all profile/OpenSSH/credential, preservation, installed-package, protocol compatibility, and `cargo xtask check` gates from clean locked release builds.
+
 ## Work
 
 - Add opt-in integration coverage using actual host/container Git and OpenSSH with controlled authenticated HTTPS/SSH fixtures. Use proper TLS CA/hostname trust and SSH host-key verification; no verification bypass, public-network dependency, live personal credentials, or provider-specific container runtime is an acceptable shortcut.

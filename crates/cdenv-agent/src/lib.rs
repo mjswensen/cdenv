@@ -13,6 +13,8 @@ mod forwarding;
 #[cfg(target_os = "linux")]
 mod git_credentials;
 #[cfg(target_os = "linux")]
+mod git_identity;
+#[cfg(target_os = "linux")]
 mod lifecycle;
 #[cfg(target_os = "linux")]
 mod pty_linux;
@@ -37,6 +39,11 @@ pub use forwarding::{
 pub use git_credentials::{
     GIT_HELPER_TIMEOUT, GIT_INTEGRATION_CONFIG_NAME, GitCredentialHelperError, GitIntegrationError,
     ManagedGitCredentialIntegration, run_git_credential_helper,
+};
+#[cfg(target_os = "linux")]
+pub use git_identity::{
+    GIT_IDENTITY_METADATA_NAME, GitIdentityIntegrationError, ManagedGitIdentityIntegration,
+    run_git_with_identity,
 };
 #[cfg(target_os = "linux")]
 pub use lifecycle::{

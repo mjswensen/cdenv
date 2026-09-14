@@ -11,10 +11,12 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use cdenv_core::credential_broker::{
-    BROKER_FRAME_HEADER_BYTES, BROKER_HANDSHAKE_TIMEOUT, BROKER_IDLE_TIMEOUT, BrokerFrame,
-    BrokerFrameKind, BrokerProtocolError, CredentialLeaseIdentity, MAX_BROKER_FRAME_BYTES,
-    MAX_BROKER_QUEUED_BYTES, MAX_BROKER_QUEUED_FRAMES, MAX_BROKER_STREAMS,
+    BROKER_FRAME_HEADER_BYTES, BROKER_HANDSHAKE_TIMEOUT, BROKER_IDLE_TIMEOUT,
+    BROKER_OPERATION_TIMEOUT, BrokerFrame, BrokerFrameKind, BrokerProtocolError,
+    CredentialLeaseIdentity, MAX_BROKER_FRAME_BYTES, MAX_BROKER_QUEUED_BYTES,
+    MAX_BROKER_QUEUED_FRAMES, MAX_BROKER_STREAMS,
 };
+use cdenv_core::git_identity::GitIdentityMetadata;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
@@ -115,6 +117,9 @@ pub enum CredentialBridgeError {
     /// Wire protocol failed closed.
     #[error(transparent)]
     Protocol(#[from] BrokerProtocolError),
+    /// Identity metadata violated its closed, bounded schema.
+    #[error(transparent)]
+    Identity(#[from] cdenv_core::git_identity::GitIdentityError),
     /// Private endpoint or stream I/O failed without exposing payload.
     #[error("credential bridge private I/O failed")]
     Io,
@@ -168,12 +173,13 @@ where
         &BrokerFrame::new(BrokerFrameKind::HelloAck, 0, identity.encode()?)?,
     )
     .await?;
+    reconcile_identity_metadata(&mut reader, &mut writer, runtime_directory).await?;
 
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<QueuedFrame>(MAX_BROKER_QUEUED_FRAMES);
     let byte_admission = Arc::new(Semaphore::new(MAX_BROKER_QUEUED_BYTES));
     let stream_admission = Arc::new(Semaphore::new(MAX_BROKER_STREAMS));
     let recipients = Arc::new(Mutex::new(HashMap::<u32, mpsc::Sender<BrokerFrame>>::new()));
-    let next_stream = Arc::new(AtomicU32::new(1));
+    let next_stream = Arc::new(AtomicU32::new(2));
 
     let credential_accept = accept_loop(
         credential,
@@ -223,6 +229,56 @@ where
     };
     drop(cleanup);
     result
+}
+
+async fn reconcile_identity_metadata<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    runtime_directory: &Path,
+) -> Result<(), CredentialBridgeError>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    write_frame(
+        writer,
+        &BrokerFrame::new(BrokerFrameKind::IdentityRequest, 1, Vec::new())?,
+    )
+    .await?;
+    let response = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, read_frame(reader))
+        .await
+        .map_err(|_| CredentialBridgeError::Timeout)??
+        .ok_or(BrokerProtocolError::Truncated)?;
+    match response.kind {
+        BrokerFrameKind::IdentityResult if response.stream_id == 1 => {
+            let metadata = GitIdentityMetadata::decode(response.payload())?;
+            crate::ManagedGitIdentityIntegration::refresh(runtime_directory, &metadata)
+                .map_err(|_| CredentialBridgeError::Io)?;
+        }
+        BrokerFrameKind::Error if response.stream_id == 1 => {
+            remove_identity_metadata(runtime_directory)?;
+        }
+        _ => return Err(BrokerProtocolError::Kind.into()),
+    }
+    Ok(())
+}
+
+fn remove_identity_metadata(runtime_directory: &Path) -> Result<(), CredentialBridgeError> {
+    let path = runtime_directory.join(crate::GIT_IDENTITY_METADATA_NAME);
+    match fs::symlink_metadata(&path) {
+        Ok(metadata)
+            if metadata.is_file()
+                && !metadata.file_type().is_symlink()
+                && metadata.uid() == nix::unistd::geteuid().as_raw()
+                && metadata.permissions().mode() & 0o777 == 0o600
+                && metadata.nlink() == 1 =>
+        {
+            fs::remove_file(path).map_err(|_| CredentialBridgeError::Io)
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(CredentialBridgeError::UnsafePath("Git identity metadata")),
+        Err(_) => Err(CredentialBridgeError::Io),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -671,6 +727,7 @@ impl Drop for EndpointCleanup {
         }
         let _ = remove_verified_socket(&self.paths.credential_socket, self.identity.user.uid);
         let _ = remove_verified_socket(&self.paths.ssh_agent_socket, self.identity.user.uid);
+        let _ = remove_identity_metadata(&self.paths.runtime_directory);
         let _ = fs::remove_file(marker);
         let _ = fs::remove_dir(&self.paths.runtime_directory);
     }

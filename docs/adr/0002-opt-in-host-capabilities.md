@@ -85,6 +85,11 @@ unrelated forwarding or fail otherwise successful readiness.
   explicit noninteractive settings, private bounded pipes, finite admission and
   deadlines, process-group cancellation/reaping, typed availability, and no
   cdenv credential cache or ordinary subprocess log.
+- Independently optional, bounded Git identity metadata read only from that
+  neutral trusted context. The authenticated identity operation carries its
+  closed schema to a cdenv-owned container file. A data-only Git wrapper probes
+  the invocation's original effective configuration and fills only absent name
+  or email fields, preserving normal config, environment, and signing behavior.
 - A version-1 binary multiplexing protocol whose closed operation set contains
   only credential lookup, approved agent streams, identity metadata, health,
   cancellation, and stop. Frames and secret-bearing values have redacted debug
@@ -179,10 +184,9 @@ not a runtime interoperability test or a claim about DevPod Pro:
 ## Remaining implementation and release evidence
 
 Before issue 68 can close, compose the production lifecycle paths, dispatch the
-implemented authorized host adapter from the supervisor/Exec broker, implement
-live revocation, and cover early/detached lifecycle and generation
-handoff/rollback. SSH socket validation/refresh and missing-field-only author
-defaults also remain outstanding.
+implemented authorized host adapters from the supervisor/Exec broker, enroll the
+owned Git integrations into managed process entry points, implement live
+revocation, and cover early/detached lifecycle and generation handoff/rollback.
 
 The permission/parser and host-adapter tests use fake Git/helpers, private
 filesystem fixtures, and local system Git; they require no Docker, public

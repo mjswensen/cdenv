@@ -214,7 +214,7 @@ impl ManagedGitCredentialIntegration {
     }
 }
 
-fn prepare_owned_directory(path: &Path) -> Result<(), GitIntegrationError> {
+pub(super) fn prepare_owned_directory(path: &Path) -> Result<(), GitIntegrationError> {
     if !path.is_absolute() {
         return Err(GitIntegrationError::UnsafePath);
     }
@@ -256,7 +256,7 @@ fn config_escape(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), GitIntegrationError> {
+pub(super) fn atomic_write(path: &Path, contents: &[u8]) -> Result<(), GitIntegrationError> {
     let temporary = path.with_extension(format!("tmp-{}", std::process::id()));
     let mut file = OpenOptions::new()
         .create_new(true)

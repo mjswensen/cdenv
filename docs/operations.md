@@ -147,10 +147,10 @@ TCP listeners or SSH clients. It creates one verified, selected-user Docker Exec
 to the static agent and a protocol-only bounded stdio bridge. The agent creates
 stable owner-only container Unix endpoints outside the checkout. Configured
 capabilities still fail production early preflight until issue 77 supplies lease
-authority and lifecycle handoff, and issue 75 supplies identity integration. The
-host Git lookup backend, static HTTPS helper, and selected host SSH-agent relay are
-implemented but are not dispatched by production until those lease workflows are
-connected. Saving permission alone therefore does not make Git authenticate or
+authority and lifecycle handoff. The host Git lookup/identity backends, static
+HTTPS helper, fill-only-missing identity wrapper, and selected host SSH-agent relay
+are implemented but are not dispatched by production until those lease workflows
+are connected. Saving permission alone therefore does not make Git authenticate or
 make an agent available in a container.
 See [ADR 0002](adr/0002-opt-in-host-capabilities.md).
 
@@ -225,6 +225,19 @@ using 100 ms exponential backoff capped at two seconds. Unknown kinds/versions,
 wrong scoped identities or revisions, old generations, unsafe endpoints, and
 saturation fail closed. Payloads have redacted diagnostics and remain on private
 pipes/memory.
+
+When `git-identity` is reconciled, host Git is queried only for `user.name` and
+`user.email` from the same trusted neutral configuration context used by HTTPS
+lookups. Each missing or invalid field remains independently unavailable. The
+closed, bounded metadata snapshot crosses only the authenticated broker identity
+operation and is stored in a cdenv-owned mode-`0600` file outside the checkout.
+The agent's Git wrapper probes each field in the invocation's original effective
+system/global/local/conditional, `GIT_CONFIG_*`, `-c`, and `--config-env` context,
+then supplies only absent fields as literal arguments. It does not edit Git files,
+copy host configuration, interpret identity as shell, or alter signing and
+credential settings. Explicit author/committer environment values retain Git's
+normal precedence. Refresh atomically replaces only cdenv metadata; disable
+removes only that metadata for later invocations.
 
 Successful stage/enable means **permission saved**, not backend availability.
 For an existing active generation, enable/allow save permission but return

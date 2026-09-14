@@ -15,6 +15,7 @@ use std::time::Duration;
 use cdenv_core::credential_protocol::{
     GitCredentialRequest, GitCredentialResponse, MAX_CREDENTIAL_BYTES,
 };
+use cdenv_core::git_identity::GitIdentityMetadata;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
@@ -245,7 +246,19 @@ impl HostGitCredentialAdapter {
         request
             .write_private(&mut *input)
             .map_err(|_| HostGitCredentialError::PrivateIo)?;
-        let execution = self.execute(input, cancellation).await?;
+        let arguments: [&OsStr; 8] = [
+            OsStr::new("-c"),
+            OsStr::new("core.askPass="),
+            OsStr::new("-c"),
+            OsStr::new("credential.interactive=never"),
+            OsStr::new("-c"),
+            OsStr::new("credential.useHttpPath=true"),
+            OsStr::new("credential"),
+            OsStr::new("fill"),
+        ];
+        let execution = self
+            .execute(self.command(&arguments), input, cancellation)
+            .await?;
         let output = match execution {
             ExecutionOutcome::Unavailable(reason) => {
                 return Ok(HostGitCredentialOutcome::Unavailable(reason));
@@ -270,17 +283,56 @@ impl HostGitCredentialAdapter {
         }
     }
 
-    fn command(&self) -> Command {
-        let arguments: [&OsStr; 8] = [
-            OsStr::new("-c"),
-            OsStr::new("core.askPass="),
-            OsStr::new("-c"),
-            OsStr::new("credential.interactive=never"),
-            OsStr::new("-c"),
-            OsStr::new("credential.useHttpPath=true"),
-            OsStr::new("credential"),
-            OsStr::new("fill"),
+    /// Reads only effective host `user.name` and `user.email` from the trusted
+    /// neutral configuration context. Each absent or unavailable field remains
+    /// independently advisory.
+    ///
+    /// # Errors
+    ///
+    /// Returns only private subprocess/cancellation failures. Ordinary missing
+    /// values, Git absence, timeout, and nonzero config queries produce `None`.
+    pub async fn identity_metadata(
+        &self,
+        cancellation: &CancellationToken,
+    ) -> Result<GitIdentityMetadata, HostGitCredentialError> {
+        let name = self.identity_field("user.name", cancellation).await?;
+        let email = self.identity_field("user.email", cancellation).await?;
+        GitIdentityMetadata::new(name, email).map_err(|_| HostGitCredentialError::PrivateIo)
+    }
+
+    async fn identity_field(
+        &self,
+        key: &str,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<String>, HostGitCredentialError> {
+        let arguments = [
+            OsStr::new("config"),
+            OsStr::new("--null"),
+            OsStr::new("--get"),
+            OsStr::new(key),
         ];
+        let command = self.command(&arguments);
+        let execution = self
+            .execute(command, Zeroizing::new(Vec::new()), cancellation)
+            .await?;
+        let ExecutionOutcome::Completed { status, stdout } = execution else {
+            return Ok(None);
+        };
+        if !status.success() {
+            return Ok(None);
+        }
+        let Some(value) = stdout.strip_suffix(b"\0") else {
+            return Ok(None);
+        };
+        let Ok(value) = std::str::from_utf8(value) else {
+            return Ok(None);
+        };
+        Ok(GitIdentityMetadata::new(Some(value.to_owned()), None)
+            .ok()
+            .and_then(|metadata| metadata.name().map(str::to_owned)))
+    }
+
+    fn command(&self, arguments: &[&OsStr]) -> Command {
         let mut command = Command::new(&self.context.executable);
         command
             .args(arguments)
@@ -310,10 +362,11 @@ impl HostGitCredentialAdapter {
 
     async fn execute(
         &self,
+        mut command: Command,
         input: Zeroizing<Vec<u8>>,
         cancellation: &CancellationToken,
     ) -> Result<ExecutionOutcome, HostGitCredentialError> {
-        let mut child = match self.command().spawn() {
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) if error.kind() == io::ErrorKind::NotFound => {
                 return Ok(ExecutionOutcome::Unavailable(
@@ -793,6 +846,49 @@ printf 'username=%s\npassword=token-%s-%s-%s\n\n' "$user" "$count" "$path" "$use
         assert!(observed.contains("host=git.internal:8443\n"));
         assert!(observed.contains("path=team/repo.git\n"));
         assert!(observed.contains("username=alice\n"));
+    }
+
+    #[tokio::test]
+    async fn identity_reads_only_neutral_trusted_config_and_keeps_fields_independent() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        let neutral = temporary.path().join("neutral");
+        let home = temporary.path().join("home");
+        fs::create_dir(&neutral).expect("neutral");
+        fs::create_dir(&home).expect("home");
+        fs::write(
+            home.join(".gitconfig"),
+            "[user]\n\tname = Host 'Name' $(literal)\n[commit]\n\tgpgsign = true\n",
+        )
+        .expect("config");
+        let environment = Environment(BTreeMap::from([
+            ("HOME".to_owned(), home.into_os_string()),
+            ("PATH".to_owned(), OsString::from("/usr/bin:/bin")),
+            ("GIT_CONFIG_COUNT".to_owned(), OsString::from("1")),
+        ]));
+        let context =
+            HostGitCredentialContext::resolve(PathBuf::from("git"), &neutral, &environment)
+                .expect("context");
+        let metadata = HostGitCredentialAdapter::new(context)
+            .identity_metadata(&CancellationToken::default())
+            .await
+            .expect("advisory metadata");
+        assert_eq!(metadata.name(), Some("Host 'Name' $(literal)"));
+        assert_eq!(metadata.email(), None);
+        assert!(!format!("{metadata:?}").contains("Host 'Name'"));
+    }
+
+    #[tokio::test]
+    async fn invalid_host_identity_control_input_becomes_independently_unavailable() {
+        let script = r#"
+if [ "$4" = "user.name" ]; then printf 'bad\nname\0'; else printf 'mail@example.test\0'; fi
+"#;
+        let (_temporary, context) = fixture(script);
+        let metadata = HostGitCredentialAdapter::new(context)
+            .identity_metadata(&CancellationToken::default())
+            .await
+            .expect("invalid fields remain advisory");
+        assert_eq!(metadata.name(), None);
+        assert_eq!(metadata.email(), Some("mail@example.test"));
     }
 
     #[test]

@@ -55,6 +55,10 @@ async fn main() -> ExitCode {
         return status;
     }
     #[cfg(target_os = "linux")]
+    if let Some(status) = git_with_identity(&arguments) {
+        return status;
+    }
+    #[cfg(target_os = "linux")]
     if let [command, manifest] = arguments.as_slice()
         && command == "post-attach"
     {
@@ -113,6 +117,31 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn git_with_identity(arguments: &[OsString]) -> Option<ExitCode> {
+    let [command, metadata, git, separator, rest @ ..] = arguments else {
+        return None;
+    };
+    if command != "git-with-identity" {
+        return None;
+    }
+    if separator != "--" {
+        return Some(ExitCode::FAILURE);
+    }
+    Some(
+        match cdenv_agent::run_git_with_identity(Path::new(git), Path::new(metadata), rest) {
+            Ok(status) => status
+                .code()
+                .and_then(|code| u8::try_from(code).ok())
+                .map_or(ExitCode::FAILURE, ExitCode::from),
+            Err(error) => {
+                eprintln!("cdenv-agent: Git identity integration failed: {error}");
+                ExitCode::FAILURE
+            }
+        },
+    )
 }
 
 #[cfg(target_os = "linux")]
@@ -179,7 +208,7 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
                     lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))
                 }),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY|git-credential-helper SOCKET get|store|erase>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY|git-credential-helper SOCKET get|store|erase|git-with-identity METADATA REAL_GIT -- GIT_ARGS...>"
                     .to_owned(),
             ),
         })

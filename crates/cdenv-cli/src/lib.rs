@@ -161,7 +161,9 @@ pub use generated_image::{
     UidGidMutation, UidGidUpdateError, plan_uid_gid_update,
 };
 pub use git::{GitAdapter, GitError, GitVersion, OperationLogError};
-pub use git_credential_backend::{AuthorizedHostGitBackend, GitCredentialAuthorizer};
+pub use git_credential_backend::{
+    AuthorizedHostGitBackend, AuthorizedHostGitIdentityBackend, GitCredentialAuthorizer,
+};
 pub use host_git_credentials::{
     HOST_GIT_LOOKUP_TIMEOUT, HostGitContextError, HostGitCredentialAdapter,
     HostGitCredentialContext, HostGitCredentialError, HostGitCredentialOutcome,

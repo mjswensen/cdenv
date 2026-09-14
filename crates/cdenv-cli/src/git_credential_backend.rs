@@ -7,6 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cdenv_core::credential_broker::{BrokerFrameKind, CredentialLeaseIdentity};
 use cdenv_core::credential_protocol::GitCredentialRequest;
 use cdenv_core::credentials::HttpsOrigin;
+use cdenv_core::git_identity::GitIdentityMetadata;
 use zeroize::Zeroizing;
 
 use crate::{
@@ -122,6 +123,63 @@ where
 
     fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>> {
         Box::pin(async { Err(BrokerBackendError) })
+    }
+}
+
+/// Broker backend exposing only pre-reconciled, typed Git identity metadata.
+///
+/// It cannot perform credential lookups, open an agent, or evaluate container
+/// paths/configuration. Callers replace the backend after each explicit host
+/// reconciliation to refresh the snapshot.
+pub struct AuthorizedHostGitIdentityBackend<A> {
+    identity: CredentialLeaseIdentity,
+    authorizer: Arc<A>,
+    metadata: GitIdentityMetadata,
+}
+
+impl<A> AuthorizedHostGitIdentityBackend<A>
+where
+    A: Fn(&CredentialLeaseIdentity) -> bool + Send + Sync + 'static,
+{
+    /// Binds one metadata snapshot to an exact lease and live grant check.
+    #[must_use]
+    pub fn new(
+        identity: CredentialLeaseIdentity,
+        authorizer: Arc<A>,
+        metadata: GitIdentityMetadata,
+    ) -> Self {
+        Self {
+            identity,
+            authorizer,
+            metadata,
+        }
+    }
+}
+
+impl<A> CredentialBrokerBackend for AuthorizedHostGitIdentityBackend<A>
+where
+    A: Fn(&CredentialLeaseIdentity) -> bool + Send + Sync + 'static,
+{
+    fn is_authorized(
+        &self,
+        identity: &CredentialLeaseIdentity,
+        operation: BrokerFrameKind,
+    ) -> bool {
+        &self.identity == identity
+            && operation == BrokerFrameKind::IdentityRequest
+            && (self.authorizer)(identity)
+    }
+
+    fn credential_lookup(&self, _body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
+        Box::pin(async { Err(BrokerBackendError) })
+    }
+
+    fn connect_agent(&self) -> BrokerBackendFuture<'_, Pin<Box<dyn BrokerByteStream>>> {
+        Box::pin(async { Err(BrokerBackendError) })
+    }
+
+    fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>> {
+        Box::pin(async move { self.metadata.encode().map_err(|_| BrokerBackendError) })
     }
 }
 

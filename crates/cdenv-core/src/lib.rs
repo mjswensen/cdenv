@@ -9,6 +9,7 @@ pub mod credential_broker;
 pub mod credential_protocol;
 pub mod credentials;
 pub mod executable;
+pub mod git_identity;
 mod identity;
 mod status;
 mod workspace;

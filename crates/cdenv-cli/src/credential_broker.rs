@@ -36,6 +36,8 @@ pub trait CredentialBrokerBackend: Send + Sync + 'static {
     fn authorization_epoch(&self, _operation: BrokerFrameKind) -> u64 {
         0
     }
+    /// Records completion of the exact authenticated bridge handshake.
+    fn transport_ready(&self) {}
     /// Handles one bounded raw Git lookup body over private memory/pipes.
     fn credential_lookup(&self, body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>>;
     /// Connects one independently approved host SSH-agent stream.
@@ -217,7 +219,10 @@ where
                             .then_some((BrokerFrameKind::IdentityRequest, epoch));
                         send_queued_scoped(&outgoing_tx, &byte_admission, response, authorization).await?;
                     }
-                    BrokerFrameKind::Health => send_queued(&outgoing_tx, &byte_admission, BrokerFrame::new(BrokerFrameKind::HealthAck, 0, Vec::new())?).await?,
+                    BrokerFrameKind::Health => {
+                        backend.transport_ready();
+                        send_queued(&outgoing_tx, &byte_admission, BrokerFrame::new(BrokerFrameKind::HealthAck, 0, Vec::new())?).await?;
+                    }
                     BrokerFrameKind::Stop => break Ok(()),
                     _ => break Err(BrokerProtocolError::Kind.into()),
                 }

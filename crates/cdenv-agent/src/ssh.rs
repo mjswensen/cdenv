@@ -11,6 +11,7 @@ use std::process::Stdio;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use cdenv_core::credentials::CredentialGrants;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::{Pid, geteuid};
 use russh::keys::ssh_key::{Algorithm, PrivateKey, PublicKey};
@@ -45,6 +46,10 @@ pub struct SshServerRequest {
     pub environment: PathBuf,
     /// Authoritative active remote workspace folder.
     pub workspace: PathBuf,
+    /// Verified generation-scoped credential runtime, when enrolled by `up`.
+    pub credential_runtime: Option<PathBuf>,
+    /// Current nonsecret capability configuration.
+    pub credential_grants: CredentialGrants,
 }
 
 /// Loaded immutable SSH transport configuration.
@@ -105,7 +110,12 @@ impl SshServerConfig {
                 path: request.workspace.clone(),
             });
         }
-        let environment = EnvironmentSnapshot::load(&request.environment)?;
+        let mut environment = EnvironmentSnapshot::load(&request.environment)?;
+        if let Some(runtime) = &request.credential_runtime {
+            environment.enroll_credentials(runtime, &request.credential_grants)?;
+        } else if !request.credential_grants.is_empty() {
+            return Err(EnvironmentError::UnsafeCredentialIntegration.into());
+        }
         let shell = resolve_shell(&environment);
         Ok(Self {
             host_key,
@@ -1560,6 +1570,8 @@ mod tests {
             authorized_key: authorized_path,
             environment: PathBuf::from(capture.snapshot_path),
             workspace: temporary.path().to_path_buf(),
+            credential_runtime: None,
+            credential_grants: CredentialGrants::default(),
         };
 
         let config = SshServerConfig::load(&request).expect("restricted SSH assets should load");
@@ -1597,6 +1609,8 @@ mod tests {
             authorized_key: authorized_path,
             environment: temporary.path().join("missing-environment"),
             workspace: temporary.path().to_path_buf(),
+            credential_runtime: None,
+            credential_grants: CredentialGrants::default(),
         };
 
         let error = SshServerConfig::load(&request).expect_err("loose host mode must fail");

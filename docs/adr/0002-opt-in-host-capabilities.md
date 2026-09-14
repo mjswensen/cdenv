@@ -152,9 +152,9 @@ implements only `credential fill`; no host approve/store/reject/erase adapter
 exists. Each request executes
 the current helper chain, so cdenv does not cache rotation. Broker protocol 1
 rejects unknown frame kinds, versions, identities, and old generations before
-backend dispatch. Production lifecycle authority and adapter dispatch are still
-supplied by the follow-up issues; the built-in unavailable backend proves that
-backend degradation does not destroy the transport or unrelated listeners.
+backend dispatch. The production workspace supervisor dispatches the trusted Git
+and selected-agent adapters; backend degradation does not destroy the transport
+or unrelated listeners.
 
 ## DevPod comparison
 
@@ -185,10 +185,11 @@ not a runtime interoperability test or a claim about DevPod Pro:
 
 ## Remaining implementation and release evidence
 
-Before issue 68 can close, compose the production lifecycle paths, dispatch the
-implemented authorized host adapters from the supervisor/Exec broker, enroll the
-owned Git integrations into managed process entry points, implement live
-revocation, and cover early/detached lifecycle and generation handoff/rollback.
+Production create/up now establishes bridge readiness before foreground hooks,
+enrolls foreground and detached lifecycle work and SSH children, keeps a
+zero-listener workspace owner alive, and scopes restart/down/rebuild behavior to
+the verified generation. Issue 78 retains the authenticated cross-platform public
+workflow and release evidence required before issue 68 can close.
 
 The permission/parser and host-adapter tests use fake Git/helpers, private
 filesystem fixtures, and local system Git; they require no Docker, public

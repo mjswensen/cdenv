@@ -3,6 +3,7 @@
 use std::future::Future;
 use std::path::Path;
 
+use cdenv_core::credentials::CredentialGrants;
 use cdenv_core::{ContainerId, GenerationId, InstallationId, ProfileId, WorkspaceName};
 use serde::Deserialize;
 use thiserror::Error;
@@ -29,6 +30,8 @@ pub struct ProxyTarget {
     generation: GenerationId,
     active: ActiveGeneration,
     state_root: String,
+    credential_runtime: Option<String>,
+    credential_grants: CredentialGrants,
 }
 
 impl ProxyTarget {
@@ -281,6 +284,13 @@ fn load_target(root: &CdenvRoot, workspace: &WorkspaceName) -> Result<ProxyTarge
     }
     let state_root = state_root(active.provisioned().environment_path())
         .ok_or_else(|| unavailable(workspace, ProxyRuntimeError::IdentityMismatch))?;
+    let credentials = crate::credential_status(root, workspace);
+    if credentials.is_unavailable() {
+        return Err(unavailable(workspace, ProxyRuntimeError::IdentityMismatch));
+    }
+    let credential_grants = credentials.grants().clone();
+    let credential_runtime = (!credential_grants.is_empty())
+        .then(|| format!("{state_root}/credentials/{}", active.generation()));
     Ok(ProxyTarget {
         installation: installation.installation_id().clone(),
         workspace: workspace.clone(),
@@ -288,6 +298,8 @@ fn load_target(root: &CdenvRoot, workspace: &WorkspaceName) -> Result<ProxyTarge
         generation: active.generation(),
         active: active.clone(),
         state_root,
+        credential_runtime,
+        credential_grants,
     })
 }
 
@@ -501,6 +513,12 @@ impl ProxyEngine for BollardProxyEngine {
             target.authorized_key(),
             target.provisioned().environment_path().to_owned(),
             target.workspace_folder().to_owned(),
+            target
+                .credential_runtime
+                .clone()
+                .unwrap_or_else(|| "-".to_owned()),
+            serde_json::to_string(&target.credential_grants)
+                .map_err(|_| ProxyRuntimeError::IdentityMismatch)?,
         ];
         self.adapter
             .create_attached_exec(

@@ -10,10 +10,12 @@ use cdenv_cli::{
     CancellationToken, CdenvRoot, CliCommand, CommandLine, CreateWorkspaceRequest,
     CredentialCommandError, CredentialPermissionState, CredentialStatusReport, GitAdapter,
     Installation, LockBehavior, LockGuard, LockMode, ProcessEnvironment, create_workspace,
-    credential_status, ensure_lock_file, mutate_credentials, render_credentials_application,
+    credential_status, credential_supervisor_lease, ensure_lock_file, mutate_credentials,
+    render_credentials_application,
 };
-use cdenv_core::WorkspaceName;
+use cdenv_core::credential_broker::CredentialUserIdentity;
 use cdenv_core::credentials::{CredentialCapability, HttpsOrigin, SshAgentSelector};
+use cdenv_core::{GenerationId, WorkspaceName};
 use clap::Parser;
 use serde_json::Value;
 
@@ -291,6 +293,33 @@ fn explicit_successful_clone_consumes_staged_permission_before_later_work() {
         b"preserved\n"
     );
     assert!(!checkout.join("credential-binding.json").exists());
+}
+
+#[test]
+fn explicit_clone_exposes_bound_lease_for_first_generation_readiness() {
+    let temporary = tempfile::tempdir().expect("tempdir");
+    let root = root(&temporary.path().join("root"));
+    mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
+    clone_workspace(&root, &fake_git(temporary.path(), false), true).expect("clone");
+    let state = cdenv_cli::load_workspace_state(&root.workspace(&project()).state_file())
+        .expect("state")
+        .into_state();
+
+    let lease = credential_supervisor_lease(
+        &root,
+        &state,
+        CredentialUserIdentity {
+            uid: 1000,
+            gid: 1000,
+        },
+        Path::new("/home/dev"),
+        GenerationId::new(1).expect("generation"),
+    )
+    .expect("lease")
+    .expect("configured lease");
+
+    assert_eq!(lease.runtime_directory, "/home/dev/.cdenv/credentials/1");
+    assert!(lease.grants.enabled(CredentialCapability::GitIdentity));
 }
 
 #[test]

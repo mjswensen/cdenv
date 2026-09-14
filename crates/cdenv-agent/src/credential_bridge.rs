@@ -16,6 +16,7 @@ use cdenv_core::credential_broker::{
     CredentialLeaseIdentity, MAX_BROKER_FRAME_BYTES, MAX_BROKER_QUEUED_BYTES,
     MAX_BROKER_QUEUED_FRAMES, MAX_BROKER_STREAMS,
 };
+use cdenv_core::credentials::{CredentialCapability, CredentialGrants};
 use cdenv_core::git_identity::GitIdentityMetadata;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -140,9 +141,14 @@ pub enum CredentialBridgeError {
 /// # Errors
 ///
 /// Rejects unsafe paths/identity, malformed or stalled protocol, saturation, and private I/O.
+#[expect(
+    clippy::too_many_lines,
+    reason = "authenticated setup stays adjacent to the closed bridge dispatch loop"
+)]
 pub async fn serve_credential_bridge<S>(
     stream: S,
     runtime_directory: &Path,
+    grants: &CredentialGrants,
 ) -> Result<(), CredentialBridgeError>
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -168,12 +174,40 @@ where
         UnixListener::bind(&paths.ssh_agent_socket).map_err(|_| CredentialBridgeError::Io)?;
     set_socket_permissions(&paths.credential_socket)?;
     set_socket_permissions(&paths.ssh_agent_socket)?;
+    if grants.enabled(CredentialCapability::GitHttps) {
+        let helper = std::env::current_exe().map_err(|_| CredentialBridgeError::Io)?;
+        let origins = grants
+            .https_origins()
+            .ok_or(BrokerProtocolError::Identity("HTTPS grants"))?
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        crate::ManagedGitCredentialIntegration::refresh(
+            runtime_directory,
+            &helper,
+            &paths.credential_socket,
+            &origins,
+        )
+        .map_err(|_| CredentialBridgeError::Io)?;
+    }
     write_frame(
         &mut writer,
         &BrokerFrame::new(BrokerFrameKind::HelloAck, 0, identity.encode()?)?,
     )
     .await?;
     reconcile_identity_metadata(&mut reader, &mut writer, runtime_directory).await?;
+    write_frame(
+        &mut writer,
+        &BrokerFrame::new(BrokerFrameKind::Health, 0, Vec::new())?,
+    )
+    .await?;
+    let ready = tokio::time::timeout(BROKER_HANDSHAKE_TIMEOUT, read_frame(&mut reader))
+        .await
+        .map_err(|_| CredentialBridgeError::Timeout)??
+        .ok_or(BrokerProtocolError::Truncated)?;
+    if ready.kind != BrokerFrameKind::HealthAck || ready.stream_id != 0 {
+        return Err(BrokerProtocolError::Kind.into());
+    }
 
     let (outgoing_tx, mut outgoing_rx) = mpsc::channel::<QueuedFrame>(MAX_BROKER_QUEUED_FRAMES);
     let byte_admission = Arc::new(Semaphore::new(MAX_BROKER_QUEUED_BYTES));
@@ -728,6 +762,11 @@ impl Drop for EndpointCleanup {
         let _ = remove_verified_socket(&self.paths.credential_socket, self.identity.user.uid);
         let _ = remove_verified_socket(&self.paths.ssh_agent_socket, self.identity.user.uid);
         let _ = remove_identity_metadata(&self.paths.runtime_directory);
+        if let Ok(integration) =
+            crate::ManagedGitCredentialIntegration::verify(&self.paths.runtime_directory)
+        {
+            let _ = integration.remove();
+        }
         let _ = fs::remove_file(marker);
         let _ = fs::remove_dir(&self.paths.runtime_directory);
     }

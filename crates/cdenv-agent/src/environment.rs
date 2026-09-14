@@ -7,6 +7,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
+use cdenv_core::credentials::{CredentialCapability, CredentialGrants};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -127,6 +128,30 @@ impl EnvironmentSnapshot {
         &self.entries
     }
 
+    #[cfg(target_os = "linux")]
+    pub(crate) fn enroll_credentials(
+        &mut self,
+        runtime_directory: &Path,
+        grants: &CredentialGrants,
+    ) -> Result<(), EnvironmentError> {
+        if grants.enabled(CredentialCapability::GitHttps) {
+            crate::ManagedGitCredentialIntegration::verify(runtime_directory)
+                .and_then(|integration| integration.enroll_environment(&mut self.entries))
+                .map_err(|_| EnvironmentError::UnsafeCredentialIntegration)?;
+        }
+        if grants.enabled(CredentialCapability::SshAgent) {
+            let paths = crate::CredentialEndpointPaths {
+                runtime_directory: runtime_directory.to_path_buf(),
+                credential_socket: runtime_directory.join(crate::CREDENTIAL_SOCKET_NAME),
+                ssh_agent_socket: runtime_directory.join(crate::SSH_AGENT_SOCKET_NAME),
+            };
+            crate::ManagedSshAgentEnrollment::verify(&paths, nix::unistd::geteuid().as_raw())
+                .and_then(|enrollment| enrollment.enroll_environment(&mut self.entries))
+                .map_err(|_| EnvironmentError::UnsafeCredentialIntegration)?;
+        }
+        Ok(())
+    }
+
     #[cfg(all(test, target_os = "linux"))]
     pub(crate) fn from_entries(entries: BTreeMap<OsString, OsString>) -> Self {
         Self { entries }
@@ -172,6 +197,33 @@ pub fn run_with_environment(
     let mut command = Command::new(program);
     command.args(arguments);
     environment.apply_to(&mut command);
+    command
+        .status()
+        .map_err(|source| EnvironmentError::ChildProcess { source })
+}
+
+/// Runs a child with the exact snapshot plus verified cdenv-owned credential integrations.
+///
+/// The snapshot's blanket `SSH_` filtering remains authoritative; only the managed
+/// bridge socket is inserted afterwards. No host or container credential is read.
+///
+/// # Errors
+///
+/// Rejects unsafe runtime integrations or snapshot/child failures.
+pub fn run_with_managed_environment(
+    snapshot: &Path,
+    runtime_directory: &Path,
+    grants: &CredentialGrants,
+    program: &OsStr,
+    arguments: &[OsString],
+) -> Result<ExitStatus, EnvironmentError> {
+    let mut environment = EnvironmentSnapshot::load(snapshot)?;
+    environment.enroll_credentials(runtime_directory, grants)?;
+    let mut command = Command::new(program);
+    command
+        .args(arguments)
+        .env_clear()
+        .envs(environment.entries);
     command
         .status()
         .map_err(|source| EnvironmentError::ChildProcess { source })
@@ -227,6 +279,9 @@ pub enum EnvironmentError {
     /// A snapshot or its parent had unsafe ownership, type, or permissions.
     #[error("effective environment snapshot state is not restricted")]
     UnsafeState,
+    /// A cdenv-owned bridge/configuration object was absent or unsafe.
+    #[error("credential integration is unavailable or unsafe")]
+    UnsafeCredentialIntegration,
     /// A child using the effective environment could not be started.
     #[error("cannot start process with effective environment: {source}")]
     ChildProcess {
@@ -817,5 +872,65 @@ pub fn emit_current_environment() -> Result<(), EnvironmentError> {
     #[cfg(not(target_os = "linux"))]
     {
         Err(EnvironmentError::UnsupportedOperatingSystem)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod managed_tests {
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+
+    use cdenv_core::credentials::{HttpsOrigin, SshAgentSelector};
+
+    use super::*;
+
+    #[test]
+    fn managed_child_receives_only_verified_enabled_integrations() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        let capture = capture_environment(&EnvironmentCaptureRequest {
+            generation: "managed".to_owned(),
+            state_directory: temporary.path().join("environment").display().to_string(),
+            probe: EnvironmentProbe::None,
+            remote_environment: BTreeMap::new(),
+        })
+        .expect("capture");
+        let runtime = temporary.path().join("credentials");
+        fs::create_dir(&runtime).expect("runtime");
+        fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700)).expect("runtime mode");
+        let credential_socket = runtime.join(crate::CREDENTIAL_SOCKET_NAME);
+        let agent_socket = runtime.join(crate::SSH_AGENT_SOCKET_NAME);
+        let _credential =
+            std::os::unix::net::UnixListener::bind(&credential_socket).expect("credential socket");
+        let _agent = std::os::unix::net::UnixListener::bind(&agent_socket).expect("agent socket");
+        fs::set_permissions(&credential_socket, fs::Permissions::from_mode(0o600))
+            .expect("credential mode");
+        fs::set_permissions(&agent_socket, fs::Permissions::from_mode(0o600)).expect("agent mode");
+        crate::ManagedGitCredentialIntegration::refresh(
+            &runtime,
+            Path::new("/bin/false"),
+            &credential_socket,
+            &[HttpsOrigin::parse("https://git.example").expect("origin")],
+        )
+        .expect("Git integration");
+        let mut grants = CredentialGrants::default();
+        grants
+            .enable_https(&[HttpsOrigin::parse("https://git.example").expect("origin")])
+            .expect("HTTPS grant");
+        grants.enable_ssh_agent(SshAgentSelector::automatic());
+        let script = format!(
+            "test \"$SSH_AUTH_SOCK\" = '{}' && test \"$GIT_CONFIG_COUNT\" -ge 1",
+            agent_socket.display()
+        );
+
+        let status = run_with_managed_environment(
+            Path::new(&capture.snapshot_path),
+            &runtime,
+            &grants,
+            OsStr::new("/bin/sh"),
+            &[OsString::from("-c"), OsString::from(script)],
+        )
+        .expect("managed child");
+
+        assert!(status.success());
     }
 }

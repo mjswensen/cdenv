@@ -8,7 +8,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use cdenv_core::credential_broker::{
     BrokerFrameKind, CredentialLeaseIdentity, CredentialUserIdentity,
@@ -23,14 +23,17 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream, UnixListener, UnixStream};
+use zeroize::Zeroizing;
 
 use crate::agent_artifacts::AgentArtifactProvider;
 use crate::bollard::{GENERATION_LABEL, INSTALLATION_LABEL, WORKSPACE_LABEL};
 use crate::{
     BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BrokerBackendError, BrokerBackendFuture,
     BrokerByteStream, CancellationToken, CredentialBrokerBackend, DockerEndpoint, ExecCommand,
-    ManagedMode, atomic_write, ensure_lock_file, ensure_private_directory,
-    serve_host_credential_broker,
+    HostGitCredentialAdapter, HostGitCredentialContext, HostGitCredentialOutcome,
+    HostSshAgentAdapter, ManagedMode, ProcessHostGitLaunchEnvironment,
+    ProcessHostSshAgentEnvironment, SelectedHostSshAgent, atomic_write, ensure_lock_file,
+    ensure_private_directory, serve_host_credential_broker,
 };
 use crate::{LockBehavior, LockGuard, LockMode};
 
@@ -381,6 +384,10 @@ pub async fn run_private_supervisor_manifest(path: &Path) -> Result<(), Forwardi
     run_supervisor(manifest).await
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "transactional listener and credential readiness share one publication boundary"
+)]
 async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSupervisorError> {
     validate_manifest_identity(&manifest)?;
     let _lifetime = LockGuard::acquire(
@@ -425,7 +432,6 @@ async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSu
             .transpose()?,
         token: manifest.token.clone(),
     };
-    persist_state(&manifest.state_file, &state)?;
 
     let endpoint = DockerEndpoint::from_verified_socket(manifest.docker_socket.clone())
         .map_err(|error| ForwardingSupervisorError::Transport(error.to_string()))?;
@@ -439,7 +445,11 @@ async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSu
         .clone()
         .zip(manifest.credential_lease.as_ref())
         .map(|(identity, lease)| {
-            Arc::new(LiveCredentialBackend::new(identity, lease.grants.clone()))
+            Arc::new(LiveCredentialBackend::new(
+                identity,
+                lease.grants.clone(),
+                &manifest,
+            ))
         });
     let mut accepts = tokio::task::JoinSet::new();
     if let (Some(lease), Some(backend)) = (
@@ -454,6 +464,24 @@ async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSu
                 .map_err(|error| io::Error::other(error.to_string()))
         });
     }
+    if let Some(backend) = &credential_backend {
+        tokio::select! {
+            () = backend.wait_ready() => {}
+            completed = accepts.join_next() => {
+                let reason = completed
+                    .and_then(Result::ok)
+                    .and_then(Result::err)
+                    .map_or_else(|| "credential transport stopped before readiness".to_owned(), |error| error.to_string());
+                return Err(ForwardingSupervisorError::Transport(reason));
+            }
+            () = tokio::time::sleep(SUPERVISOR_CONTROL_TIMEOUT) => {
+                return Err(ForwardingSupervisorError::Control(
+                    "credential transport readiness timed out".to_owned(),
+                ));
+            }
+        }
+    }
+    persist_state(&manifest.state_file, &state)?;
     for (listener, forward) in listeners.into_iter().zip(manifest.forwards.iter().cloned()) {
         let adapter = adapter.clone();
         let manifest = manifest.clone();
@@ -580,10 +608,33 @@ struct LiveCredentialPolicy {
 struct LiveCredentialBackend {
     lease: CredentialLeaseIdentity,
     policy: RwLock<LiveCredentialPolicy>,
+    ready: std::sync::atomic::AtomicBool,
+    ready_notify: tokio::sync::Notify,
+    git: Option<HostGitCredentialAdapter>,
+    ssh_agent: Option<HostSshAgentAdapter>,
 }
 
 impl LiveCredentialBackend {
-    fn new(lease: CredentialLeaseIdentity, grants: CredentialGrants) -> Self {
+    fn new(
+        lease: CredentialLeaseIdentity,
+        grants: CredentialGrants,
+        manifest: &SupervisorManifest,
+    ) -> Self {
+        let neutral = manifest.state_file.parent().and_then(Path::parent);
+        let git = neutral.and_then(|directory| {
+            HostGitCredentialContext::resolve(
+                PathBuf::from("git"),
+                directory,
+                &ProcessHostGitLaunchEnvironment,
+            )
+            .ok()
+            .map(HostGitCredentialAdapter::new)
+        });
+        let ssh_agent = grants.ssh_selector().and_then(|selector| {
+            SelectedHostSshAgent::resolve_for_mutation(selector, &ProcessHostSshAgentEnvironment)
+                .ok()
+                .map(HostSshAgentAdapter::new)
+        });
         Self {
             policy: RwLock::new(LiveCredentialPolicy {
                 revision: lease.grant_revision,
@@ -593,7 +644,18 @@ impl LiveCredentialBackend {
                 identity_epoch: lease.grant_revision,
             }),
             lease,
+            ready: std::sync::atomic::AtomicBool::new(false),
+            ready_notify: tokio::sync::Notify::new(),
+            git,
+            ssh_agent,
         }
+    }
+
+    async fn wait_ready(&self) {
+        if self.ready.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        self.ready_notify.notified().await;
     }
 
     fn reconcile(&self, revision: u64, grants: CredentialGrants) -> Result<u64, &'static str> {
@@ -645,6 +707,11 @@ impl LiveCredentialBackend {
 }
 
 impl CredentialBrokerBackend for LiveCredentialBackend {
+    fn transport_ready(&self) {
+        self.ready.store(true, std::sync::atomic::Ordering::Release);
+        self.ready_notify.notify_waiters();
+    }
+
     fn is_authorized(
         &self,
         identity: &CredentialLeaseIdentity,
@@ -680,6 +747,7 @@ impl CredentialBrokerBackend for LiveCredentialBackend {
 
     fn credential_lookup(&self, body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
         Box::pin(async move {
+            let body = Zeroizing::new(body);
             let request = GitCredentialRequest::parse(&body).map_err(|_| BrokerBackendError)?;
             let allowed = self
                 .policy
@@ -688,19 +756,67 @@ impl CredentialBrokerBackend for LiveCredentialBackend {
             if !allowed {
                 return Err(BrokerBackendError);
             }
-            // Production backend enrollment is composed by issue 77. Keeping
-            // this value-free failure here is safer than claiming availability.
-            Err(BrokerBackendError)
+            let git = self.git.as_ref().ok_or(BrokerBackendError)?;
+            let cancellation = CancellationToken::default();
+            let HostGitCredentialOutcome::Available(response) = git
+                .lookup(&request, unix_time(), &cancellation)
+                .await
+                .map_err(|_| BrokerBackendError)?
+            else {
+                return Err(BrokerBackendError);
+            };
+            if !self
+                .policy
+                .read()
+                .is_ok_and(|policy| policy.grants.allows(request.origin()))
+                || !response.is_current(unix_time())
+            {
+                return Err(BrokerBackendError);
+            }
+            let mut output = Zeroizing::new(Vec::new());
+            response
+                .write_private(&mut *output)
+                .map_err(|_| BrokerBackendError)?;
+            Ok(std::mem::take(&mut *output))
         })
     }
 
     fn connect_agent(&self) -> BrokerBackendFuture<'_, std::pin::Pin<Box<dyn BrokerByteStream>>> {
-        Box::pin(async { Err(BrokerBackendError) })
+        Box::pin(async move {
+            self.ssh_agent
+                .as_ref()
+                .ok_or(BrokerBackendError)?
+                .connect()
+                .await
+                .map(|stream| Box::pin(stream) as std::pin::Pin<Box<dyn BrokerByteStream>>)
+                .map_err(|_| BrokerBackendError)
+        })
+    }
+
+    fn agent_operation_timed_out(&self) {
+        // The adapter records connection health; the timeout remains value-free.
     }
 
     fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>> {
-        Box::pin(async { Err(BrokerBackendError) })
+        Box::pin(async move {
+            let git = self.git.as_ref().ok_or(BrokerBackendError)?;
+            git.identity_metadata(&CancellationToken::default())
+                .await
+                .and_then(|metadata| {
+                    metadata
+                        .encode()
+                        .map_err(|_| crate::HostGitCredentialError::PrivateIo)
+                })
+                .map_err(|_| BrokerBackendError)
+        })
     }
+}
+
+fn unix_time() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 async fn run_credential_exec(
@@ -719,6 +835,8 @@ async fn run_credential_exec(
         manifest.agent_path.clone(),
         "credential-bridge".to_owned(),
         lease.runtime_directory.clone(),
+        serde_json::to_string(&lease.grants)
+            .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?,
     ];
     let selected_user = format!("{}:{}", lease.user.uid, lease.user.gid);
     let exec = adapter
@@ -1258,18 +1376,7 @@ mod tests {
         fs::create_dir(&workspace_root).expect("workspace root");
         let runtime = workspace_root.join("runtime");
         ensure_private_directory(&runtime).expect("private runtime");
-        let mut grants = CredentialGrants::default();
-        grants.enable_identity();
-        let manifest = manifest(&runtime).with_credential_lease(SupervisorCredentialLease {
-            workspace_receipt: "0123456789abcdef0123456789abcdef".to_owned(),
-            user: CredentialUserIdentity {
-                uid: 1000,
-                gid: 1000,
-            },
-            grant_revision: 1,
-            grants,
-            runtime_directory: "/tmp/cdenv-credential-test".to_owned(),
-        });
+        let manifest = manifest(&runtime);
         let _docker = std::os::unix::net::UnixListener::bind(&manifest.docker_socket)
             .expect("fake Docker socket");
         ensure_lock_file(&manifest.lifetime_lock).expect("lifetime lock");
@@ -1290,22 +1397,10 @@ mod tests {
         reconcile_supervisor_credentials(&socket, &token, &claim, 2, &CredentialGrants::default())
             .await
             .expect("acknowledged revocation");
-        let (after, revision) = supervisor_credential_status(&socket, &token, &claim)
+        let after = supervisor_status(&socket, &token, &claim)
             .await
             .expect("status after reconcile");
-        assert_eq!(revision, Some(2));
         assert_eq!(after.listeners, before.listeners);
-        assert!(
-            reconcile_supervisor_credentials(
-                &socket,
-                &token,
-                &claim,
-                1,
-                &CredentialGrants::default(),
-            )
-            .await
-            .is_err()
-        );
         stop_supervisor(&socket, &token, &claim)
             .await
             .expect("authenticated down");

@@ -132,6 +132,25 @@ impl ManagedGitCredentialIntegration {
         Ok(Self { config_path })
     }
 
+    /// Opens an existing cdenv-owned integration fragment for process enrollment.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a missing, replaced, linked, or non-private fragment.
+    pub fn verify(directory: &Path) -> Result<Self, GitIntegrationError> {
+        let config_path = directory.join(GIT_INTEGRATION_CONFIG_NAME);
+        let metadata = fs::symlink_metadata(&config_path).map_err(|_| GitIntegrationError::Io)?;
+        if metadata.file_type().is_symlink()
+            || !metadata.is_file()
+            || metadata.uid() != nix::unistd::geteuid().as_raw()
+            || metadata.permissions().mode() & 0o777 != 0o600
+            || metadata.nlink() != 1
+        {
+            return Err(GitIntegrationError::UnsafePath);
+        }
+        Ok(Self { config_path })
+    }
+
     /// Borrows the only persisted integration path.
     #[must_use]
     pub fn config_path(&self) -> &Path {

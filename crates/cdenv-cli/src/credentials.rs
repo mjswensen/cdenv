@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cdenv_core::credentials::{
@@ -192,6 +192,12 @@ impl CredentialStatusReport {
     #[must_use]
     pub const fn grants(&self) -> &CredentialGrants {
         &self.grants
+    }
+
+    /// Returns the current durable monotonic revision, when permission exists.
+    #[must_use]
+    pub const fn revision(&self) -> Option<u64> {
+        self.revision
     }
 
     /// Returns staged/bound/stale permission state without starting services.
@@ -699,6 +705,41 @@ pub(crate) fn bind_created_workspace(
         receipt: ensure_receipt(root, state)?,
     };
     persist_change(root, &mut record, Some(&previous))
+}
+
+/// Builds the exact generation lease used by production readiness.
+///
+/// This reads only already-bound policy. It never creates, broadens, or repairs a
+/// grant and returns `None` when every capability is disabled.
+#[doc(hidden)]
+pub fn credential_supervisor_lease(
+    root: &CdenvRoot,
+    state: &WorkspaceState,
+    user: cdenv_core::credential_broker::CredentialUserIdentity,
+    home: &Path,
+    generation: cdenv_core::GenerationId,
+) -> Result<Option<crate::SupervisorCredentialLease>, CredentialCommandError> {
+    let Some(record) = load_record(root, state.name())? else {
+        return Ok(None);
+    };
+    validate_scope(&record, state.installation_id(), state.name())?;
+    if record.grants.is_empty() {
+        return Ok(None);
+    }
+    if !bound_matches(root, &record, state)? || !home.is_absolute() || home == Path::new("/") {
+        return Err(CredentialCommandError::Binding);
+    }
+    let PermissionBinding::Bound { receipt } = &record.binding else {
+        return Err(CredentialCommandError::Binding);
+    };
+    let runtime_directory: PathBuf = home.join(".cdenv/credentials").join(generation.to_string());
+    Ok(Some(crate::SupervisorCredentialLease {
+        workspace_receipt: receipt.nonce.clone(),
+        user,
+        grant_revision: record.revision,
+        grants: record.grants,
+        runtime_directory: runtime_directory.display().to_string(),
+    }))
 }
 
 fn ensure_receipt(

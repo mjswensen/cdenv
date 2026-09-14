@@ -218,14 +218,16 @@ read-only permission facts, bounded/redacted Git credential types, and the
 versioned private Docker Exec transport, trusted noninteractive host Git lookup,
 and the static lookup-only helper with reversible exact-origin process
 configuration. The static agent provisions owner-only, stable per-generation Unix
-endpoints and the workspace supervisor can own this service independently of TCP
-forwarding and SSH sessions.
-**Not implemented:** production dispatch/revocation, SSH-agent selection and
-environment injection, identity defaults, and lifecycle/rebuild lease handoff. A saved grant must not be
-interpreted as working container authentication; see [ADR 0002](adr/0002-opt-in-host-capabilities.md)
-and the [operations guide](operations.md#host-credential-permissions-issue-68).
+endpoints and the workspace supervisor owns this service independently of TCP
+forwarding and SSH sessions. Production create/up establishes authenticated
+credential readiness before the first container hook, managed lifecycle and SSH
+children receive only enabled integrations, and down stops the bridge while
+retaining grants. Rebuild authority remains generation scoped. Complete
+cross-platform authenticated workflow evidence is tracked by issue 78; see
+[ADR 0002](adr/0002-opt-in-host-capabilities.md) and the
+[operations guide](operations.md#host-credential-permissions-issue-68).
 
-The future runtime guarantee is limited to managed lifecycle/SSH processes and
+The runtime guarantee is limited to managed lifecycle/SSH processes and
 their descendants in the verified primary container. It excludes arbitrary
 `docker exec`, other users, entrypoints, and Compose sidecars. It will not alter
 profile defaults, perform Git mutations, or enable signing/GPG/Docker capabilities.

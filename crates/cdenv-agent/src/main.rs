@@ -25,6 +25,8 @@ async fn main() -> ExitCode {
         authorized_key,
         environment,
         workspace,
+        credential_runtime,
+        credential_grants,
     ] = arguments.as_slice()
         && command == "ssh-server"
         && stdio == "--stdio"
@@ -34,15 +36,24 @@ async fn main() -> ExitCode {
             Path::new(authorized_key),
             Path::new(environment),
             Path::new(workspace),
+            credential_runtime,
+            credential_grants,
         )
         .await;
     }
     #[cfg(target_os = "linux")]
-    if let [command, runtime] = arguments.as_slice()
+    if let [command, runtime, grants] = arguments.as_slice()
         && command == "credential-bridge"
     {
+        let Some(grants) = grants
+            .to_str()
+            .and_then(|value| serde_json::from_str(value).ok())
+        else {
+            return ExitCode::FAILURE;
+        };
         let stream = tokio::io::join(tokio::io::stdin(), tokio::io::stdout());
-        return match cdenv_agent::serve_credential_bridge(stream, Path::new(runtime)).await {
+        return match cdenv_agent::serve_credential_bridge(stream, Path::new(runtime), &grants).await
+        {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("cdenv-agent: credential bridge failed: {error}");
@@ -90,20 +101,8 @@ async fn main() -> ExitCode {
             }
         };
     }
-    if let [command, snapshot, separator, program, rest @ ..] = arguments.as_slice()
-        && command == "run-environment"
-        && separator == "--"
-    {
-        return match cdenv_agent::run_with_environment(Path::new(snapshot), program, rest) {
-            Ok(status) => status
-                .code()
-                .and_then(|code| u8::try_from(code).ok())
-                .map_or(ExitCode::FAILURE, ExitCode::from),
-            Err(error) => {
-                eprintln!("cdenv-agent: {error}");
-                ExitCode::FAILURE
-            }
-        };
+    if let Some(status) = run_environment_command(&arguments) {
+        return status;
     }
 
     let result = run_machine_command(&arguments);
@@ -117,6 +116,56 @@ async fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_environment_command(arguments: &[OsString]) -> Option<ExitCode> {
+    if let [
+        command,
+        snapshot,
+        runtime,
+        grants,
+        separator,
+        program,
+        rest @ ..,
+    ] = arguments
+        && command == "run-managed-environment"
+        && separator == "--"
+    {
+        let grants = grants
+            .to_str()
+            .and_then(|value| serde_json::from_str(value).ok())?;
+        let status = cdenv_agent::run_with_managed_environment(
+            Path::new(snapshot),
+            Path::new(runtime),
+            &grants,
+            program,
+            rest,
+        )
+        .ok()?;
+        return Some(exit_status(status));
+    }
+    let [command, snapshot, separator, program, rest @ ..] = arguments else {
+        return None;
+    };
+    if command != "run-environment" || separator != "--" {
+        return None;
+    }
+    Some(
+        match cdenv_agent::run_with_environment(Path::new(snapshot), program, rest) {
+            Ok(status) => exit_status(status),
+            Err(error) => {
+                eprintln!("cdenv-agent: {error}");
+                ExitCode::FAILURE
+            }
+        },
+    )
+}
+
+fn exit_status(status: std::process::ExitStatus) -> ExitCode {
+    status
+        .code()
+        .and_then(|code| u8::try_from(code).ok())
+        .map_or(ExitCode::FAILURE, ExitCode::from)
 }
 
 #[cfg(target_os = "linux")]
@@ -208,7 +257,7 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
                     lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))
                 }),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY|git-credential-helper SOCKET get|store|erase|git-with-identity METADATA REAL_GIT -- GIT_ARGS...>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|run-managed-environment SNAPSHOT RUNTIME GRANTS -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE RUNTIME GRANTS|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY GRANTS|git-credential-helper SOCKET get|store|erase|git-with-identity METADATA REAL_GIT -- GIT_ARGS...>"
                     .to_owned(),
             ),
         })
@@ -220,12 +269,23 @@ async fn ssh_server(
     authorized_key: &Path,
     environment: &Path,
     workspace: &Path,
+    credential_runtime: &std::ffi::OsStr,
+    credential_grants: &std::ffi::OsStr,
 ) -> ExitCode {
+    let Some(grants) = credential_grants
+        .to_str()
+        .and_then(|value| serde_json::from_str(value).ok())
+    else {
+        return ExitCode::FAILURE;
+    };
     let request = cdenv_agent::SshServerRequest {
         host_key: host_key.to_path_buf(),
         authorized_key: authorized_key.to_path_buf(),
         environment: environment.to_path_buf(),
         workspace: workspace.to_path_buf(),
+        credential_runtime: (credential_runtime != "-")
+            .then(|| Path::new(credential_runtime).to_path_buf()),
+        credential_grants: grants,
     };
     let result = match cdenv_agent::SshServerConfig::load(&request) {
         Ok(config) => {

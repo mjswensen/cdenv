@@ -18,6 +18,8 @@ async fn main() -> ExitCode {
         authorized_key: PathBuf::from(authorized_key),
         environment: PathBuf::from(environment),
         workspace: PathBuf::from(workspace),
+        credential_runtime: None,
+        credential_grants: cdenv_core::credentials::CredentialGrants::default(),
     };
     let result = match SshServerConfig::load(&request) {
         Ok(config) => {

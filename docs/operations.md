@@ -194,11 +194,12 @@ cdenv credentials enable project ssh-agent
 cdenv credentials enable project git-identity
 cdenv credentials status project --json  # staged; transport inactive
 cdenv create --name project https://github.com/example/project.git
-cdenv credentials status project        # bound; integration unavailable
+cdenv credentials status project        # bound; transport healthy after readiness
 ```
 
-This example currently demonstrates **permission binding and host cloning**, not
-container credential forwarding. A successful explicitly named clone binds the
+The first create provisions and authenticates the generation-scoped bridge before
+`onCreateCommand`, so a private dependency fetch can succeed without a prior SSH
+connection or failed create. A successful explicitly named clone binds the
 staged record before any future container lifecycle stage. Failed clones retain
 staged bytes for retry. A later failure retains the checkout. An automatic name
 cannot consume a staged grant; if that conflict is discovered after clone, the

@@ -48,10 +48,10 @@ use crate::{
     RebuildPlanner, RebuildRequest, RebuildRollbackRequest, ReconciliationPlanner,
     ReconciliationRequest, RecordedComposeRequest, RepoRelativeConfigPath, RuntimeReconciliation,
     ScopedForwardingSupervisor, SupervisorClaim, SupervisorForward, SupervisorManifest,
-    UidGidMutation, WorkspaceState, WorkspaceStateError, credential_status,
-    discover_and_read_config, down_workspace, ensure_workspace_ssh_identity, load_supervisor_state,
-    load_workspace_ssh_assets, load_workspace_state, rebuild_workspace, reconcile_workspace,
-    start_detached_supervisor, stop_supervisor, supervisor_control_token, supervisor_status,
+    UidGidMutation, WorkspaceState, WorkspaceStateError, discover_and_read_config, down_workspace,
+    ensure_workspace_ssh_identity, load_supervisor_state, load_workspace_ssh_assets,
+    load_workspace_state, rebuild_workspace, reconcile_workspace, start_detached_supervisor,
+    stop_supervisor, supervisor_control_token, supervisor_status,
 };
 
 const PROFILE: &str = "cdenv-devcontainer-v1";
@@ -440,12 +440,6 @@ impl ReconciliationPlanner for ProductionPlanner<'_> {
         desired: &PreparedDesiredPlan<Self::Plan>,
         _feature_policy: FeatureSourcePolicy,
     ) -> Result<(), Self::PreflightError> {
-        let credentials = credential_status(self.root, self.workspace);
-        if !credentials.grants().is_empty() {
-            return Err(message(
-                "configured credential capabilities require integration that is unavailable; container lifecycle was not started",
-            ));
-        }
         if self.cancellation.is_cancelled() {
             return Err(message("environment reconciliation was cancelled"));
         }
@@ -497,12 +491,6 @@ impl RebuildPlanner for ProductionPlanner<'_> {
         &self,
         desired: &PreparedRebuildPlan<Self::Plan>,
     ) -> Result<(), Self::PreflightError> {
-        let credentials = credential_status(self.root, self.workspace);
-        if !credentials.grants().is_empty() {
-            return Err(message(
-                "configured credential capabilities require integration that is unavailable; container lifecycle was not started",
-            ));
-        }
         if self.cancellation.is_cancelled() {
             return Err(message("environment reconciliation was cancelled"));
         }
@@ -925,6 +913,31 @@ impl ProductionEnvironment<'_> {
             .capture_for_readiness(&environment_request, self.cancellation)
             .await
             .map_err(message)?;
+        let persisted = load_workspace_state(&self.root.workspace(self.workspace).state_file())
+            .map_err(message)?
+            .into_state();
+        let credential_lease = crate::credentials::credential_supervisor_lease(
+            self.root,
+            &persisted,
+            cdenv_core::credential_broker::CredentialUserIdentity {
+                uid: provisioned.identity.uid,
+                gid: provisioned.identity.gid,
+            },
+            Path::new(&provisioned.identity.home),
+            facts.generation,
+        )
+        .map_err(message)?;
+        let forwarding = reconcile_forwarding(
+            self.root,
+            self.workspace,
+            &self.installation,
+            &facts,
+            &provisioned,
+            &plan.ports,
+            previous.map(ActiveGeneration::forwarding),
+            credential_lease.as_ref(),
+        )
+        .await?;
         execute_lifecycle(
             &engine,
             &facts.container,
@@ -936,6 +949,7 @@ impl ProductionEnvironment<'_> {
             transition,
             previous.is_none(),
             LifecycleExecution::Foreground,
+            credential_lease.as_ref(),
             self.cancellation,
         )
         .await?;
@@ -943,16 +957,6 @@ impl ProductionEnvironment<'_> {
             .recapture_for_ssh(&environment_request, &initial, self.cancellation)
             .await
             .map_err(message)?;
-        let forwarding = reconcile_forwarding(
-            self.root,
-            self.workspace,
-            &self.installation,
-            &facts,
-            &provisioned,
-            &plan.ports,
-            previous.map(ActiveGeneration::forwarding),
-        )
-        .await?;
         execute_lifecycle(
             &engine,
             &facts.container,
@@ -964,6 +968,7 @@ impl ProductionEnvironment<'_> {
             transition,
             previous.is_none(),
             LifecycleExecution::Background,
+            credential_lease.as_ref(),
             self.cancellation,
         )
         .await?;
@@ -1012,6 +1017,10 @@ impl ProductionEnvironment<'_> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "generation, provisioning, forwarding, and credential identities remain explicit"
+)]
 async fn reconcile_forwarding(
     root: &CdenvRoot,
     workspace: &WorkspaceName,
@@ -1020,6 +1029,7 @@ async fn reconcile_forwarding(
     provisioned: &crate::AgentProvisioningFacts,
     ports: &cdenv_devcontainer::PortPlan,
     previous: Option<&ActiveForwarding>,
+    credential_lease: Option<&crate::SupervisorCredentialLease>,
 ) -> Result<ActiveForwarding, WorkflowMessage> {
     let desired = DesiredForwardingPlan::from_port_plan(ports).map_err(message)?;
     let paths = root.workspace(workspace);
@@ -1032,11 +1042,14 @@ async fn reconcile_forwarding(
         agent_build_id: &provisioned.build_id,
         agent_protocol: provisioned.protocol_version,
     };
-    if previous.is_some_and(|previous| previous.requested() == desired.requested())
+    if credential_lease.is_none()
+        && previous.is_some_and(|previous| previous.requested() == desired.requested())
         && let Ok(state) = load_supervisor_state(&paths.supervisor_state_file())
     {
         let token = supervisor_control_token(&state).to_owned();
-        if let Ok(live) = supervisor_status(&paths.supervisor_socket(), &token, &claim).await {
+        if let Ok((live, None)) =
+            crate::supervisor_credential_status(&paths.supervisor_socket(), &token, &claim).await
+        {
             return active_forwarding(&desired, &host_build, &live);
         }
     }
@@ -1049,7 +1062,7 @@ async fn reconcile_forwarding(
             .await
             .map_err(message)?;
     }
-    if desired.is_empty() {
+    if desired.is_empty() && credential_lease.is_none() {
         return Ok(ActiveForwarding::new(None, Vec::new(), Vec::new()));
     }
     let state = match start_forwarding_supervisor(
@@ -1060,6 +1073,7 @@ async fn reconcile_forwarding(
         provisioned,
         &host_build,
         desired.requested(),
+        credential_lease,
     )
     .await
     {
@@ -1074,6 +1088,7 @@ async fn reconcile_forwarding(
                     provisioned,
                     &host_build,
                     &rollback,
+                    credential_lease,
                 )
                 .await;
             }
@@ -1083,6 +1098,10 @@ async fn reconcile_forwarding(
     active_forwarding(&desired, &host_build, &state)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the detached supervisor receives each verified identity explicitly"
+)]
 async fn start_forwarding_supervisor(
     root: &CdenvRoot,
     workspace: &WorkspaceName,
@@ -1091,6 +1110,7 @@ async fn start_forwarding_supervisor(
     provisioned: &crate::AgentProvisioningFacts,
     host_build: &cdenv_core::AgentBuildId,
     requested: &[DeclaredForward],
+    credential_lease: Option<&crate::SupervisorCredentialLease>,
 ) -> Result<crate::SupervisorState, WorkflowMessage> {
     let endpoint = DockerEndpoint::resolve(&ProcessDockerEnvironment).map_err(message)?;
     let paths = root.workspace(workspace);
@@ -1119,6 +1139,11 @@ async fn start_forwarding_supervisor(
         forwards,
     )
     .map_err(message)?;
+    let manifest = if let Some(lease) = credential_lease {
+        manifest.with_credential_lease(lease.clone())
+    } else {
+        manifest
+    };
     start_detached_supervisor(&manifest).await.map_err(message)
 }
 
@@ -1173,6 +1198,7 @@ async fn execute_lifecycle(
     transition: EnvironmentTransition,
     new_generation: bool,
     execution: LifecycleExecution,
+    credential_lease: Option<&crate::SupervisorCredentialLease>,
     cancellation: &CancellationToken,
 ) -> Result<(), WorkflowMessage> {
     let mut stages = Vec::new();
@@ -1200,7 +1226,7 @@ async fn execute_lifecycle(
                 background.push_str(")||exit $?;");
                 continue;
             }
-            let command = lifecycle_agent_command(agent, environment, script);
+            let command = lifecycle_agent_command(agent, environment, script, credential_lease)?;
             let output = engine
                 .execute(
                     crate::ExecCommand {
@@ -1224,7 +1250,7 @@ async fn execute_lifecycle(
         }
     }
     if !background.is_empty() {
-        let command = lifecycle_agent_command(agent, environment, background);
+        let command = lifecycle_agent_command(agent, environment, background, credential_lease)?;
         let exec = crate::ExecCommand {
             container,
             command: &command,
@@ -1241,17 +1267,31 @@ async fn execute_lifecycle(
     Ok(())
 }
 
-fn lifecycle_agent_command(agent: &str, environment: &str, script: String) -> Vec<String> {
-    vec![
-        agent.to_owned(),
-        "run-environment".to_owned(),
-        environment.to_owned(),
+fn lifecycle_agent_command(
+    agent: &str,
+    environment: &str,
+    script: String,
+    credential_lease: Option<&crate::SupervisorCredentialLease>,
+) -> Result<Vec<String>, WorkflowMessage> {
+    let mut command = vec![agent.to_owned()];
+    if let Some(lease) = credential_lease {
+        command.extend([
+            "run-managed-environment".to_owned(),
+            environment.to_owned(),
+            lease.runtime_directory.clone(),
+            serde_json::to_string(&lease.grants).map_err(message)?,
+        ]);
+    } else {
+        command.extend(["run-environment".to_owned(), environment.to_owned()]);
+    }
+    command.extend([
         "--".to_owned(),
         "/bin/sh".to_owned(),
         "-c".to_owned(),
         script,
         "--".to_owned(),
-    ]
+    ]);
+    Ok(command)
 }
 
 fn lifecycle_group_script(group: &LifecycleCommand) -> Result<String, WorkflowMessage> {

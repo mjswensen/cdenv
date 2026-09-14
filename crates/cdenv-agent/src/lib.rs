@@ -29,7 +29,7 @@ pub use credential_bridge::{
 pub use environment::{
     EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError, EnvironmentProbe,
     EnvironmentSnapshot, EnvironmentTemplate, EnvironmentTemplateSegment, capture_environment,
-    emit_current_environment, run_with_environment,
+    emit_current_environment, run_with_environment, run_with_managed_environment,
 };
 pub use forwarding::{
     ForwardTarget, ForwardingError, MAXIMUM_FORWARD_HOST_BYTES, bridge_forwarding_stream,

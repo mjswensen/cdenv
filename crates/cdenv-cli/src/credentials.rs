@@ -5,9 +5,10 @@
 //! transport or runs a helper. A grant for an active generation fails readiness
 //! explicitly instead of claiming to have installed a working integration.
 
+use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Write};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -130,9 +131,9 @@ pub enum CredentialCommandError {
     /// Revision exhaustion fails rather than wrapping and reusing old authority.
     #[error("credential permission revision is exhausted")]
     Revision,
-    /// No production service coordinator currently installs this integration.
+    /// The verified generation has no authenticated credential transport to reconcile.
     #[error(
-        "permission saved, but live credential integration is unavailable in this build: production up/lifecycle/supervisor wiring is not implemented; no credential bridge was started"
+        "permission saved, but live credential reconciliation is unavailable; run `cdenv up` to enroll or repair this environment, then retry"
     )]
     RuntimeUnavailable,
     /// Disk revocation is not a claim of confirmed live revocation.
@@ -160,6 +161,17 @@ pub enum CredentialPermissionState {
     Unavailable,
 }
 
+/// Value-free health facts for one independently configured capability.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CredentialCapabilityStatus {
+    configured: bool,
+    bound: bool,
+    active: bool,
+    transport: &'static str,
+    backend: &'static str,
+}
+
 /// Safe facts shared by credentials status, list/status, and doctor.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -169,8 +181,7 @@ pub struct CredentialStatusReport {
     permission: CredentialPermissionState,
     revision: Option<u64>,
     grants: CredentialGrants,
-    // There is intentionally no inferred healthy/backend-success state. The
-    // production broker is not implemented and status never tests credentials.
+    capabilities: BTreeMap<CredentialCapability, CredentialCapabilityStatus>,
     transport: &'static str,
     backend: &'static str,
     message: Option<String>,
@@ -191,13 +202,14 @@ impl CredentialStatusReport {
 
     /// Returns a concise shared human summary of actual implemented facts.
     #[must_use]
-    pub const fn summary(&self) -> &'static str {
+    pub fn summary(&self) -> &'static str {
         match self.permission {
             CredentialPermissionState::Unavailable => "permission unavailable",
             CredentialPermissionState::Stale => "stale permission; inactive",
             _ if self.grants.is_empty() => "disabled; inactive",
             CredentialPermissionState::Staged => "staged; inactive",
             CredentialPermissionState::BindingPending => "binding pending; inactive",
+            _ if self.transport == "healthy" => "bound; transport healthy; backend untested",
             _ => "bound permission; integration unavailable",
         }
     }
@@ -212,11 +224,11 @@ impl CredentialStatusReport {
 
     /// Reports an inspection or identity failure, not mere backend uncertainty.
     #[must_use]
-    pub const fn is_unavailable(&self) -> bool {
+    pub fn is_unavailable(&self) -> bool {
         matches!(
             self.permission,
             CredentialPermissionState::Unavailable | CredentialPermissionState::Stale
-        )
+        ) || self.transport == "unavailable"
     }
 }
 
@@ -233,7 +245,13 @@ pub fn credential_status(root: &CdenvRoot, name: &WorkspaceName) -> CredentialSt
             permission: CredentialPermissionState::Unavailable,
             revision: None,
             grants: CredentialGrants::default(),
-            transport: "inactive",
+            capabilities: capability_statuses(
+                &CredentialGrants::default(),
+                CredentialPermissionState::Unavailable,
+                "unavailable",
+                "uninspected",
+            ),
+            transport: "unavailable",
             backend: "uninspected",
             message: Some(error.to_string()),
         },
@@ -281,6 +299,12 @@ fn inspect_status(
             permission: CredentialPermissionState::Absent,
             revision: None,
             grants: CredentialGrants::default(),
+            capabilities: capability_statuses(
+                &CredentialGrants::default(),
+                CredentialPermissionState::Absent,
+                "inactive",
+                "disabled",
+            ),
             transport: "inactive",
             backend: "disabled",
             message: None,
@@ -300,25 +324,138 @@ fn inspect_status(
             }
         }
     };
-    let message = (!record.grants.is_empty()).then(|| match permission {
-        CredentialPermissionState::BindingPending => "A durable receipt matches this workspace, but permission binding was interrupted. Retry an explicit credentials enable for an already granted capability. No live integration is available in this build.".to_owned(),
+    let (transport, backend, live_message) = inspect_live_facts(root, &record, permission);
+    let message = live_message.or_else(|| (!record.grants.is_empty()).then(|| match permission {
+        CredentialPermissionState::BindingPending => "A durable receipt matches this workspace, but permission binding was interrupted. Retry an explicit credentials enable for an already granted capability.".to_owned(),
         CredentialPermissionState::Stale => "Permission has no matching workspace binding. Disable the old grants, then explicitly enable new grants; authority will not transfer automatically.".to_owned(),
-        _ => "Permission only: this build does not implement the live broker or managed-process integration. No helper, login, agent, or identity lookup was performed.".to_owned(),
-    });
+        CredentialPermissionState::Bound if transport == "healthy" => "Transport was authenticated without retrieving credentials, signing, or testing backend availability. Existing processes may require a new cdenv SSH session when integration was previously absent.".to_owned(),
+        _ => "Configured permission is inactive. Run `cdenv up` to enroll or repair environment integration; no helper, login, signing, or identity lookup was performed by status.".to_owned(),
+    }));
+    let capabilities = capability_statuses(&record.grants, permission, transport, backend);
     Ok(CredentialStatusReport {
         schema_version: CREDENTIAL_PERMISSION_SCHEMA,
         workspace: name.clone(),
         permission,
         revision: Some(record.revision),
-        transport: "inactive",
-        backend: if record.grants.is_empty() {
-            "disabled"
-        } else {
-            "uninspected"
-        },
+        capabilities,
+        transport,
+        backend,
         grants: record.grants,
         message,
     })
+}
+
+fn capability_statuses(
+    grants: &CredentialGrants,
+    permission: CredentialPermissionState,
+    transport: &'static str,
+    backend: &'static str,
+) -> BTreeMap<CredentialCapability, CredentialCapabilityStatus> {
+    [
+        CredentialCapability::GitHttps,
+        CredentialCapability::SshAgent,
+        CredentialCapability::GitIdentity,
+    ]
+    .into_iter()
+    .map(|capability| {
+        let configured = grants.enabled(capability);
+        (
+            capability,
+            CredentialCapabilityStatus {
+                configured,
+                bound: configured && permission == CredentialPermissionState::Bound,
+                active: configured && transport == "healthy",
+                transport: if configured { transport } else { "inactive" },
+                backend: if configured { backend } else { "disabled" },
+            },
+        )
+    })
+    .collect()
+}
+
+fn inspect_live_facts(
+    root: &CdenvRoot,
+    record: &PermissionRecord,
+    permission: CredentialPermissionState,
+) -> (&'static str, &'static str, Option<String>) {
+    if record.grants.is_empty() {
+        return ("inactive", "disabled", None);
+    }
+    if permission != CredentialPermissionState::Bound {
+        return ("inactive", "uninspected", None);
+    }
+    let inspected = (|| -> Result<bool, CredentialCommandError> {
+        let installation = Installation::load_record_read_only(root)
+            .map_err(|_| CredentialCommandError::Installation)?;
+        let state =
+            load_existing_workspace(root, &record.workspace, installation.installation_id())?
+                .ok_or(CredentialCommandError::Workspace)?;
+        let Some(active) = state.active() else {
+            return Ok(false);
+        };
+        let paths = root.workspace(&record.workspace);
+        if private_metadata(&paths.supervisor_state_file(), false)?.is_none()
+            || private_socket_metadata(&paths.supervisor_socket())?.is_none()
+        {
+            return Err(CredentialCommandError::RuntimeUnavailable);
+        }
+        let supervisor = crate::load_supervisor_state(&paths.supervisor_state_file())
+            .map_err(|_| CredentialCommandError::RuntimeUnavailable)?;
+        let host_build = crate::agent_artifacts::AgentArtifactProvider::embedded_identity()
+            .map_err(|_| CredentialCommandError::RuntimeUnavailable)?;
+        let lease = supervisor
+            .credential_lease
+            .as_ref()
+            .ok_or(CredentialCommandError::RuntimeUnavailable)?;
+        let PermissionBinding::Bound { receipt } = &record.binding else {
+            return Err(CredentialCommandError::Binding);
+        };
+        if supervisor.installation != *state.installation_id()
+            || supervisor.workspace != *state.name()
+            || supervisor.generation != active.generation()
+            || supervisor.host_build_id != host_build
+            || supervisor.agent_build_id != *active.provisioned().agent_build_id()
+            || supervisor.agent_protocol != active.provisioned().protocol_version()
+            || lease.container != *active.container_id()
+            || lease.workspace_receipt != receipt.nonce
+        {
+            return Err(CredentialCommandError::RuntimeUnavailable);
+        }
+        let token = crate::supervisor_control_token(&supervisor).to_owned();
+        let claim = crate::SupervisorClaim {
+            installation: &supervisor.installation,
+            workspace: &supervisor.workspace,
+            generation: supervisor.generation,
+            host_build_id: &supervisor.host_build_id,
+            agent_build_id: &supervisor.agent_build_id,
+            agent_protocol: supervisor.agent_protocol,
+        };
+        let socket = paths.supervisor_socket();
+        let status = std::thread::scope(|scope| {
+            scope
+                .spawn(|| {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|_| CredentialCommandError::RuntimeUnavailable)?;
+                    runtime
+                        .block_on(crate::supervisor_credential_status(&socket, &token, &claim))
+                        .map_err(|_| CredentialCommandError::RuntimeUnavailable)
+                })
+                .join()
+                .map_err(|_| CredentialCommandError::RuntimeUnavailable)?
+        })?;
+        Ok(status.1 == Some(record.revision))
+    })();
+    match inspected {
+        Ok(true) => ("healthy", "untested", None),
+        Ok(false) => ("inactive", "uninspected", None),
+        Err(_) => (
+            "unavailable",
+            "uninspected",
+            Some("Credential transport could not be authenticated at the durable revision. Run `cdenv up` to repair it; no backend operation was attempted.".to_owned()),
+        ),
+    }
 }
 
 fn inspect_staged_binding(
@@ -409,7 +546,7 @@ pub fn mutate_credentials(
             record.binding = PermissionBinding::Staged;
         }
         persist_change(root, &mut record, previous.as_ref())?;
-        confirm_no_live_supervisor(root, name)?;
+        reconcile_running_generation(root, &record, true)?;
         return inspect_status(root, name);
     }
 
@@ -439,10 +576,10 @@ pub fn mutate_credentials(
         record.binding = PermissionBinding::Staged;
     }
     persist_change(root, &mut record, previous.as_ref())?;
-    if revoking {
+    if state.as_ref().is_some_and(|state| state.active().is_some()) {
+        reconcile_running_generation(root, &record, revoking)?;
+    } else if revoking {
         confirm_no_live_supervisor(root, name)?;
-    } else if state.as_ref().is_some_and(|state| state.active().is_some()) {
-        return Err(CredentialCommandError::RuntimeUnavailable);
     }
     inspect_status(root, name)
 }
@@ -773,6 +910,22 @@ fn read_bounded(file: File) -> Result<Vec<u8>, CredentialCommandError> {
     Ok(bytes)
 }
 
+fn private_socket_metadata(path: &Path) -> Result<Option<fs::Metadata>, CredentialCommandError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(CredentialCommandError::Storage),
+    };
+    if !metadata.file_type().is_socket()
+        || metadata.file_type().is_symlink()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.permissions().mode() & 0o7777 != 0o600
+    {
+        return Err(CredentialCommandError::UnsafeStorage);
+    }
+    Ok(Some(metadata))
+}
+
 fn private_metadata(
     path: &Path,
     directory: bool,
@@ -805,6 +958,101 @@ fn private_metadata(
         return Err(CredentialCommandError::UnsafeStorage);
     }
     Ok(Some(metadata))
+}
+
+fn reconcile_running_generation(
+    root: &CdenvRoot,
+    record: &PermissionRecord,
+    revoking: bool,
+) -> Result<(), CredentialCommandError> {
+    let fail = || {
+        if revoking {
+            CredentialCommandError::RevocationUnconfirmed
+        } else {
+            CredentialCommandError::RuntimeUnavailable
+        }
+    };
+    let installation = Installation::load_record_read_only(root).map_err(|_| fail())?;
+    let Some(state) =
+        load_existing_workspace(root, &record.workspace, installation.installation_id())?
+    else {
+        return if revoking {
+            confirm_no_live_supervisor(root, &record.workspace)
+        } else {
+            Err(fail())
+        };
+    };
+    let Some(active) = state.active() else {
+        return if revoking {
+            confirm_no_live_supervisor(root, &record.workspace)
+        } else {
+            Err(fail())
+        };
+    };
+    let paths = root.workspace(&record.workspace);
+    if private_metadata(&paths.supervisor_state_file(), false)?.is_none()
+        || private_socket_metadata(&paths.supervisor_socket())?.is_none()
+    {
+        return if revoking {
+            confirm_no_live_supervisor(root, &record.workspace)
+        } else {
+            Err(fail())
+        };
+    }
+    let supervisor =
+        crate::load_supervisor_state(&paths.supervisor_state_file()).map_err(|_| fail())?;
+    let receipt =
+        read_private::<BindingReceipt>(&paths.credential_binding_file())?.ok_or_else(fail)?;
+    if !receipt.matches(&paths.root(), &state)? {
+        return Err(fail());
+    }
+    let host_build =
+        crate::agent_artifacts::AgentArtifactProvider::embedded_identity().map_err(|_| fail())?;
+    let identity_matches = supervisor.installation == *state.installation_id()
+        && supervisor.workspace == *state.name()
+        && supervisor.generation == active.generation()
+        && supervisor.host_build_id == host_build
+        && supervisor.agent_build_id == *active.provisioned().agent_build_id()
+        && supervisor.agent_protocol == active.provisioned().protocol_version()
+        && supervisor.credential_lease.as_ref().is_none_or(|lease| {
+            lease.container == *active.container_id()
+                && lease.generation == active.generation()
+                && lease.installation == *state.installation_id()
+                && lease.workspace == *state.name()
+                && lease.workspace_receipt == receipt.nonce
+        });
+    if !identity_matches {
+        return Err(fail());
+    }
+    let token = crate::supervisor_control_token(&supervisor).to_owned();
+    let claim = crate::SupervisorClaim {
+        installation: &supervisor.installation,
+        workspace: &supervisor.workspace,
+        generation: supervisor.generation,
+        host_build_id: &supervisor.host_build_id,
+        agent_build_id: &supervisor.agent_build_id,
+        agent_protocol: supervisor.agent_protocol,
+    };
+    let socket = paths.supervisor_socket();
+    let grants = record.grants.clone();
+    let revision = record.revision;
+    let result = std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|_| ())?;
+                runtime
+                    .block_on(crate::reconcile_supervisor_credentials(
+                        &socket, &token, &claim, revision, &grants,
+                    ))
+                    .map_err(|_| ())
+            })
+            .join()
+            .map_err(|_| ())?
+    });
+    result.map(|_| ()).map_err(|()| fail())
 }
 
 fn confirm_no_live_supervisor(

@@ -7,11 +7,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use cdenv_core::credential_broker::{
     BrokerFrameKind, CredentialLeaseIdentity, CredentialUserIdentity,
 };
+use cdenv_core::credential_protocol::GitCredentialRequest;
+use cdenv_core::credentials::CredentialGrants;
 use cdenv_core::{
     AgentBuildId, ContainerId, GenerationId, InstallationId, ProtocolVersion, WorkspaceName,
 };
@@ -63,6 +66,9 @@ pub struct SupervisorCredentialLease {
     pub user: CredentialUserIdentity,
     /// Current positive grant revision.
     pub grant_revision: u64,
+    /// Independently configured capabilities at lease startup.
+    #[serde(default)]
+    pub grants: CredentialGrants,
     /// Stable absolute container runtime directory for this user/generation.
     pub runtime_directory: String,
 }
@@ -155,6 +161,10 @@ pub struct SupervisorClaim<'a> {
 enum ControlCommand {
     Status,
     Down,
+    Reconcile {
+        revision: u64,
+        grants: CredentialGrants,
+    },
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -176,6 +186,7 @@ struct ControlRequest {
 struct ControlResponse {
     accepted: bool,
     state: Option<SupervisorState>,
+    credential_revision: Option<u64>,
     error: Option<String>,
 }
 
@@ -423,12 +434,22 @@ async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSu
         .map_err(|error| ForwardingSupervisorError::Transport(error.to_string()))?;
     let adapter = BollardAdapter::from_connector(&connector);
 
+    let credential_backend = state
+        .credential_lease
+        .clone()
+        .zip(manifest.credential_lease.as_ref())
+        .map(|(identity, lease)| {
+            Arc::new(LiveCredentialBackend::new(identity, lease.grants.clone()))
+        });
     let mut accepts = tokio::task::JoinSet::new();
-    if let Some(lease) = manifest.credential_lease.clone() {
+    if let (Some(lease), Some(backend)) = (
+        manifest.credential_lease.clone(),
+        credential_backend.clone(),
+    ) {
         let adapter = adapter.clone();
         let manifest = manifest.clone();
         accepts.spawn(async move {
-            run_credential_exec(adapter, &manifest, &lease)
+            run_credential_exec(adapter, &manifest, &lease, backend)
                 .await
                 .map_err(|error| io::Error::other(error.to_string()))
         });
@@ -451,7 +472,7 @@ async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSu
         });
     }
 
-    let result = control_loop(&control, &state).await;
+    let result = control_loop(&control, &state, credential_backend.as_ref()).await;
     accepts.abort_all();
     while accepts.join_next().await.is_some() {}
     result
@@ -545,20 +566,132 @@ fn credential_identity(
     Ok(identity)
 }
 
-#[derive(Default)]
-struct UnavailableCredentialBackend;
+#[derive(Clone)]
+struct LiveCredentialPolicy {
+    revision: u64,
+    grants: CredentialGrants,
+    https_epoch: u64,
+    agent_epoch: u64,
+    identity_epoch: u64,
+}
 
-impl CredentialBrokerBackend for UnavailableCredentialBackend {
-    fn is_authorized(
-        &self,
-        _identity: &CredentialLeaseIdentity,
-        _operation: BrokerFrameKind,
-    ) -> bool {
-        true
+/// Supervisor-owned live authority. The lock contains no credential values and
+/// is changed only after an authenticated control request.
+struct LiveCredentialBackend {
+    lease: CredentialLeaseIdentity,
+    policy: RwLock<LiveCredentialPolicy>,
+}
+
+impl LiveCredentialBackend {
+    fn new(lease: CredentialLeaseIdentity, grants: CredentialGrants) -> Self {
+        Self {
+            policy: RwLock::new(LiveCredentialPolicy {
+                revision: lease.grant_revision,
+                grants,
+                https_epoch: lease.grant_revision,
+                agent_epoch: lease.grant_revision,
+                identity_epoch: lease.grant_revision,
+            }),
+            lease,
+        }
     }
 
-    fn credential_lookup(&self, _body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
-        Box::pin(async { Err(BrokerBackendError) })
+    fn reconcile(&self, revision: u64, grants: CredentialGrants) -> Result<u64, &'static str> {
+        grants.validate().map_err(|_| "invalid credential grants")?;
+        if revision == 0 {
+            return Err("invalid credential revision");
+        }
+        let mut policy = self
+            .policy
+            .write()
+            .map_err(|_| "credential authority unavailable")?;
+        if revision < policy.revision || (revision == policy.revision && grants != policy.grants) {
+            return Err("stale or conflicting credential revision");
+        }
+        if policy.grants.https_origins() != grants.https_origins() {
+            policy.https_epoch = revision;
+        }
+        if policy.grants.ssh_selector() != grants.ssh_selector() {
+            policy.agent_epoch = revision;
+        }
+        if policy
+            .grants
+            .enabled(cdenv_core::credentials::CredentialCapability::GitIdentity)
+            != grants.enabled(cdenv_core::credentials::CredentialCapability::GitIdentity)
+        {
+            policy.identity_epoch = revision;
+        }
+        policy.revision = revision;
+        policy.grants = grants;
+        Ok(policy.revision)
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.policy.read().ok().map(|policy| policy.revision)
+    }
+
+    fn exact_lease(&self, identity: &CredentialLeaseIdentity) -> bool {
+        identity.installation == self.lease.installation
+            && identity.workspace == self.lease.workspace
+            && identity.workspace_receipt == self.lease.workspace_receipt
+            && identity.container == self.lease.container
+            && identity.generation == self.lease.generation
+            && identity.user == self.lease.user
+            && identity.host_build == self.lease.host_build
+            && identity.agent_build == self.lease.agent_build
+            && identity.agent_protocol == self.lease.agent_protocol
+            && identity.broker_protocol == self.lease.broker_protocol
+    }
+}
+
+impl CredentialBrokerBackend for LiveCredentialBackend {
+    fn is_authorized(
+        &self,
+        identity: &CredentialLeaseIdentity,
+        operation: BrokerFrameKind,
+    ) -> bool {
+        if !self.exact_lease(identity) {
+            return false;
+        }
+        self.policy.read().is_ok_and(|policy| match operation {
+            BrokerFrameKind::CredentialLookup => policy
+                .grants
+                .enabled(cdenv_core::credentials::CredentialCapability::GitHttps),
+            BrokerFrameKind::AgentOpen => policy
+                .grants
+                .enabled(cdenv_core::credentials::CredentialCapability::SshAgent),
+            BrokerFrameKind::IdentityRequest => policy
+                .grants
+                .enabled(cdenv_core::credentials::CredentialCapability::GitIdentity),
+            _ => false,
+        })
+    }
+
+    fn authorization_epoch(&self, operation: BrokerFrameKind) -> u64 {
+        self.policy
+            .read()
+            .map_or(u64::MAX, |policy| match operation {
+                BrokerFrameKind::CredentialLookup => policy.https_epoch,
+                BrokerFrameKind::AgentOpen => policy.agent_epoch,
+                BrokerFrameKind::IdentityRequest => policy.identity_epoch,
+                _ => u64::MAX,
+            })
+    }
+
+    fn credential_lookup(&self, body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
+        Box::pin(async move {
+            let request = GitCredentialRequest::parse(&body).map_err(|_| BrokerBackendError)?;
+            let allowed = self
+                .policy
+                .read()
+                .is_ok_and(|policy| policy.grants.allows(request.origin()));
+            if !allowed {
+                return Err(BrokerBackendError);
+            }
+            // Production backend enrollment is composed by issue 77. Keeping
+            // this value-free failure here is safer than claiming availability.
+            Err(BrokerBackendError)
+        })
     }
 
     fn connect_agent(&self) -> BrokerBackendFuture<'_, std::pin::Pin<Box<dyn BrokerByteStream>>> {
@@ -574,6 +707,7 @@ async fn run_credential_exec(
     adapter: BollardAdapter,
     manifest: &SupervisorManifest,
     lease: &SupervisorCredentialLease,
+    backend: Arc<LiveCredentialBackend>,
 ) -> Result<(), ForwardingSupervisorError> {
     let inspection = adapter
         .inspect_container(&manifest.container)
@@ -624,11 +758,7 @@ async fn run_credential_exec(
         &mut diagnostics,
         &cancellation,
     );
-    let broker = serve_host_credential_broker(
-        protocol,
-        identity,
-        std::sync::Arc::new(UnavailableCredentialBackend),
-    );
+    let broker = serve_host_credential_broker(protocol, identity, backend);
     tokio::pin!(transport);
     tokio::pin!(broker);
     tokio::select! {
@@ -691,13 +821,14 @@ async fn bind_listeners(
 async fn control_loop(
     listener: &UnixListener,
     state: &SupervisorState,
+    credential_backend: Option<&Arc<LiveCredentialBackend>>,
 ) -> Result<(), ForwardingSupervisorError> {
     loop {
         let (stream, _) = listener
             .accept()
             .await
             .map_err(|error| ForwardingSupervisorError::Control(error.to_string()))?;
-        if handle_control(stream, state).await? {
+        if handle_control(stream, state, credential_backend).await? {
             return Ok(());
         }
     }
@@ -706,6 +837,7 @@ async fn control_loop(
 async fn handle_control(
     stream: UnixStream,
     state: &SupervisorState,
+    credential_backend: Option<&Arc<LiveCredentialBackend>>,
 ) -> Result<bool, ForwardingSupervisorError> {
     let mut reader = BufReader::new(stream);
     let mut bytes = Vec::new();
@@ -719,20 +851,40 @@ async fn handle_control(
     } else {
         serde_json::from_slice::<ControlRequest>(&bytes).ok()
     };
-    let (accepted, down, error) = match parsed {
-        Some(request) if request_matches(&request, state) => {
-            let down = matches!(request.command, ControlCommand::Down);
-            (true, down, None)
-        }
+    let (accepted, down, credential_revision, error) = match parsed {
+        Some(request) if request_matches(&request, state) => match request.command {
+            ControlCommand::Status => (
+                true,
+                false,
+                credential_backend.and_then(|backend| backend.revision()),
+                None,
+            ),
+            ControlCommand::Down => (true, true, None, None),
+            ControlCommand::Reconcile { revision, grants } => match credential_backend {
+                Some(backend) => match backend.reconcile(revision, grants) {
+                    Ok(acknowledged) => (true, false, Some(acknowledged), None),
+                    Err(reason) => (false, false, None, Some(reason.to_owned())),
+                },
+                None if grants.is_empty() => (true, false, Some(revision), None),
+                None => (
+                    false,
+                    false,
+                    None,
+                    Some("credential transport is not enrolled; run cdenv up".to_owned()),
+                ),
+            },
+        },
         _ => (
             false,
             false,
+            None,
             Some("identity or authentication mismatch".to_owned()),
         ),
     };
     let response = ControlResponse {
         accepted,
         state: accepted.then(|| state.clone()),
+        credential_revision,
         error,
     };
     let mut encoded = serde_json::to_vec(&response)
@@ -759,6 +911,53 @@ pub async fn supervisor_status(
     control_request(socket, token, claim, ControlCommand::Status, "status").await
 }
 
+/// Returns authenticated supervisor state and the currently acknowledged
+/// credential policy revision without probing any credential backend.
+///
+/// # Errors
+///
+/// Returns the same fail-closed control errors as [`supervisor_status`].
+pub async fn supervisor_credential_status(
+    socket: &Path,
+    token: &str,
+    claim: &SupervisorClaim<'_>,
+) -> Result<(SupervisorState, Option<u64>), ForwardingSupervisorError> {
+    let response = control_exchange(socket, token, claim, ControlCommand::Status, "status").await?;
+    let state = response.state.ok_or_else(|| {
+        ForwardingSupervisorError::Control("accepted response omitted state".to_owned())
+    })?;
+    Ok((state, response.credential_revision))
+}
+
+/// Atomically replaces live credential authority and returns only after the
+/// exact supervisor acknowledges the durable policy revision.
+///
+/// # Errors
+///
+/// Rejects stale revisions, absent credential enrollment, identity mismatch,
+/// malformed replies, and acknowledgement timeout.
+pub async fn reconcile_supervisor_credentials(
+    socket: &Path,
+    token: &str,
+    claim: &SupervisorClaim<'_>,
+    revision: u64,
+    grants: &CredentialGrants,
+) -> Result<SupervisorState, ForwardingSupervisorError> {
+    let command = ControlCommand::Reconcile {
+        revision,
+        grants: grants.clone(),
+    };
+    let response = control_exchange(socket, token, claim, command, "credential reconcile").await?;
+    if response.credential_revision != Some(revision) {
+        return Err(ForwardingSupervisorError::Control(
+            "credential revision acknowledgement mismatch".to_owned(),
+        ));
+    }
+    response.state.ok_or_else(|| {
+        ForwardingSupervisorError::Control("accepted response omitted state".to_owned())
+    })
+}
+
 /// Stops a supervisor through its authenticated control channel, never by PID.
 ///
 /// # Errors
@@ -779,6 +978,19 @@ async fn control_request(
     command: ControlCommand,
     operation: &'static str,
 ) -> Result<SupervisorState, ForwardingSupervisorError> {
+    let response = control_exchange(socket, token, claim, command, operation).await?;
+    response.state.ok_or_else(|| {
+        ForwardingSupervisorError::Control("accepted response omitted state".to_owned())
+    })
+}
+
+async fn control_exchange(
+    socket: &Path,
+    token: &str,
+    claim: &SupervisorClaim<'_>,
+    command: ControlCommand,
+    operation: &'static str,
+) -> Result<ControlResponse, ForwardingSupervisorError> {
     let request = ControlRequest {
         command,
         installation: claim.installation.clone(),
@@ -814,9 +1026,7 @@ async fn control_request(
         .map_err(|_| ForwardingSupervisorError::Control("request timed out".to_owned()))?
         .map_err(|error| ForwardingSupervisorError::Control(error.to_string()))?;
     if response.accepted {
-        response.state.ok_or_else(|| {
-            ForwardingSupervisorError::Control("accepted response omitted state".to_owned())
-        })
+        Ok(response)
     } else {
         Err(ForwardingSupervisorError::Rejected {
             operation,
@@ -1039,6 +1249,67 @@ mod tests {
     fn target_validation_accepts_container_and_compose_names() {
         assert!(validate_target("localhost", 3000).is_ok());
         assert!(validate_target("database.internal", 5432).is_ok());
+    }
+
+    #[tokio::test]
+    async fn authenticated_control_reconciles_credentials_without_stopping_supervisor() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let workspace_root = temporary.path().join("workspace");
+        fs::create_dir(&workspace_root).expect("workspace root");
+        let runtime = workspace_root.join("runtime");
+        ensure_private_directory(&runtime).expect("private runtime");
+        let mut grants = CredentialGrants::default();
+        grants.enable_identity();
+        let manifest = manifest(&runtime).with_credential_lease(SupervisorCredentialLease {
+            workspace_receipt: "0123456789abcdef0123456789abcdef".to_owned(),
+            user: CredentialUserIdentity {
+                uid: 1000,
+                gid: 1000,
+            },
+            grant_revision: 1,
+            grants,
+            runtime_directory: "/tmp/cdenv-credential-test".to_owned(),
+        });
+        let _docker = std::os::unix::net::UnixListener::bind(&manifest.docker_socket)
+            .expect("fake Docker socket");
+        ensure_lock_file(&manifest.lifetime_lock).expect("lifetime lock");
+        let claim_identity = manifest.clone();
+        let claim = claim_from_manifest(&claim_identity);
+        let socket = manifest.control_socket.clone();
+        let token = manifest.token.clone();
+        let task = tokio::spawn(run_supervisor(manifest));
+        loop {
+            if supervisor_status(&socket, &token, &claim).await.is_ok() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let before = supervisor_status(&socket, &token, &claim)
+            .await
+            .expect("status");
+        reconcile_supervisor_credentials(&socket, &token, &claim, 2, &CredentialGrants::default())
+            .await
+            .expect("acknowledged revocation");
+        let (after, revision) = supervisor_credential_status(&socket, &token, &claim)
+            .await
+            .expect("status after reconcile");
+        assert_eq!(revision, Some(2));
+        assert_eq!(after.listeners, before.listeners);
+        assert!(
+            reconcile_supervisor_credentials(
+                &socket,
+                &token,
+                &claim,
+                1,
+                &CredentialGrants::default(),
+            )
+            .await
+            .is_err()
+        );
+        stop_supervisor(&socket, &token, &claim)
+            .await
+            .expect("authenticated down");
+        task.await.expect("supervisor task").expect("clean exit");
     }
 
     #[tokio::test]

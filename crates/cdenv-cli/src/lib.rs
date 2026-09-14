@@ -107,8 +107,9 @@ pub use credential_broker::{
     HostCredentialBrokerError, credential_retry_delay, serve_host_credential_broker,
 };
 pub use credentials::{
-    CREDENTIAL_PERMISSION_SCHEMA, CredentialCommandError, CredentialPermissionState,
-    CredentialStatusReport, credential_status, mutate_credentials, render_credentials_application,
+    CREDENTIAL_PERMISSION_SCHEMA, CredentialCapabilityStatus, CredentialCommandError,
+    CredentialPermissionState, CredentialStatusReport, credential_status, mutate_credentials,
+    render_credentials_application,
 };
 pub use docker::{
     ApiVersion, BollardConnector, BollardConnectorError, DOCKER_PROBE_TIMEOUT, DockerCapabilities,
@@ -148,8 +149,9 @@ pub use forward_command::{
 pub use forwarding::{
     FORWARDING_SUPERVISOR_PROTOCOL, ForwardingSupervisorError, MAXIMUM_CONTROL_MESSAGE_BYTES,
     SUPERVISOR_CONTROL_TIMEOUT, SupervisorClaim, SupervisorCredentialLease, SupervisorForward,
-    SupervisorManifest, SupervisorState, load_supervisor_state, run_private_supervisor_manifest,
-    start_detached_supervisor, stop_supervisor, supervisor_control_token, supervisor_status,
+    SupervisorManifest, SupervisorState, load_supervisor_state, reconcile_supervisor_credentials,
+    run_private_supervisor_manifest, start_detached_supervisor, stop_supervisor,
+    supervisor_control_token, supervisor_credential_status, supervisor_status,
 };
 pub use forwarding_reconciliation::{
     DeclaredForwardingRuntime, DesiredForwardingPlan, FIRST_UNPRIVILEGED_PORT, ForwardingPlanError,

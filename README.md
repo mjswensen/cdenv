@@ -26,10 +26,10 @@ for dependency versions, installation overrides, SSH consent, and recovery.
 
 `cdenv credentials` manages independently opted-in HTTPS, SSH-agent, and Git
 author-identity permissions, including staging before an explicitly named clone.
-**This is not yet a working production credential workflow.** The bounded broker,
-trusted host HTTPS lookup, and reversible static container helper are implemented;
-production lifecycle/revocation wiring and the SSH/identity backends are still
-required for issue 68. See the [implemented boundary and command guide](docs/operations.md#host-credential-permissions-issue-68).
+**This is not yet a complete production credential workflow.** The bounded broker,
+trusted host backends, reversible container integrations, authenticated live policy
+reconciliation, and revocation acknowledgement are implemented. Production
+create/up/down/rebuild enrollment is still required for issue 68. See the [implemented boundary and command guide](docs/operations.md#host-credential-permissions-issue-68).
 
 ## Development
 

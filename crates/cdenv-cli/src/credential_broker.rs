@@ -29,6 +29,13 @@ pub trait CredentialBrokerBackend: Send + Sync + 'static {
     /// Rechecks current authority at dispatch and immediately before release.
     fn is_authorized(&self, identity: &CredentialLeaseIdentity, operation: BrokerFrameKind)
     -> bool;
+    /// Returns the current monotonic policy epoch for targeted queued-result suppression.
+    ///
+    /// Backends with live policy should override this. The default preserves the
+    /// immutable-lease behavior used by simple and test backends.
+    fn authorization_epoch(&self, _operation: BrokerFrameKind) -> u64 {
+        0
+    }
     /// Handles one bounded raw Git lookup body over private memory/pipes.
     fn credential_lookup(&self, body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>>;
     /// Connects one independently approved host SSH-agent stream.
@@ -74,6 +81,10 @@ pub enum HostCredentialBrokerError {
 /// # Errors
 ///
 /// Returns identity, framing, bound, timeout, saturation, or private I/O failures.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the closed broker operation set stays visible in one fail-closed dispatch loop"
+)]
 pub async fn serve_host_credential_broker<S, B>(
     stream: S,
     expected: CredentialLeaseIdentity,
@@ -114,6 +125,19 @@ where
             }
             queued = outgoing_rx.recv() => {
                 let Some(queued) = queued else { break Ok(()); };
+                if let Some((operation, epoch)) = queued.authorization
+                    && (backend.authorization_epoch(operation) != epoch
+                        || !backend.is_authorized(&expected, operation))
+                {
+                    let kind = if operation == BrokerFrameKind::AgentOpen {
+                        BrokerFrameKind::StreamClose
+                    } else {
+                        BrokerFrameKind::Error
+                    };
+                    let denied = BrokerFrame::new(kind, queued.frame.stream_id, Vec::new())?;
+                    write_frame(&mut writer, &denied).await?;
+                    continue;
+                }
                 write_frame(&mut writer, &queued.frame).await?;
             }
             incoming = tokio::time::timeout(BROKER_IDLE_TIMEOUT, read_frame(&mut reader)) => {
@@ -123,16 +147,27 @@ where
                     BrokerFrameKind::CredentialLookup => {
                         if !backend.is_authorized(&expected, BrokerFrameKind::CredentialLookup) { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; }
                         let permit = helper_admission.clone().try_acquire_owned().map_err(|_| HostCredentialBrokerError::Saturated)?;
+                        let epoch = backend.authorization_epoch(BrokerFrameKind::CredentialLookup);
                         let backend = backend.clone(); let expected = expected.clone(); let outgoing = outgoing_tx.clone(); let bytes = byte_admission.clone();
                         let stream_id = frame.stream_id;
                         tasks.spawn(async move {
                             let _permit = permit;
-                            let result = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, backend.credential_lookup(frame.into_payload())).await;
-                            let response = match result {
-                                Ok(Ok(payload)) if backend.is_authorized(&expected, BrokerFrameKind::CredentialLookup) => BrokerFrame::new(BrokerFrameKind::CredentialResult, stream_id, payload),
-                                _ => BrokerFrame::new(BrokerFrameKind::Error, stream_id, Vec::new()),
+                            let lookup = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, backend.credential_lookup(frame.into_payload()));
+                            tokio::pin!(lookup);
+                            let response = tokio::select! {
+                                result = &mut lookup => match result {
+                                    Ok(Ok(payload)) if backend.is_authorized(&expected, BrokerFrameKind::CredentialLookup) => BrokerFrame::new(BrokerFrameKind::CredentialResult, stream_id, payload),
+                                    _ => BrokerFrame::new(BrokerFrameKind::Error, stream_id, Vec::new()),
+                                },
+                                () = authority_revoked(&backend, &expected, BrokerFrameKind::CredentialLookup, epoch) => {
+                                    BrokerFrame::new(BrokerFrameKind::Error, stream_id, Vec::new())
+                                }
                             };
-                            if let Ok(response) = response { let _ = send_queued(&outgoing, &bytes, response).await; }
+                            if let Ok(response) = response {
+                                let authorization = (response.kind == BrokerFrameKind::CredentialResult)
+                                    .then_some((BrokerFrameKind::CredentialLookup, epoch));
+                                let _ = send_queued_scoped(&outgoing, &bytes, response, authorization).await;
+                            }
                         });
                     }
                     BrokerFrameKind::AgentOpen => {
@@ -166,12 +201,21 @@ where
                     }
                     BrokerFrameKind::IdentityRequest => {
                         if !backend.is_authorized(&expected, BrokerFrameKind::IdentityRequest) { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; }
-                        let result = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, backend.identity_metadata()).await;
-                        let response = match result {
-                            Ok(Ok(payload)) if backend.is_authorized(&expected, BrokerFrameKind::IdentityRequest) => BrokerFrame::new(BrokerFrameKind::IdentityResult, frame.stream_id, payload)?,
-                            _ => BrokerFrame::new(BrokerFrameKind::Error, frame.stream_id, Vec::new())?,
+                        let epoch = backend.authorization_epoch(BrokerFrameKind::IdentityRequest);
+                        let metadata = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, backend.identity_metadata());
+                        tokio::pin!(metadata);
+                        let response = tokio::select! {
+                            result = &mut metadata => match result {
+                                Ok(Ok(payload)) if backend.is_authorized(&expected, BrokerFrameKind::IdentityRequest) => BrokerFrame::new(BrokerFrameKind::IdentityResult, frame.stream_id, payload)?,
+                                _ => BrokerFrame::new(BrokerFrameKind::Error, frame.stream_id, Vec::new())?,
+                            },
+                            () = authority_revoked(&backend, &expected, BrokerFrameKind::IdentityRequest, epoch) => {
+                                BrokerFrame::new(BrokerFrameKind::Error, frame.stream_id, Vec::new())?
+                            }
                         };
-                        send_queued(&outgoing_tx, &byte_admission, response).await?;
+                        let authorization = (response.kind == BrokerFrameKind::IdentityResult)
+                            .then_some((BrokerFrameKind::IdentityRequest, epoch));
+                        send_queued_scoped(&outgoing_tx, &byte_admission, response, authorization).await?;
                     }
                     BrokerFrameKind::Health => send_queued(&outgoing_tx, &byte_admission, BrokerFrame::new(BrokerFrameKind::HealthAck, 0, Vec::new())?).await?,
                     BrokerFrameKind::Stop => break Ok(()),
@@ -183,6 +227,22 @@ where
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     result
+}
+
+async fn authority_revoked<B: CredentialBrokerBackend>(
+    backend: &Arc<B>,
+    identity: &CredentialLeaseIdentity,
+    operation: BrokerFrameKind,
+    epoch: u64,
+) {
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if backend.authorization_epoch(operation) != epoch
+            || !backend.is_authorized(identity, operation)
+        {
+            return;
+        }
+    }
 }
 
 async fn relay_agent<B: CredentialBrokerBackend>(
@@ -207,6 +267,7 @@ async fn relay_agent<B: CredentialBrokerBackend>(
         match frame.kind {
             BrokerFrameKind::StreamData => {
                 validate_agent_packet(frame.payload())?;
+                let epoch = backend.authorization_epoch(BrokerFrameKind::AgentOpen);
                 tokio::time::timeout(
                     BROKER_OPERATION_TIMEOUT,
                     agent_write.write_all(frame.payload()),
@@ -214,16 +275,24 @@ async fn relay_agent<B: CredentialBrokerBackend>(
                 .await
                 .map_err(|_| HostCredentialBrokerError::Timeout)?
                 .map_err(|_| HostCredentialBrokerError::Io)?;
-                let response = if let Ok(result) = tokio::time::timeout(
-                    BROKER_OPERATION_TIMEOUT,
-                    crate::host_ssh_agent::read_agent_packet(&mut agent_read),
-                )
-                .await
-                {
-                    result.map_err(|_| HostCredentialBrokerError::Io)?
-                } else {
-                    backend.agent_operation_timed_out();
-                    return Err(HostCredentialBrokerError::Timeout);
+                let response = tokio::select! {
+                    result = tokio::time::timeout(
+                        BROKER_OPERATION_TIMEOUT,
+                        crate::host_ssh_agent::read_agent_packet(&mut agent_read),
+                    ) => if let Ok(result) = result {
+                        result.map_err(|_| HostCredentialBrokerError::Io)?
+                    } else {
+                        backend.agent_operation_timed_out();
+                        return Err(HostCredentialBrokerError::Timeout);
+                    },
+                    () = authority_revoked(&backend, &identity, BrokerFrameKind::AgentOpen, epoch) => {
+                        send_queued(
+                            &outgoing,
+                            &bytes,
+                            BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())?,
+                        ).await?;
+                        return Ok(());
+                    }
                 };
                 if !backend.is_authorized(&identity, BrokerFrameKind::AgentOpen) {
                     send_queued(
@@ -234,10 +303,11 @@ async fn relay_agent<B: CredentialBrokerBackend>(
                     .await?;
                     return Ok(());
                 }
-                send_queued(
+                send_queued_scoped(
                     &outgoing,
                     &bytes,
                     BrokerFrame::new(BrokerFrameKind::StreamData, stream_id, response)?,
+                    Some((BrokerFrameKind::AgentOpen, epoch)),
                 )
                 .await?;
             }
@@ -267,12 +337,22 @@ fn validate_agent_packet(packet: &[u8]) -> Result<(), BrokerProtocolError> {
 
 struct QueuedFrame {
     frame: BrokerFrame,
+    authorization: Option<(BrokerFrameKind, u64)>,
     _bytes: OwnedSemaphorePermit,
 }
 async fn send_queued(
     sender: &mpsc::Sender<QueuedFrame>,
     bytes: &Arc<Semaphore>,
     frame: BrokerFrame,
+) -> Result<(), HostCredentialBrokerError> {
+    send_queued_scoped(sender, bytes, frame, None).await
+}
+
+async fn send_queued_scoped(
+    sender: &mpsc::Sender<QueuedFrame>,
+    bytes: &Arc<Semaphore>,
+    frame: BrokerFrame,
+    authorization: Option<(BrokerFrameKind, u64)>,
 ) -> Result<(), HostCredentialBrokerError> {
     let amount =
         u32::try_from(frame.payload().len().max(1)).map_err(|_| BrokerProtocolError::Bounds)?;
@@ -284,6 +364,7 @@ async fn send_queued(
     sender
         .send(QueuedFrame {
             frame,
+            authorization,
             _bytes: permit,
         })
         .await
@@ -437,6 +518,88 @@ mod tests {
             .expect("read")
             .expect("response");
         assert_eq!(response.payload(), b"rekram-terces");
+        write_frame(
+            &mut agent,
+            &BrokerFrame::new(BrokerFrameKind::Stop, 0, Vec::new()).expect("stop"),
+        )
+        .await
+        .expect("write");
+        task.await.expect("task").expect("broker");
+    }
+
+    struct PausedBackend {
+        epoch: std::sync::atomic::AtomicU64,
+        started: tokio::sync::Notify,
+        release: tokio::sync::Notify,
+    }
+    impl CredentialBrokerBackend for PausedBackend {
+        fn is_authorized(&self, _: &CredentialLeaseIdentity, operation: BrokerFrameKind) -> bool {
+            operation == BrokerFrameKind::CredentialLookup
+        }
+        fn authorization_epoch(&self, _: BrokerFrameKind) -> u64 {
+            self.epoch.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn credential_lookup(&self, _: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
+                Ok(b"SECRET-MARKER".to_vec())
+            })
+        }
+        fn connect_agent(&self) -> BrokerBackendFuture<'_, Pin<Box<dyn BrokerByteStream>>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+        fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+    }
+
+    #[tokio::test]
+    async fn queued_lookup_result_is_suppressed_when_policy_epoch_changes() {
+        let expected = identity();
+        let backend = Arc::new(PausedBackend {
+            epoch: std::sync::atomic::AtomicU64::new(1),
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Notify::new(),
+        });
+        let (host, mut agent) = tokio::io::duplex(1024);
+        let task = tokio::spawn(serve_host_credential_broker(
+            host,
+            expected,
+            backend.clone(),
+        ));
+        let hello = read_frame(&mut agent).await.expect("read").expect("hello");
+        write_frame(
+            &mut agent,
+            &BrokerFrame::new(BrokerFrameKind::HelloAck, 0, hello.into_payload()).expect("ack"),
+        )
+        .await
+        .expect("write");
+        write_frame(
+            &mut agent,
+            &BrokerFrame::new(BrokerFrameKind::CredentialLookup, 7, b"request".to_vec())
+                .expect("lookup"),
+        )
+        .await
+        .expect("write");
+        backend.started.notified().await;
+        backend.epoch.store(2, std::sync::atomic::Ordering::SeqCst);
+        backend.release.notify_one();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        write_frame(
+            &mut agent,
+            &BrokerFrame::new(BrokerFrameKind::Health, 0, Vec::new()).expect("health"),
+        )
+        .await
+        .expect("write");
+        let denied = read_frame(&mut agent).await.expect("read").expect("denied");
+        assert_eq!(denied.kind, BrokerFrameKind::Error);
+        assert!(denied.payload().is_empty());
+        let response = read_frame(&mut agent)
+            .await
+            .expect("read")
+            .expect("response");
+        assert_eq!(response.kind, BrokerFrameKind::HealthAck);
         write_frame(
             &mut agent,
             &BrokerFrame::new(BrokerFrameKind::Stop, 0, Vec::new()).expect("stop"),

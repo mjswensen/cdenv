@@ -104,14 +104,16 @@ unrelated forwarding or fail otherwise successful readiness.
 - Structured bounded queues, finite stream/helper admission, operation/handshake/
   idle deadlines, cancellation cleanup, and a finite same-target retry schedule.
 
-A grant for an active generation is saved but the mutation returns nonzero with
-explicit integration-unavailable guidance. No helper, agent endpoint, identity
-lookup, lifecycle hook, or credential transport is started. Disable/deny persist
-revocation first, then prove the supervisor absent/stopped using the ownership
-foundation. An occupied lifetime lock or unknown control state returns
-revocation-unconfirmed; it does not stop unrelated listeners or select a PID.
-This is **not** the live reconciliation/acknowledgement protocol still required
-by the issue.
+An enrolled active generation accepts policy changes only through its exact
+authenticated supervisor control identity and acknowledges the monotonic durable
+revision. Reconciliation changes independent broker authority without rerunning
+a lifecycle hook or restarting listeners or the container. Revocation suppresses
+queued and in-flight affected results and closes affected agent streams. An
+active generation that predates enrollment returns explicit `cdenv up` guidance.
+Disable/deny persist revocation first; an occupied lifetime lock, unknown control
+state, identity mismatch, or acknowledgement timeout returns
+revocation-unconfirmed and never selects or signals a PID. A retry cannot forget
+the durable revocation.
 
 ## Current bounded surface
 

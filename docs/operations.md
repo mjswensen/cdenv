@@ -240,27 +240,35 @@ normal precedence. Refresh atomically replaces only cdenv metadata; disable
 removes only that metadata for later invocations.
 
 Successful stage/enable means **permission saved**, not backend availability.
-For an existing active generation, enable/allow save permission but return
-nonzero with explicit integration-unavailable guidance. `status`, `list`, and
-`doctor` share staged/bound/stale permission facts. They report inactive
-transport and uninspected backends; they never fetch a token, inspect identity
+For an enrolled active generation, enable/allow/deny/disable reconcile the new
+monotonic revision through the authenticated supervisor control channel without
+rerunning lifecycle hooks or restarting listeners or the container. An active
+generation that predates credential enrollment returns nonzero guidance to run
+`cdenv up`; it is never repaired by status, doctor, or an SSH invocation.
+`status`, `list`, and `doctor` share per-capability configured/bound/active,
+transport, and backend facts. A healthy transport is reported separately from
+an untested lookup backend. These commands never fetch a token, inspect identity
 values, sign, run login, migrate, or start/repair a broker.
 
 Disable without capabilities discards all current grants; selective disable
 discards only those capabilities, including their origins/selectors. Deny and
-disable persist revocation first. This build can confirm success only when the
-supervisor is absent or its lifetime lock proves it stopped. Unknown control
-state or a held lifetime lock returns **revocation unconfirmed** without
-signalling any PID or stopping unrelated services. Retry after verified service
-shutdown; do not mistake the persisted revocation for an acknowledgement from a
-live broker. Live selective reconciliation is still part of the unfinished issue.
+disable persist revocation first, cancel affected pending results, and require
+the exact supervisor to acknowledge the durable revision. SSH streams for a
+revoked agent grant are closed without stopping unrelated capabilities,
+listeners, SSH sessions, jobs, or containers. Unknown/mismatched control state
+or acknowledgement timeout returns **revocation unconfirmed** without signalling
+any PID; retry retains the durable revocation. If the verified supervisor is
+absent, the lifetime lock and owned-resource checks must prove it stopped before
+success is reported.
 
 ### Delegation and compatibility boundaries
 
 The accepted runtime design delegates to trusted workspace code; it is not a
 sandbox against container root, Docker authority, or deliberate exfiltration.
 HTTPS tokens necessarily enter container memory and cannot be recalled after
-delivery. Origin filtering does not restrict where a copied token is used or
+delivery. Revocation likewise cannot undo completed signatures, erase identity
+metadata already read by a process, or terminate already authenticated remote
+connections. Origin filtering does not restrict where a copied token is used or
 which repositories its issuer permits. General SSH-agent access includes broad
 signing authority and is neither Git-only nor destination-scoped. A host agent or hardware key may require confirmation for
 a signing request; confirm it on the host within the bounded operation deadline.

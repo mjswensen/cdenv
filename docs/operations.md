@@ -147,11 +147,11 @@ TCP listeners or SSH clients. It creates one verified, selected-user Docker Exec
 to the static agent and a protocol-only bounded stdio bridge. The agent creates
 stable owner-only container Unix endpoints outside the checkout. Configured
 capabilities still fail production early preflight until issue 77 supplies lease
-authority and lifecycle handoff, and issues 74–75 supply agent/identity
-integration. The host Git lookup backend and static HTTPS helper integration are
+authority and lifecycle handoff, and issue 75 supplies identity integration. The
+host Git lookup backend, static HTTPS helper, and selected host SSH-agent relay are
 implemented but are not dispatched by production until those lease workflows are
-connected. Saving permission alone therefore does not
-make Git authenticate.
+connected. Saving permission alone therefore does not make Git authenticate or
+make an agent available in a container.
 See [ADR 0002](adr/0002-opt-in-host-capabilities.md).
 
 Permissions are independent, off by default, installation/workspace-scoped, and
@@ -248,9 +248,16 @@ The accepted runtime design delegates to trusted workspace code; it is not a
 sandbox against container root, Docker authority, or deliberate exfiltration.
 HTTPS tokens necessarily enter container memory and cannot be recalled after
 delivery. Origin filtering does not restrict where a copied token is used or
-which repositories its issuer permits. General SSH-agent access includes signing
-and is neither Git-only nor destination-scoped. Author name/email is separately
-enabled and must not inherit signing keys/configuration, GPG, or Docker credentials.
+which repositories its issuer permits. General SSH-agent access includes broad
+signing authority and is neither Git-only nor destination-scoped. A host agent or hardware key may require confirmation for
+a signing request; confirm it on the host within the bounded operation deadline.
+If the selected agent is missing or has no keys, start/repair that exact agent or
+load the intended key on the host, then run an explicit mutating reconciliation.
+An `auto` selector is refreshed only from that invocation's `SSH_AUTH_SOCK`;
+explicit paths never fall back, and an agent recreated at the same path reconnects.
+No host socket is mounted, no key or SSH configuration is copied, and cdenv never
+runs `ssh-add` or starts an agent. Author name/email is separately enabled and must
+not inherit signing keys/configuration, GPG, or Docker credentials.
 
 The managed HTTPS integration provides process-enrollment and refresh/removal
 seams for cdenv lifecycle/SSH children and their descendants; issue 77 invokes
@@ -294,14 +301,17 @@ the host and retry a later lookup. URL userinfo, a one-time clone prompt,
 `.netrc`, custom HTTP headers, URL rewriting, and arbitrary provider mechanisms
 are not implicitly
 portable. Host aliases, `IdentityFile`, `ProxyJump`, `IdentityAgent`, and
-`known_hosts` are not automatically replicated; never disable host-key or TLS
-verification to work around missing setup.
+`known_hosts` are not portable through the agent protocol and are not automatically
+replicated.
+Configure destination and host-key trust inside the container; never disable
+host-key or TLS verification to work around missing setup.
 
 Host Git's standard shell helper protocol, trusted include/per-URL matching, and
 the declared noninteractive environment are covered with local fixtures; live
-provider helpers and keychains are not claimed. No OpenSSH helper matrix,
-SSH-agent refresh/confirmation result, or macOS keychain smoke has yet been
-verified for live forwarding. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
+provider helpers and keychains are not claimed. Fake SSH-agent tests cover binary
+extension framing, bounds, concurrent connections, same-path refresh, and
+cancellation. A real OpenSSH fixture and macOS host-agent/keychain
+smoke have not yet been verified for release. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
 publishes the implemented parser and helper limits. The static helper bounds and
 validates `get` before opening the private socket; `store` and `erase` are
 successful no-ops and unknown operations fail closed. Transport lifecycle

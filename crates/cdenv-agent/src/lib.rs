@@ -21,8 +21,8 @@ mod ssh;
 
 #[cfg(target_os = "linux")]
 pub use credential_bridge::{
-    CREDENTIAL_SOCKET_NAME, CredentialBridgeError, CredentialEndpointPaths, SSH_AGENT_SOCKET_NAME,
-    serve_credential_bridge,
+    CREDENTIAL_SOCKET_NAME, CredentialBridgeError, CredentialEndpointPaths,
+    ManagedSshAgentEnrollment, SSH_AGENT_SOCKET_NAME, serve_credential_bridge,
 };
 pub use environment::{
     EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError, EnvironmentProbe,

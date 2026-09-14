@@ -33,6 +33,8 @@ pub trait CredentialBrokerBackend: Send + Sync + 'static {
     fn credential_lookup(&self, body: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>>;
     /// Connects one independently approved host SSH-agent stream.
     fn connect_agent(&self) -> BrokerBackendFuture<'_, Pin<Box<dyn BrokerByteStream>>>;
+    /// Records a bounded in-flight agent operation timeout as a value-free health fact.
+    fn agent_operation_timed_out(&self) {}
     /// Returns bounded, nonsecret author-identity metadata.
     fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>>;
 }
@@ -135,15 +137,26 @@ where
                     }
                     BrokerFrameKind::AgentOpen => {
                         if !backend.is_authorized(&expected, BrokerFrameKind::AgentOpen) { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; }
-                        let permit = stream_admission.clone().try_acquire_owned().map_err(|_| HostCredentialBrokerError::Saturated)?;
+                        let Ok(permit) = stream_admission.clone().try_acquire_owned() else {
+                            send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?;
+                            continue;
+                        };
                         let connection = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, backend.connect_agent()).await;
                         let Ok(Ok(connection)) = connection else { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; };
                         let (tx, rx) = mpsc::channel(8);
-                        if agent_inputs.lock().await.insert(frame.stream_id, tx).is_some() { return Err(BrokerProtocolError::StreamLimit.into()); }
+                        if agent_inputs.lock().await.insert(frame.stream_id, tx).is_some() { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; }
                         let outgoing = outgoing_tx.clone(); let bytes = byte_admission.clone(); let inputs = agent_inputs.clone(); let stream_id = frame.stream_id;
+                        let backend = backend.clone(); let identity = expected.clone();
                         tasks.spawn(async move {
                             let _permit = permit;
-                            let _ = relay_agent(connection, stream_id, rx, outgoing, bytes).await;
+                            let close_outgoing = outgoing.clone();
+                            let close_bytes = bytes.clone();
+                            let result = relay_agent(connection, stream_id, rx, outgoing, bytes, backend, identity).await;
+                            if result.is_err()
+                                && let Ok(frame) = BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())
+                            {
+                                let _ = send_queued(&close_outgoing, &close_bytes, frame).await;
+                            }
                             inputs.lock().await.remove(&stream_id);
                         });
                     }
@@ -172,33 +185,84 @@ where
     result
 }
 
-async fn relay_agent(
+async fn relay_agent<B: CredentialBrokerBackend>(
     connection: Pin<Box<dyn BrokerByteStream>>,
     stream_id: u32,
     mut incoming: mpsc::Receiver<BrokerFrame>,
     outgoing: mpsc::Sender<QueuedFrame>,
     bytes: Arc<Semaphore>,
+    backend: Arc<B>,
+    identity: CredentialLeaseIdentity,
 ) -> Result<(), HostCredentialBrokerError> {
     let (mut agent_read, mut agent_write) = tokio::io::split(connection);
-    let mut buffer = vec![0_u8; cdenv_core::credential_broker::MAX_BROKER_FRAME_BYTES];
     loop {
-        tokio::select! {
-            read = agent_read.read(&mut buffer) => {
-                let count = read.map_err(|_| HostCredentialBrokerError::Io)?;
-                let kind = if count == 0 { BrokerFrameKind::StreamClose } else { BrokerFrameKind::StreamData };
-                send_queued(&outgoing, &bytes, BrokerFrame::new(kind, stream_id, buffer[..count].to_vec())?).await?;
-                if count == 0 { return Ok(()); }
+        let frame = tokio::select! {
+            frame = incoming.recv() => frame.ok_or(BrokerProtocolError::UnknownStream)?,
+            () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
+                if backend.is_authorized(&identity, BrokerFrameKind::AgentOpen) { continue; }
+                send_queued(&outgoing, &bytes, BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())?).await?;
+                return Ok(());
             }
-            frame = incoming.recv() => {
-                let frame = frame.ok_or(BrokerProtocolError::UnknownStream)?;
-                match frame.kind {
-                    BrokerFrameKind::StreamData => agent_write.write_all(frame.payload()).await.map_err(|_| HostCredentialBrokerError::Io)?,
-                    BrokerFrameKind::StreamClose | BrokerFrameKind::Cancel => { agent_write.shutdown().await.map_err(|_| HostCredentialBrokerError::Io)?; return Ok(()); }
-                    _ => return Err(BrokerProtocolError::Kind.into()),
+        };
+        match frame.kind {
+            BrokerFrameKind::StreamData => {
+                validate_agent_packet(frame.payload())?;
+                tokio::time::timeout(
+                    BROKER_OPERATION_TIMEOUT,
+                    agent_write.write_all(frame.payload()),
+                )
+                .await
+                .map_err(|_| HostCredentialBrokerError::Timeout)?
+                .map_err(|_| HostCredentialBrokerError::Io)?;
+                let response = if let Ok(result) = tokio::time::timeout(
+                    BROKER_OPERATION_TIMEOUT,
+                    crate::host_ssh_agent::read_agent_packet(&mut agent_read),
+                )
+                .await
+                {
+                    result.map_err(|_| HostCredentialBrokerError::Io)?
+                } else {
+                    backend.agent_operation_timed_out();
+                    return Err(HostCredentialBrokerError::Timeout);
+                };
+                if !backend.is_authorized(&identity, BrokerFrameKind::AgentOpen) {
+                    send_queued(
+                        &outgoing,
+                        &bytes,
+                        BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())?,
+                    )
+                    .await?;
+                    return Ok(());
                 }
+                send_queued(
+                    &outgoing,
+                    &bytes,
+                    BrokerFrame::new(BrokerFrameKind::StreamData, stream_id, response)?,
+                )
+                .await?;
             }
+            BrokerFrameKind::StreamClose | BrokerFrameKind::Cancel => {
+                agent_write
+                    .shutdown()
+                    .await
+                    .map_err(|_| HostCredentialBrokerError::Io)?;
+                return Ok(());
+            }
+            _ => return Err(BrokerProtocolError::Kind.into()),
         }
     }
+}
+
+fn validate_agent_packet(packet: &[u8]) -> Result<(), BrokerProtocolError> {
+    let header: [u8; 4] = packet
+        .get(..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(BrokerProtocolError::Framing)?;
+    let body = u32::from_be_bytes(header) as usize;
+    if body == 0 || body.checked_add(4) != Some(packet.len()) {
+        return Err(BrokerProtocolError::Framing);
+    }
+    Ok(())
 }
 
 struct QueuedFrame {

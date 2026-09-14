@@ -1,6 +1,7 @@
 //! Container-only credential endpoints multiplexed over protocol-only stdio.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
+use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::io::Write as _;
@@ -34,6 +35,71 @@ pub struct CredentialEndpointPaths {
     pub credential_socket: PathBuf,
     /// Owner-only SSH-agent endpoint.
     pub ssh_agent_socket: PathBuf,
+}
+
+/// Verified, managed `SSH_AUTH_SOCK` enrollment applied after generic sanitization.
+///
+/// Construction checks the exact owner-only endpoint. The value cannot be made
+/// from inherited `SSH_` environment or an arbitrary caller-provided socket.
+#[derive(Clone, Debug)]
+pub struct ManagedSshAgentEnrollment {
+    socket: PathBuf,
+    uid: u32,
+}
+
+impl ManagedSshAgentEnrollment {
+    /// Verifies the bridge-owned runtime directory and stable agent socket.
+    ///
+    /// # Errors
+    ///
+    /// Rejects a replaced directory/socket or ownership, type, and mode drift.
+    pub fn verify(
+        paths: &CredentialEndpointPaths,
+        uid: u32,
+    ) -> Result<Self, CredentialBridgeError> {
+        let directory = fs::symlink_metadata(&paths.runtime_directory)
+            .map_err(|_| CredentialBridgeError::UnsafePath("runtime directory unavailable"))?;
+        validate_directory(&directory, uid)?;
+        if paths.ssh_agent_socket.parent() != Some(paths.runtime_directory.as_path())
+            || paths.ssh_agent_socket.file_name() != Some(OsStr::new(SSH_AGENT_SOCKET_NAME))
+        {
+            return Err(CredentialBridgeError::UnsafePath(
+                "managed SSH-agent endpoint",
+            ));
+        }
+        validate_managed_socket(&paths.ssh_agent_socket, uid)?;
+        Ok(Self {
+            socket: paths.ssh_agent_socket.clone(),
+            uid,
+        })
+    }
+
+    /// Inserts only the verified managed socket after callers sanitize snapshots.
+    ///
+    /// # Errors
+    ///
+    /// Rechecks endpoint identity properties immediately before enrollment.
+    pub fn enroll_environment(
+        &self,
+        environment: &mut BTreeMap<OsString, OsString>,
+    ) -> Result<(), CredentialBridgeError> {
+        validate_managed_socket(&self.socket, self.uid)?;
+        environment.insert(
+            OsString::from("SSH_AUTH_SOCK"),
+            self.socket.clone().into_os_string(),
+        );
+        Ok(())
+    }
+
+    /// Borrows the verified managed value for non-map process enrollment.
+    ///
+    /// # Errors
+    ///
+    /// Rechecks that the endpoint remains an owner-only Unix socket.
+    pub fn value(&self) -> Result<&OsStr, CredentialBridgeError> {
+        validate_managed_socket(&self.socket, self.uid)?;
+        Ok(self.socket.as_os_str())
+    }
 }
 
 /// Private endpoint or bridge failure. Errors never contain protocol payloads.
@@ -182,7 +248,10 @@ async fn accept_loop(
             }
             accepted = listener.accept() => {
                 let (socket, _) = accepted.map_err(|_| CredentialBridgeError::Io)?;
-                let permit = streams.clone().try_acquire_owned().map_err(|_| CredentialBridgeError::Saturated)?;
+                let Ok(permit) = streams.clone().try_acquire_owned() else {
+                    drop(socket);
+                    continue;
+                };
                 let stream_id = next.fetch_add(1, Ordering::Relaxed);
                 if stream_id == 0 { return Err(BrokerProtocolError::StreamId.into()); }
                 let (tx, rx) = mpsc::channel(8);
@@ -192,7 +261,14 @@ async fn accept_loop(
                 let recipients = recipients.clone();
                 tasks.spawn(async move {
                     let _permit = permit;
-                    let _ = serve_local_socket(socket, kind, stream_id, outgoing, bytes, rx).await;
+                    let cancel_outgoing = outgoing.clone();
+                    let cancel_bytes = bytes.clone();
+                    let result = serve_local_socket(socket, kind, stream_id, outgoing, bytes, rx).await;
+                    if result.is_err()
+                        && let Ok(frame) = BrokerFrame::new(BrokerFrameKind::Cancel, stream_id, Vec::new())
+                    {
+                        let _ = send_queued(&cancel_outgoing, &cancel_bytes, frame).await;
+                    }
                     recipients.lock().await.remove(&stream_id);
                 });
             }
@@ -206,70 +282,181 @@ async fn serve_local_socket(
     stream_id: u32,
     outgoing: mpsc::Sender<QueuedFrame>,
     bytes: Arc<Semaphore>,
-    mut incoming: mpsc::Receiver<BrokerFrame>,
+    incoming: mpsc::Receiver<BrokerFrame>,
 ) -> Result<(), CredentialBridgeError> {
-    let (mut local_read, mut local_write) = socket.into_split();
+    let (local_read, local_write) = socket.into_split();
     match kind {
         EndpointKind::Credential => {
-            let mut payload = Vec::new();
-            local_read
-                .take((MAX_BROKER_FRAME_BYTES + 1) as u64)
-                .read_to_end(&mut payload)
-                .await
-                .map_err(|_| CredentialBridgeError::Io)?;
-            if payload.len() > MAX_BROKER_FRAME_BYTES {
-                return Err(BrokerProtocolError::Bounds.into());
-            }
-            send_queued(
-                &outgoing,
-                &bytes,
-                BrokerFrame::new(BrokerFrameKind::CredentialLookup, stream_id, payload)?,
+            serve_credential_socket(
+                local_read,
+                local_write,
+                stream_id,
+                outgoing,
+                bytes,
+                incoming,
             )
-            .await?;
-            let frame = incoming
-                .recv()
-                .await
-                .ok_or(BrokerProtocolError::UnknownStream)?;
-            if frame.kind == BrokerFrameKind::CredentialResult {
-                local_write
-                    .write_all(frame.payload())
-                    .await
-                    .map_err(|_| CredentialBridgeError::Io)?;
-            }
-            local_write
-                .shutdown()
-                .await
-                .map_err(|_| CredentialBridgeError::Io)?;
+            .await
         }
         EndpointKind::Agent => {
-            send_queued(
-                &outgoing,
-                &bytes,
-                BrokerFrame::new(BrokerFrameKind::AgentOpen, stream_id, Vec::new())?,
+            serve_agent_socket(
+                local_read,
+                local_write,
+                stream_id,
+                outgoing,
+                bytes,
+                incoming,
             )
-            .await?;
-            let mut buffer = vec![0_u8; MAX_BROKER_FRAME_BYTES];
-            loop {
-                tokio::select! {
-                    read = local_read.read(&mut buffer) => {
-                        let count = read.map_err(|_| CredentialBridgeError::Io)?;
-                        if count == 0 {
-                            send_queued(&outgoing, &bytes, BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())?).await?;
-                            break;
-                        }
-                        send_queued(&outgoing, &bytes, BrokerFrame::new(BrokerFrameKind::StreamData, stream_id, buffer[..count].to_vec())?).await?;
-                    }
-                    frame = incoming.recv() => {
-                        let frame = frame.ok_or(BrokerProtocolError::UnknownStream)?;
-                        match frame.kind {
-                            BrokerFrameKind::StreamData => local_write.write_all(frame.payload()).await.map_err(|_| CredentialBridgeError::Io)?,
-                            BrokerFrameKind::StreamClose | BrokerFrameKind::Error => { local_write.shutdown().await.map_err(|_| CredentialBridgeError::Io)?; break; }
-                            _ => return Err(BrokerProtocolError::Kind.into()),
-                        }
-                    }
-                }
-            }
+            .await
         }
+    }
+}
+
+async fn serve_credential_socket(
+    local_read: tokio::net::unix::OwnedReadHalf,
+    mut local_write: tokio::net::unix::OwnedWriteHalf,
+    stream_id: u32,
+    outgoing: mpsc::Sender<QueuedFrame>,
+    bytes: Arc<Semaphore>,
+    mut incoming: mpsc::Receiver<BrokerFrame>,
+) -> Result<(), CredentialBridgeError> {
+    let mut payload = Vec::new();
+    local_read
+        .take((MAX_BROKER_FRAME_BYTES + 1) as u64)
+        .read_to_end(&mut payload)
+        .await
+        .map_err(|_| CredentialBridgeError::Io)?;
+    if payload.len() > MAX_BROKER_FRAME_BYTES {
+        return Err(BrokerProtocolError::Bounds.into());
+    }
+    send_queued(
+        &outgoing,
+        &bytes,
+        BrokerFrame::new(BrokerFrameKind::CredentialLookup, stream_id, payload)?,
+    )
+    .await?;
+    let frame = incoming
+        .recv()
+        .await
+        .ok_or(BrokerProtocolError::UnknownStream)?;
+    if frame.kind == BrokerFrameKind::CredentialResult {
+        local_write
+            .write_all(frame.payload())
+            .await
+            .map_err(|_| CredentialBridgeError::Io)?;
+    }
+    local_write
+        .shutdown()
+        .await
+        .map_err(|_| CredentialBridgeError::Io)
+}
+
+async fn serve_agent_socket(
+    mut local_read: tokio::net::unix::OwnedReadHalf,
+    mut local_write: tokio::net::unix::OwnedWriteHalf,
+    stream_id: u32,
+    outgoing: mpsc::Sender<QueuedFrame>,
+    bytes: Arc<Semaphore>,
+    mut incoming: mpsc::Receiver<BrokerFrame>,
+) -> Result<(), CredentialBridgeError> {
+    send_queued(
+        &outgoing,
+        &bytes,
+        BrokerFrame::new(BrokerFrameKind::AgentOpen, stream_id, Vec::new())?,
+    )
+    .await?;
+    loop {
+        let packet = match tokio::time::timeout(
+            cdenv_core::credential_broker::BROKER_OPERATION_TIMEOUT,
+            read_agent_packet(&mut local_read),
+        )
+        .await
+        {
+            Ok(Ok(Some(packet))) => packet,
+            Ok(Ok(None)) => {
+                send_queued(
+                    &outgoing,
+                    &bytes,
+                    BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())?,
+                )
+                .await?;
+                return Ok(());
+            }
+            Ok(Err(error)) => return Err(error),
+            Err(_) => return Err(CredentialBridgeError::Timeout),
+        };
+        send_queued(
+            &outgoing,
+            &bytes,
+            BrokerFrame::new(BrokerFrameKind::StreamData, stream_id, packet)?,
+        )
+        .await?;
+        let frame = tokio::time::timeout(
+            cdenv_core::credential_broker::BROKER_OPERATION_TIMEOUT,
+            incoming.recv(),
+        )
+        .await
+        .map_err(|_| CredentialBridgeError::Timeout)?
+        .ok_or(BrokerProtocolError::UnknownStream)?;
+        match frame.kind {
+            BrokerFrameKind::StreamData => {
+                validate_agent_packet(frame.payload())?;
+                tokio::time::timeout(
+                    cdenv_core::credential_broker::BROKER_OPERATION_TIMEOUT,
+                    local_write.write_all(frame.payload()),
+                )
+                .await
+                .map_err(|_| CredentialBridgeError::Timeout)?
+                .map_err(|_| CredentialBridgeError::Io)?;
+            }
+            BrokerFrameKind::StreamClose | BrokerFrameKind::Error => {
+                local_write
+                    .shutdown()
+                    .await
+                    .map_err(|_| CredentialBridgeError::Io)?;
+                return Ok(());
+            }
+            _ => return Err(BrokerProtocolError::Kind.into()),
+        }
+    }
+}
+
+async fn read_agent_packet(
+    input: &mut (impl AsyncRead + Unpin),
+) -> Result<Option<Vec<u8>>, CredentialBridgeError> {
+    let mut header = [0_u8; 4];
+    let first = input
+        .read(&mut header[..1])
+        .await
+        .map_err(|_| CredentialBridgeError::Io)?;
+    if first == 0 {
+        return Ok(None);
+    }
+    input
+        .read_exact(&mut header[1..])
+        .await
+        .map_err(|_| BrokerProtocolError::Truncated)?;
+    let body = u32::from_be_bytes(header) as usize;
+    let total = body.checked_add(4).ok_or(BrokerProtocolError::Bounds)?;
+    if body == 0 || total > MAX_BROKER_FRAME_BYTES {
+        return Err(BrokerProtocolError::Bounds.into());
+    }
+    let mut packet = vec![0_u8; total];
+    packet[..4].copy_from_slice(&header);
+    input
+        .read_exact(&mut packet[4..])
+        .await
+        .map_err(|_| BrokerProtocolError::Truncated)?;
+    Ok(Some(packet))
+}
+
+fn validate_agent_packet(packet: &[u8]) -> Result<(), BrokerProtocolError> {
+    let header: [u8; 4] = packet
+        .get(..4)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(BrokerProtocolError::Framing)?;
+    let body = u32::from_be_bytes(header) as usize;
+    if body == 0 || body.checked_add(4) != Some(packet.len()) {
+        return Err(BrokerProtocolError::Framing);
     }
     Ok(())
 }
@@ -457,6 +644,21 @@ fn set_socket_permissions(path: &Path) -> Result<(), CredentialBridgeError> {
         .map_err(|_| CredentialBridgeError::Io)
 }
 
+fn validate_managed_socket(path: &Path, uid: u32) -> Result<(), CredentialBridgeError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| CredentialBridgeError::UnsafePath("managed SSH-agent endpoint unavailable"))?;
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_socket()
+        || metadata.uid() != uid
+        || metadata.permissions().mode() & 0o777 != 0o600
+    {
+        return Err(CredentialBridgeError::UnsafePath(
+            "managed SSH-agent endpoint",
+        ));
+    }
+    Ok(())
+}
+
 struct EndpointCleanup {
     paths: CredentialEndpointPaths,
     identity: CredentialLeaseIdentity,
@@ -512,6 +714,36 @@ mod tests {
             .expect("mode");
         prepare_endpoints(&runtime, &first).expect("same lease reconnect");
         assert!(prepare_endpoints(&runtime, &identity(2)).is_err());
+    }
+
+    #[test]
+    fn managed_agent_enrollment_adds_only_the_verified_socket_after_sanitization() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        let runtime = temporary.path().join("runtime");
+        let lease = identity(1);
+        let paths = prepare_endpoints(&runtime, &lease).expect("prepare");
+        let _agent =
+            std::os::unix::net::UnixListener::bind(&paths.ssh_agent_socket).expect("agent socket");
+        fs::set_permissions(&paths.ssh_agent_socket, fs::Permissions::from_mode(0o600))
+            .expect("mode");
+        let enrollment =
+            ManagedSshAgentEnrollment::verify(&paths, lease.user.uid).expect("verified enrollment");
+        let mut environment = BTreeMap::from([
+            (OsString::from("KEEP"), OsString::from("value")),
+            (
+                OsString::from("SSH_STALE"),
+                OsString::from("removed earlier"),
+            ),
+        ]);
+        environment.retain(|name, _| !name.as_encoded_bytes().starts_with(b"SSH_"));
+        enrollment
+            .enroll_environment(&mut environment)
+            .expect("enroll");
+        assert_eq!(environment.len(), 2);
+        assert_eq!(
+            environment.get(OsStr::new("SSH_AUTH_SOCK")),
+            Some(&paths.ssh_agent_socket.into_os_string())
+        );
     }
 
     #[test]

@@ -36,6 +36,7 @@ mod generated_image;
 mod git;
 mod git_credential_backend;
 mod host_git_credentials;
+mod host_ssh_agent;
 mod image_orchestration;
 mod installation;
 mod lifecycle_orchestration;
@@ -166,6 +167,11 @@ pub use host_git_credentials::{
     HostGitCredentialContext, HostGitCredentialError, HostGitCredentialOutcome,
     HostGitCredentialUnavailable, HostGitLaunchEnvironment, MAX_HOST_GIT_HELPERS,
     MAX_HOST_GIT_STDERR_BYTES, ProcessHostGitLaunchEnvironment,
+};
+pub use host_ssh_agent::{
+    AuthorizedHostSshAgentBackend, HostSshAgentAdapter, HostSshAgentEnvironment,
+    HostSshAgentHealth, HostSshAgentSelectionError, MAX_SSH_AGENT_PACKET_BYTES,
+    ProcessHostSshAgentEnvironment, SelectedHostSshAgent, SshAgentAuthorizer,
 };
 pub use image_orchestration::{
     ImageCleanupFailure, ImageContainerBuildRequest, ImageContainerCreateRequest,

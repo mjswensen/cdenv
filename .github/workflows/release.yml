@@ -20,7 +20,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
+          - runner: ubuntu-24.04
+            platform: linux/amd64
+            architecture: x86_64
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
             architecture: aarch64
@@ -62,7 +64,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
           - runner: ubuntu-24.04-arm
             platform: linux-aarch64
           - runner: macos-15

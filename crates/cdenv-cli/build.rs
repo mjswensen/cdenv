@@ -12,8 +12,7 @@ fn main() {
     };
     let output = Path::new(&output);
     let source = env::var_os("CDENV_AGENT_ARTIFACT_DIR").map(|path| Path::new(&path).to_path_buf());
-    // x86_64 staging is intentionally disabled while cdenv targets ARM hosts only.
-    let names = ["cdenv-agent-aarch64"];
+    let names = ["cdenv-agent-x86_64", "cdenv-agent-aarch64"];
     if let Some(directory) = &source {
         for name in names {
             println!("cargo:rerun-if-changed={}", directory.join(name).display());

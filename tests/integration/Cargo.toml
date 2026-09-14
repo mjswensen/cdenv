@@ -11,6 +11,7 @@ publish = false
 [features]
 default = []
 integration = []
+credentials = ["integration"]
 devcontainer-v1 = ["integration"]
 openssh = ["integration"]
 
@@ -32,6 +33,11 @@ required-features = ["devcontainer-v1"]
 name = "openssh-fixture-server"
 path = "src/bin/openssh-fixture-server.rs"
 required-features = ["openssh"]
+
+[[test]]
+name = "credentials"
+path = "tests/credentials.rs"
+required-features = ["credentials"]
 
 [[test]]
 name = "devcontainer_v1"

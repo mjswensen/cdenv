@@ -5,8 +5,7 @@ use thiserror::Error;
 
 include!(concat!(env!("OUT_DIR"), "/agent_artifacts.rs"));
 
-// x86_64 agents are intentionally disabled while cdenv targets ARM hosts only.
-const X86_64: &[u8] = &[];
+const X86_64: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cdenv-agent-x86_64"));
 const AARCH64: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/cdenv-agent-aarch64"));
 
 /// Identity expected from an embedded agent.
@@ -106,7 +105,6 @@ impl AgentArtifactProvider {
     /// Creates a provider for tests and development tooling.
     #[must_use]
     pub const fn staged(x86_64: &'static [u8], aarch64: &'static [u8]) -> Self {
-        // Test/tooling injection retains the old shape; embedded x86_64 bytes remain disabled.
         Self { x86_64, aarch64 }
     }
 

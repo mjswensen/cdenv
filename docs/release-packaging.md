@@ -75,15 +75,15 @@ command continues to use the latest published, non-prerelease release until a
 maintainer publishes the new release. Mark release candidates as prereleases
 before publishing them so they do not become the default installation.
 
-`.github/workflows/release.yml` builds the two agents concurrently on native
-ARM64 Linux runners. Each build executes and validates its matching
+`.github/workflows/release.yml` builds the two agents concurrently on matching
+native x86_64 and ARM64 Linux runners. Each build executes and validates its
 static agent without CPU emulation. An assembly job downloads both verified
 artifacts, runs `cargo xtask finalize-agents` to validate their ELF identities and
 create the shared manifest, and uploads the complete set. Each clean native host
 job downloads that same manifest and pair of agents under `target/`, sets
 `CDENV_AGENT_ARTIFACT_DIR`, then runs `cargo xtask dist`. Supplied agents must match
 the current commit and manifest hashes and pass ELF validation again. The three
-supported hosts are Linux aarch64 and macOS aarch64 (Apple Silicon); x86_64 is temporarily disabled.
+supported hosts are Linux x86_64, Linux aarch64, and macOS aarch64 (Apple Silicon).
 Each job rebuilds the host to check identical archive checksums and uploads the
 archive and its adjacent metadata. No Docker daemon is needed for macOS package
 construction. Docker Desktop runtime behavior is recorded manually with the

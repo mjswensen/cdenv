@@ -35,15 +35,15 @@ pub fn valid_agent_version(bytes: &[u8], build_id: &str) -> bool {
 
 pub fn agent_report(stage: &Path, build_id: &str) -> io::Result<Value> {
     let mut agents = serde_json::Map::new();
-    // x86_64 is intentionally disabled while cdenv targets ARM hosts only.
-    let (arch, machine) = ("aarch64", 183);
-    let bytes = fs::read(stage.join(format!("cdenv-agent-{arch}")))?;
-    super::validate_static_elf(&bytes, machine)
-        .map_err(|error| io::Error::other(format!("invalid static {arch} agent: {error}")))?;
-    agents.insert(
-        arch.to_owned(),
-        json!(format!("{:x}", Sha256::digest(bytes))),
-    );
+    for (arch, machine) in [("aarch64", 183), ("x86_64", 62)] {
+        let bytes = fs::read(stage.join(format!("cdenv-agent-{arch}")))?;
+        super::validate_static_elf(&bytes, machine)
+            .map_err(|error| io::Error::other(format!("invalid static {arch} agent: {error}")))?;
+        agents.insert(
+            arch.to_owned(),
+            json!(format!("{:x}", Sha256::digest(bytes))),
+        );
+    }
     Ok(
         json!({"schemaVersion": 1, "version": env!("CARGO_PKG_VERSION"),
         "buildId": build_id, "protocolVersion": 1, "agents": agents}),
@@ -56,12 +56,12 @@ fn platform() -> String {
 
 fn validate_host(bytes: &[u8], platform: &str) -> io::Result<()> {
     let valid = match platform {
-        // Linux/x86_64 host validation is intentionally disabled.
-        "linux-aarch64" => {
+        "linux-aarch64" | "linux-x86_64" => {
+            let machine = if platform == "linux-aarch64" { 183 } else { 62 };
             bytes.len() >= 64
                 && &bytes[..6] == b"\x7fELF\x02\x01"
                 && matches!(u16::from_le_bytes([bytes[16], bytes[17]]), 2 | 3)
-                && u16::from_le_bytes([bytes[18], bytes[19]]) == 183
+                && u16::from_le_bytes([bytes[18], bytes[19]]) == machine
                 && bytes[24..32] != [0; 8]
         }
         "macos-aarch64" => {

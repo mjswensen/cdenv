@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Informational instrumentation only; the pinned-toolchain release gates stay separate.
 set -euo pipefail
-scope=${1:?expected workspace, devcontainer-v1, or openssh}
+scope=${1:?expected workspace, credentials, devcontainer-v1, or openssh}
 case "$scope" in
   workspace) profile=() ;;
-  devcontainer-v1|openssh) profile=(--release) ;;
+  credentials|devcontainer-v1|openssh) profile=(--release) ;;
   *) echo "Unknown coverage scope: $scope" >&2; exit 2 ;;
 esac
 : "${COVERAGE_ID:?matrix-qualified artifact ID required}"

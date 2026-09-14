@@ -76,7 +76,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
           - runner: ubuntu-24.04-arm
             platform: linux-arm64
           - runner: macos-15
@@ -106,7 +107,20 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
+          - arch: x86_64
+            runner: ubuntu-24.04
+            baseline: minimum
+            docker: v29.6.2
+            docker_cli_arch: x86_64
+            uname_arch: x86_64
+            docker_cli_sha256: 0fcea2a8b4d1b54ccc9010e3451b78504a369d414f37eb3bb79300e1b5c22ce6
+          - arch: x86_64
+            runner: ubuntu-24.04
+            baseline: pinned
+            docker: v29.7.1
+            docker_cli_arch: x86_64
+            uname_arch: x86_64
+            docker_cli_sha256: unused
           - arch: arm64
             runner: ubuntu-24.04-arm
             baseline: minimum
@@ -165,11 +179,22 @@ jobs:
           test "$(docker compose version --short)" = 5.3.1
           ssh -V 2>&1 | grep -q '^OpenSSH_10\.0p2'
           test "$(uname -m)" = '${{ matrix.uname_arch }}'
+      - name: Build packaged host with both verified static agents for credential workflows
+        run: |
+          cargo xtask stage-agents
+          stage="target/cdenv-agent/$(git rev-parse HEAD)"
+          CDENV_AGENT_ARTIFACT_DIR="$PWD/$stage" cargo xtask dist
+          echo "CDENV_CREDENTIAL_TEST_BINARY=$PWD/target/release/cdenv" >> "$GITHUB_ENV"
       - name: Run nonempty editor-independent Dev Container profile suite
         env:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
         run: cargo xtask test-integration --suite devcontainer-v1
+      - name: Run nonempty credential product suite
+        env:
+          CDENV_INTEGRATION: "1"
+          CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
+        run: cargo xtask test-integration --suite credentials
       - name: Run nonempty standard OpenSSH interoperability suite
         env:
           CDENV_INTEGRATION: "1"
@@ -185,6 +210,12 @@ jobs:
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
           COVERAGE_ID: devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}
         run: bash .github/scripts/coverage.sh devcontainer-v1
+      - name: Instrument credential release suite
+        env:
+          CDENV_INTEGRATION: "1"
+          CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
+          COVERAGE_ID: credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+        run: bash .github/scripts/coverage.sh credentials
       - name: Instrument OpenSSH release suite
         env:
           CDENV_INTEGRATION: "1"
@@ -197,6 +228,14 @@ jobs:
         with:
           name: coverage-devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}
           path: target/coverage/devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain credential coverage and gate log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+          path: target/coverage/credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
           if-no-files-found: error
           retention-days: 14
       - name: Retain OpenSSH coverage and gate log
@@ -243,7 +282,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # x86_64 is intentionally disabled until non-ARM hosts are supported again.
+          - runner: ubuntu-24.04
+            platform: linux/amd64
           - runner: ubuntu-24.04-arm
             platform: linux/arm64
     runs-on: ${{ matrix.runner }}

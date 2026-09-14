@@ -20,7 +20,7 @@ class CoverageTests(unittest.TestCase):
             root = Path(temporary)
             self.assertTrue(INDEX.index(root / "absent", root / "index"))
             result = json.loads((root / "index/index.json").read_text())
-            self.assertEqual(len(result["errors"]), 6)
+            self.assertEqual(len(result["errors"]), len(INDEX.expected_ids()))
 
     def test_inventory_accepts_low_coverage_but_not_missing_branches_or_failed_tests(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -81,7 +81,7 @@ esac
                 outcome.read_text().strip() if outcome.exists() else None)
 
     def test_release_uses_real_gate_and_preserves_failure(self):
-        for suite in ("devcontainer-v1", "openssh"):
+        for suite in ("credentials", "devcontainer-v1", "openssh"):
             code, calls, outcome = self.run_collector(suite, test_status=7)
             self.assertEqual((code, outcome), (7, "7"))
             self.assertIn(f"xtask test-integration --suite {suite}\n", calls)

@@ -9,9 +9,10 @@ outside that profile.
 
 ## Supported hosts and exact dependency baseline
 
-Release archives and complete automated Docker/OpenSSH suites cover Linux
-Linux arm64 and macOS arm64. x86_64 hosts are temporarily unsupported. A macOS
-arm64 archive is released only with a recorded Apple Silicon Docker Desktop smoke.
+Release archives cover Linux x86_64, Linux arm64, and macOS arm64. Complete
+automated Docker/OpenSSH/credential suites run on both Linux architectures. A
+macOS arm64 archive is released only with a recorded Apple Silicon Docker Desktop
+smoke.
 
 | Dependency | Minimum verified V1 baseline |
 |---|---:|
@@ -22,15 +23,15 @@ arm64 archive is released only with a recorded Apple Silicon Docker Desktop smok
 | OpenSSH client | 10.0p2 |
 | Git | required by `create` |
 
-CI runs clean, locked arm64 checkouts against explicit minimum and pinned
-Docker/Compose/OpenSSH jobs. Missing dependencies, wrong architectures, missing
+CI runs clean, locked Linux x86_64 and arm64 checkouts against explicit minimum
+and pinned Docker/Compose/OpenSSH jobs. Missing dependencies, wrong architectures, missing
 fixtures, zero tests, skips, and below-baseline versions fail. Node.js, an editor,
 and the reference Dev Container CLI are not runtime or release-suite dependencies.
 
 ## Install, root selection, and uninstall
 
-The simplest installation uses the release installer. It detects Linux arm64 and
-macOS arm64, downloads the matching release archive, verifies
+The simplest installation uses the release installer. It detects Linux x86_64,
+Linux arm64, and macOS arm64, downloads the matching release archive, verifies
 its adjacent SHA-256 checksum, and installs `cdenv` into a writable directory
 already present in `PATH`:
 
@@ -281,9 +282,8 @@ No host socket is mounted, no key or SSH configuration is copied, and cdenv neve
 runs `ssh-add` or starts an agent. Author name/email is separately enabled and must
 not inherit signing keys/configuration, GPG, or Docker credentials.
 
-The managed HTTPS integration provides process-enrollment and refresh/removal
-seams for cdenv lifecycle/SSH children and their descendants; issue 77 invokes
-those seams in production. It does not cover arbitrary `docker exec`, entrypoints,
+The managed HTTPS integration is enrolled for cdenv lifecycle/SSH children and
+their descendants in production. It does not cover arbitrary `docker exec`, entrypoints,
 other users, or Compose sidecars. A private mode-`0600` fragment outside the
 checkout is included by appending to (never replacing) existing `GIT_CONFIG_*`
 command-environment entries. For each exact granted origin it resets the effective
@@ -328,17 +328,26 @@ replicated.
 Configure destination and host-key trust inside the container; never disable
 host-key or TLS verification to work around missing setup.
 
-Host Git's standard shell helper protocol, trusted include/per-URL matching, and
-the declared noninteractive environment are covered with local fixtures; live
-provider helpers and keychains are not claimed. Fake SSH-agent tests cover binary
-extension framing, bounds, concurrent connections, same-path refresh, and
-cancellation. A real OpenSSH fixture and macOS host-agent/keychain
-smoke have not yet been verified for release. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
-publishes the implemented parser and helper limits. The static helper bounds and
-validates `get` before opening the private socket; `store` and `erase` are
-successful no-ops and unknown operations fail closed. Transport lifecycle
-handoff, SSH/identity integration, and authenticated real Git/SSH fixtures remain
-required before shipping issue 68.
+The release compatibility matrix is deliberately narrower than “all Git
+helpers”:
+
+| Surface | Minimum / tested | Evidence |
+|---|---|---|
+| Host Git | Git 2.39+ standard credential protocol | Real `git credential fill`; controlled shell-helper, trusted include, per-URL/path/account, rotation, expiry, and failure fixtures. |
+| Container Git | Git 2.39+ when HTTPS forwarding is used | Static cdenv helper and native-helper isolation tests; authenticated smart-HTTP fetch/push remains an explicit release blocker. |
+| Host/container OpenSSH | OpenSSH 10.0p2+ client and standard agent protocol | Real OpenSSH host-key-verified transport plus controlled real/fake host agents. |
+| Git Credential Manager | Noninteractive environment contract only | Prompt suppression is simulated; no provider/keychain login is claimed. |
+| GitHub CLI helper | `GH_PROMPT_DISABLED=1` contract only | Simulated environment verification; no provider login is claimed. |
+| macOS Keychain/helper | Not yet verified | Requires the retained Apple-silicon Docker Desktop smoke record. |
+
+A trusted custom helper may still display a GUI despite the declared suppression
+variables. Fake agent fixtures cover extension framing, bounds, concurrent
+connections, same-path refresh, and cancellation; the packaged credential suite
+uses a real host `ssh-agent` through create, postAttach, SSH, down/up, rebuild, and
+live revocation. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
+publishes parser and helper limits. The static helper bounds and validates `get`
+before opening the private socket; `store` and `erase` are successful no-ops and
+unknown operations fail closed.
 
 ## Diagnostics, retention, and release evidence
 
@@ -358,7 +367,8 @@ selected root's cache/tmp data. Do not run broad Docker prune as cdenv cleanup.
 Removing the root is the final uninstall cleanup and discards recovery evidence.
 
 Automated guarantees consist of the strict Rust/`cargo-deny` gate, package checks,
-and nonempty Linux architecture profile/OpenSSH/installed workflows. The installed
+and nonempty Linux x86_64/arm64 profile, credential, OpenSSH, and installed
+workflows. The installed
 workflow consumes an issue-52 archive, verifies its checksum, runs without Node.js
 or an editor, exercises applicable Section 19 commands, and proves no `sshd` or
 published port 22. See [release packaging](release-packaging.md).

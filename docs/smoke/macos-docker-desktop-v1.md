@@ -1,6 +1,6 @@
 # macOS Docker Desktop smoke checklist — V1
 
-Checklist revision: **1**. Complete and retain one copy of this document for every
+Checklist revision: **2**. Complete and retain one copy of this document for every
 release candidate. This is a recorded Apple Silicon observation, not an automated
 release guarantee. Editor observations are optional, non-gating notes.
 
@@ -8,7 +8,7 @@ release guarantee. Editor observations are optional, non-gating notes.
 
 | Field | Recorded value |
 |---|---|
-| Checklist revision | 1 |
+| Checklist revision | 2 |
 | Release/date (UTC) | |
 | Tester | |
 | Mac model/hardware | |
@@ -59,10 +59,28 @@ redacted.
    complete stop, named-volume preservation, and successful rebuild recovery.
 8. Run `doctor`, `doctor --json`, and an interrupted-operation recovery case.
    Confirm diagnostic commands do not repair or migrate state.
-9. Inspect every cdenv container: no port `22/tcp` is published, no `sshd`
-   executable/process exists, and SSH still works through the stdio proxy.
-10. Run `down` for every fixture. Confirm scoped forwarding supervisors stop;
-    then apply the documented retention cleanup and uninstall procedure.
+9. Configure a controlled private HTTPS Git origin with a locally trusted CA and
+   hostname-valid certificate. Configure the native macOS helper/keychain for two
+   paths/accounts, stage `git-https` and `git-identity`, and create an explicitly
+   named workspace whose first hook fetches a private dependency. Verify fetch,
+   push, token rotation, denied second origin, identity precedence/removal, and
+   lookup-only store/erase isolation. Record the helper name/version and whether
+   each interaction was simulated or exercised against its real keychain.
+10. Start a controlled host `ssh-agent`, select it explicitly and through `auto`,
+    and use its key from lifecycle, postAttach, and PTY/non-PTY SSH children without
+    mounting the host socket or key. Exercise concurrent clients, same-path agent
+    restart, changed automatic socket plus explicit `up`, empty/unavailable agent,
+    revocation, down/up, and supervisor-loss recovery. Hardware confirmation is
+    required only when the recorded test agent supports it; otherwise record it as
+    simulated rather than verified.
+11. Inspect every cdenv container: no port `22/tcp` is published, no `sshd`
+    executable/process exists, and SSH still works through the stdio proxy. Scan
+    cdenv state, logs, diagnostics, process arguments/environment, snapshots, and
+    managed helper files for the fixture secret marker; only the intended private
+    transport and authenticated recipient may contain it.
+12. Run `down` for every fixture. Confirm scoped forwarding/credential supervisors
+    stop while grants remain; then apply the documented retention cleanup and
+    uninstall procedure.
 
 ## V1 boundaries and optional observations
 

@@ -14,9 +14,10 @@
 **Issue 68 implementation status:** The opt-in permission commands, staged/bound
 host storage, bounded credential parser, versioned multiplexed broker protocol,
 verified Docker Exec bridge, private static-agent endpoints, and active/candidate
-lease primitives are implemented. Production capability reconciliation and
-lifecycle handoff remain pending, as do the real HTTPS/SSH/identity backends and
-managed helper integration. Runtime workflows below remain the target contract,
+lease primitives are implemented. The uncached, noninteractive, bounded host Git
+lookup adapter is also implemented. Production capability reconciliation and
+lifecycle handoff remain pending, as do adapter dispatch, SSH/identity backends,
+and managed container helper integration. Runtime workflows below remain the target contract,
 not evidence that saving a grant enables container authentication.
 See [ADR 0002](docs/adr/0002-opt-in-host-capabilities.md).
 

@@ -21,8 +21,9 @@ lifecycle handoff remain outside the implemented production composition.
 
 Issue 68 therefore cannot yet provide its first-hook, down/up, and rebuild
 workflows. The transport substrate now exists, but this does **not** resolve issue
-68 or advertise working Git authentication. Production orchestration and the real
-capability backends remain in issues 72–77.
+68 or advertise working Git authentication. The host Git adapter is implemented,
+but production dispatch and the remaining capability backends remain in issues
+73–77.
 
 ## Decision
 
@@ -79,6 +80,11 @@ unrelated forwarding or fail otherwise successful readiness.
 - Private, zeroizing Git credential request/result types with redacted `Debug`,
   bounded parsing, actual path/username preservation, context checks, and expiry
   validation. They deliberately have no general-purpose serialization API.
+- A lookup-only host Git adapter that executes current trusted host helpers from
+  a neutral directory with fixed arguments, a closed launch-environment surface,
+  explicit noninteractive settings, private bounded pipes, finite admission and
+  deadlines, process-group cancellation/reaping, typed availability, and no
+  cdenv credential cache or ordinary subprocess log.
 - A version-1 binary multiplexing protocol whose closed operation set contains
   only credential lookup, approved agent streams, identity metadata, health,
   cancellation, and stop. Frames and secret-bearing values have redacted debug
@@ -117,6 +123,8 @@ by the issue.
 | Active broker streams | 32 |
 | Queued frames / aggregate payload | 64 / 512 KiB |
 | Concurrent host helper operations | 4 |
+| Host helper request / stdout / discarded stderr | 32 KiB / 32 KiB / 8 KiB |
+| Host helper execution / termination grace | 30 s / 2 s |
 | Handshake / operation / idle timeout | 5 s / 30 s / 60 s |
 | Same-target reconnect attempts | 3; 100 ms exponential, capped at 2 s |
 
@@ -131,11 +139,13 @@ is `username`/`password`, optional matching echoed context, and optional decimal
 must recheck expiry immediately before release, not just at parsing time.
 
 The helper-operation type distinguishes `get`, `store`, and `erase`; it is not
-an installed helper. No host `store`/`erase` adapter exists. Broker protocol 1
+an installed container helper. Host delegation implements only `credential
+fill`; no host approve/store/reject/erase adapter exists. Each request executes
+the current helper chain, so cdenv does not cache rotation. Broker protocol 1
 rejects unknown frame kinds, versions, identities, and old generations before
-backend dispatch. Real backend adapters and production lifecycle authority are
-still supplied by the follow-up issues; the built-in unavailable backend proves
-that backend degradation does not destroy the transport or unrelated listeners.
+backend dispatch. Production lifecycle authority and adapter dispatch are still
+supplied by the follow-up issues; the built-in unavailable backend proves that
+backend degradation does not destroy the transport or unrelated listeners.
 
 ## DevPod comparison
 
@@ -165,17 +175,20 @@ not a runtime interoperability test or a claim about DevPod Pro:
 
 ## Remaining implementation and release evidence
 
-Before issue 68 can close, compose the production lifecycle paths, install the
-host adapter and supervisor/Exec broker, integrate the static helper and sockets,
-prove helper-chain ownership including Git approve/store, implement live
-revocation, and cover early/detached lifecycle and generation handoff/rollback.
-SSH socket validation/refresh, noninteractive supported host helpers, and
-missing-field-only author defaults also remain outstanding.
+Before issue 68 can close, compose the production lifecycle paths, dispatch the
+host adapter from the authorized supervisor/Exec broker, integrate the static
+helper and sockets, prove helper-chain ownership including Git approve/store,
+implement live revocation, and cover early/detached lifecycle and generation
+handoff/rollback. SSH socket validation/refresh and missing-field-only author
+defaults also remain outstanding.
 
-The permission/parser tests use fake Git and private filesystem fixtures; they
-require no Docker, public network, keychain, or real secrets. They do not prove
-HTTPS fetch/push, SSH signing, Git helper compatibility, or transported
-revocation. No minimum/tested credential-helper matrix is claimed yet. Linux
+The permission/parser and host-adapter tests use fake Git/helpers, private
+filesystem fixtures, and local system Git; they require no Docker, public
+network, keychain, or real secrets. They verify standard helper input, trusted
+includes/per-URL matching, declared noninteractive variables, rotation, bounds,
+and cleanup. They do not prove HTTPS fetch/push, SSH signing, provider-specific
+helper compatibility, or transported revocation. No live-provider helper matrix
+is claimed yet. Linux
 x86_64/arm64 credential transport gates, authenticated HTTPS/SSH integration
 fixtures, and Apple-silicon Docker Desktop/keychain/agent smoke are still required.
 

@@ -147,8 +147,11 @@ TCP listeners or SSH clients. It creates one verified, selected-user Docker Exec
 to the static agent and a protocol-only bounded stdio bridge. The agent creates
 stable owner-only container Unix endpoints outside the checkout. Configured
 capabilities still fail production early preflight until issue 77 supplies lease
-authority and lifecycle handoff, and issues 72–75 supply real backends and helper
-integration. Saving permission alone therefore does not make Git authenticate.
+authority and lifecycle handoff, and issues 73–75 supply helper/agent/identity
+integration. The host Git lookup backend from issue 72 is implemented but is not
+dispatched by production until
+those lease workflows are connected. Saving permission alone therefore does not
+make Git authenticate.
 See [ADR 0002](adr/0002-opt-in-host-capabilities.md).
 
 Permissions are independent, off by default, installation/workspace-scoped, and
@@ -255,20 +258,46 @@ Compose sidecars. It must preserve native helper behavior on ungranted origins
 and prevent granted-origin native store/cache helpers from receiving forwarded
 tokens. No such helper configuration is installed by this foundation.
 
-Host helpers must eventually run in a trusted neutral configuration context,
-without checkout `includeIf gitdir`/`onbranch` portability promises, container
-configuration injection, browser login, or cdenv token caching. Lookup-only
-`erase` cannot repair rejected/stale tokens: repair/authenticate on the host and
-retry a later lookup. URL userinfo, a one-time clone prompt, `.netrc`, custom HTTP
-headers, URL rewriting, and arbitrary provider mechanisms are not implicitly
+Host HTTPS lookup uses the explicit host launch context and runs `git credential
+fill` from a canonical neutral, non-repository directory. The environment is
+cleared, then only `HOME`, `PATH`, locale, XDG configuration, explicit trusted
+Git global/system config paths, DBus/GitHub CLI config, and the GCM credential
+store selector are retained. Git repository/config injection variables are not
+imported. The actual HTTPS host/port, path, and supplied username travel on
+private stdin; fixed arguments contain no credential values. Normal trusted
+user/system helpers, includes, and per-URL matching therefore apply. Conditional
+`includeIf gitdir`/`onbranch` rules are intentionally not reproduced because a
+neutral lookup has no trusted checkout or branch context.
+
+Lookups are uncached and lookup-only. They permit four concurrent Git processes,
+32 KiB each for request and stdout, 8 KiB discarded stderr, and a 30-second
+execution deadline followed by at most a two-second termination grace. Timeout,
+cancellation, disconnect, or future revocation kills the owned process group and
+reaps Git. The private subprocess path writes no operation log and never returns
+helper stdout/stderr in diagnostics. Missing Git/helpers, helper failure,
+login-required state, incomplete/expired credentials, unsupported fields,
+output overflow, timeout, and saturation become typed unavailable outcomes; they
+do not tear down unrelated workspace services.
+
+Host lookup sets `GIT_TERMINAL_PROMPT=0`, suppresses Git/SSH askpass, and declares
+Git Credential Manager (`GCM_INTERACTIVE=Never`, `GCM_GUI_PROMPT=0`) and GitHub
+CLI (`GH_PROMPT_DISABLED=1`) noninteractive modes. These settings cover the
+tested helper boundary but cannot prevent arbitrary trusted custom helper code
+from launching a GUI. cdenv never intentionally starts browser/OAuth login.
+Lookup-only `erase` cannot repair rejected/stale tokens: repair/authenticate on
+the host and retry a later lookup. URL userinfo, a one-time clone prompt,
+`.netrc`, custom HTTP headers, URL rewriting, and arbitrary provider mechanisms
+are not implicitly
 portable. Host aliases, `IdentityFile`, `ProxyJump`, `IdentityAgent`, and
 `known_hosts` are not automatically replicated; never disable host-key or TLS
 verification to work around missing setup.
 
-No host Git/OpenSSH/helper interoperability matrix, noninteractive provider
-behavior, SSH-agent refresh/confirmation result, or macOS keychain smoke has yet
-been verified for live forwarding. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
-publishes the implemented parser limits. Transport bounds, host-helper timeouts,
+Host Git's standard shell helper protocol, trusted include/per-URL matching, and
+the declared noninteractive environment are covered with local fixtures; live
+provider helpers and keychains are not claimed. No OpenSSH helper matrix,
+SSH-agent refresh/confirmation result, or macOS keychain smoke has yet been
+verified for live forwarding. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
+publishes the implemented parser and helper limits. Transport integration,
 backpressure, socket refresh, lifecycle handoff, and authenticated real Git/SSH
 fixtures remain required before shipping issue 68.
 

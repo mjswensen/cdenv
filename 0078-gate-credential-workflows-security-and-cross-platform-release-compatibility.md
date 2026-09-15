@@ -15,7 +15,7 @@ Provide reproducible, nonempty end-to-end and release evidence for the complete 
 
 ## Implementation status
 
-### Complete in source (`11b0651`, `Refs: 78`)
+### Complete in source (`11b0651`, `63a6815`, `20db16f`; `Refs: 78`)
 
 - Added the named opt-in `credentials` integration suite to strict nonzero discovery, exact discovered/passed-count enforcement, locked release execution, coverage inventory, and Linux CI. It now discovers three tests.
 - Added packaged public-command workflows that validate embedded artifacts and exercise staged credential enable, explicit-name create, credential readiness before foreground/detached hooks, pre-SSH `postAttachCommand`, PTY/non-PTY and concurrent managed SSH, zero-port ownership, status, down/up, rebuild, controlled supervisor-loss recovery, live disable, old-session/new-child isolation, and absence of the revoked socket in a new SSH child. The SSH fixture uses a controlled real host `ssh-agent` with an Ed25519 key and verifies a real identity-backed signature.

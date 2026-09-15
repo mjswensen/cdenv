@@ -15,7 +15,9 @@ Provide reproducible, nonempty end-to-end and release evidence for the complete 
 
 ## Implementation status
 
-### Complete in source (`11b0651`, `63a6815`, `20db16f`; `Refs: 78`)
+_Last reconciled: 2026-09-15._
+
+### Completed so far (`11b0651`, `63a6815`, `20db16f`; `Refs: 78`)
 
 - Added the named opt-in `credentials` integration suite to strict nonzero discovery, exact discovered/passed-count enforcement, locked release execution, coverage inventory, and Linux CI. It now discovers three tests.
 - Added packaged public-command workflows that validate embedded artifacts and exercise staged credential enable, explicit-name create, credential readiness before foreground/detached hooks, pre-SSH `postAttachCommand`, PTY/non-PTY and concurrent managed SSH, zero-port ownership, status, down/up, rebuild, controlled supervisor-loss recovery, live disable, old-session/new-child isolation, and absence of the revoked socket in a new SSH child. The SSH fixture uses a controlled real host `ssh-agent` with an Ed25519 key and verifies a real identity-backed signature.
@@ -25,8 +27,9 @@ Provide reproducible, nonempty end-to-end and release evidence for the complete 
 - Expanded the declared Git/OpenSSH/helper compatibility matrix and noninteractive/provider limitations in the operations documentation.
 - Revised the Apple-silicon Docker Desktop checklist to require credential HTTPS/keychain, SSH-agent refresh/lifetime, revocation, and secret-surface observations. This is a checklist only; it is not a completed smoke record.
 - `cargo xtask check`, strict Clippy, xtask tests, installer tests, coverage-plumbing tests, and the traceability test pass. Both static agent architectures and an arm64 packaged host were built and artifact-validated locally.
+- The current credential target discovers exactly three tests. The TLS certificate chain and controlled smart-HTTP server were directly validated locally, including authenticated `ls-remote` and push. This component validation is not a substitute for a passing packaged Docker workflow.
 
-### Still required before this issue can close
+### Remaining implementation and evidence required before closure
 
 - Expand the controlled authenticated smart-HTTP fixture from its implemented fetch/push/rotation/denied-origin path to two paths/accounts on one origin, private submodules, stale-token recovery, and native-helper lookup/approve/store isolation.
 - Add controlled Git-over-SSH evidence with strict host-key verification. The selected agent now performs a real identity-backed signing operation; empty/unavailable agents, confirmation timeout behavior, explicit versus automatic selection, changed automatic socket refresh, and same-path agent restart still need packaged evidence.
@@ -35,6 +38,7 @@ Provide reproducible, nonempty end-to-end and release evidence for the complete 
 - Obtain passing required credential-suite runs on clean native Linux x86_64 and arm64 minimum and pinned dependency jobs. The current suite discovers three tests. An earlier local nested-container attempt discovered the then-current two tests but could not execute Docker bind-mount workflow paths because its Docker Desktop daemon did not share the container-private temporary namespace; this is not release evidence or a skip.
 - Run and retain the revision-2 smoke record on actual Apple-silicon macOS with Docker Desktop and real host keychain/helper behavior. Record hardware, OS/build, all dependency versions, archive/checksum, date, simulated-versus-real provider/confirmation interactions, and outcome. Linux access to Docker Desktop cannot satisfy this item.
 - Update the traceability blockers to verified evidence only after those observations pass, then rerun all profile/OpenSSH/credential, preservation, installed-package, protocol compatibility, and `cargo xtask check` gates from clean locked release builds.
+- Keep every acceptance checkbox open until its complete scenario and required platform observations pass; configured tests and CI jobs are not completed release evidence.
 
 ## Work
 

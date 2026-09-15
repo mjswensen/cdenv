@@ -20,9 +20,16 @@ cdenv-agent = { path = "../../crates/cdenv-agent" }
 cdenv-cli = { path = "../../crates/cdenv-cli" }
 cdenv-core = { path = "../../crates/cdenv-core" }
 cdenv-devcontainer = { path = "../../crates/cdenv-devcontainer" }
+rustls.workspace = true
+rustls-pki-types.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+
+[[bin]]
+name = "credential-https-server"
+path = "src/bin/credential-https-server.rs"
+required-features = ["credentials"]
 
 [[bin]]
 name = "editor-server-simulator"

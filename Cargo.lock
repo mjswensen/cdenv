@@ -346,6 +346,8 @@ dependencies = [
  "cdenv-cli",
  "cdenv-core",
  "cdenv-devcontainer",
+ "rustls",
+ "rustls-pki-types",
  "serde_json",
  "tempfile",
  "tokio",
@@ -2105,6 +2107,7 @@ checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "aws-lc-rs",
  "once_cell",
+ "ring",
  "rustls-pki-types",
  "rustls-webpki",
  "subtle",

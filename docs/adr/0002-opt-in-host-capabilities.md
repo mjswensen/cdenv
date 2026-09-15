@@ -196,11 +196,15 @@ The permission/parser and host-adapter tests use fake Git/helpers, private
 filesystem fixtures, and local system Git; they require no Docker, public
 network, keychain, or real secrets. They verify standard helper input, trusted
 includes/per-URL matching, declared noninteractive variables, rotation, bounds,
-and cleanup. The packaged credential suite additionally exercises a controlled
-real host `ssh-agent` through create, first hook, postAttach, managed SSH,
-down/up, rebuild, and live disable. These results do not prove authenticated
-smart-HTTP fetch/push, real SSH signing and host-key workflows, provider-specific
-helper compatibility, or every lifecycle and secret surface. No live-provider
+and cleanup. The packaged credential suite additionally configures a controlled
+hostname-valid TLS server signed by its private test CA for real smart-HTTP
+fetch/push, uncached token rotation, and denied-origin checks, and exercises a
+controlled real host `ssh-agent` for an identity-backed signing operation and
+through create, hooks, managed SSH, down/up, rebuild, and live disable. Until retained clean native runs pass, this fixture is
+configured evidence rather than a release result. It does not yet prove the
+controlled Git-over-SSH host-key workflow and all agent selection/failure/
+confirmation edges, provider-specific helper compatibility, or every lifecycle
+and secret surface. No live-provider
 helper matrix is claimed.
 
 Evidence status on 2026-09-15 (Linux aarch64, Rust 1.97.1):

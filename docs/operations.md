@@ -333,7 +333,7 @@ helpers”:
 | Surface | Minimum / tested | Evidence |
 |---|---|---|
 | Host Git | Git 2.39+ standard credential protocol | Real `git credential fill`; controlled shell-helper, trusted include, per-URL/path/account, rotation, expiry, and failure fixtures. |
-| Container Git | Git 2.39+ when HTTPS forwarding is used | Static cdenv helper and native-helper isolation tests; authenticated smart-HTTP fetch/push remains an explicit release blocker. |
+| Container Git | Git 2.39+ when HTTPS forwarding is used | Static cdenv helper and native-helper isolation tests plus a proper-CA authenticated smart-HTTP fetch/push/rotation fixture; retained clean native architecture runs remain an explicit release blocker. |
 | Host/container OpenSSH | OpenSSH 10.0p2+ client and standard agent protocol | Real OpenSSH host-key-verified transport plus controlled real/fake host agents. |
 | Git Credential Manager | Noninteractive environment contract only | Prompt suppression is simulated; no provider/keychain login is claimed. |
 | GitHub CLI helper | `GH_PROMPT_DISABLED=1` contract only | Simulated environment verification; no provider login is claimed. |
@@ -341,9 +341,12 @@ helpers”:
 
 A trusted custom helper may still display a GUI despite the declared suppression
 variables. Fake agent fixtures cover extension framing, bounds, concurrent
-connections, same-path refresh, and cancellation; the packaged credential suite
-uses a real host `ssh-agent` through create, foreground/detached hooks,
-postAttach, PTY/non-PTY and concurrent SSH children, down/up, rebuild, controlled
+connections, same-path refresh, and cancellation. The packaged credential suite
+uses a controlled hostname-valid TLS certificate signed by its private test CA
+for real smart-HTTP fetch/push, token rotation, and denied-origin checks. It also
+uses a real host `ssh-agent` for an identity-backed signing operation and through
+create, foreground/detached hooks, postAttach, PTY/non-PTY and concurrent SSH
+children, down/up, rebuild, controlled
 supervisor-loss recovery, and live revocation that preserves an old SSH session
 while removing credential enrollment from a new child. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
 publishes parser and helper limits. The static helper bounds and validates `get`

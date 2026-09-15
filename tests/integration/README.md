@@ -29,14 +29,16 @@ the reference Dev Container CLI.
 
 The gate runs the focused `cdenv-devcontainer` and `cdenv-cli` regression tests,
 then the black-box tests in `tests/devcontainer_v1.rs`. The named credential
-suite drives staged enable/create, first and detached hooks, PTY/non-PTY and
-concurrent SSH children, down/up/rebuild, controlled supervisor-loss recovery,
-and live revocation with old-session/new-child isolation through the packaged
-executable. It rejects an empty or partially skipped run. Its
+suite drives proper-CA authenticated smart-HTTP fetch/push, token rotation and
+origin denial, plus staged enable/create, first and detached hooks, PTY/non-PTY
+real forwarded-agent signing, concurrent SSH children, down/up/rebuild,
+controlled supervisor-loss
+recovery, and live revocation with old-session/new-child isolation through the
+packaged executable. It rejects an empty or partially skipped run. Its
 `fixtures/credential-coverage.json` record distinguishes integrated evidence,
 component evidence, and requirements still blocked on authenticated TLS/macOS
-observations. Base-image pulls are limited to the fixture-declared Debian and
-Alpine images. Feature network tests
+observations. Base-image pulls are limited to the fixture-declared Debian,
+Alpine, and official `buildpack-deps:trixie` Git-client images. Feature network tests
 use controlled fixture servers in focused component tests; normal fixture
 parsing is offline.
 

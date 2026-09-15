@@ -62,9 +62,59 @@ fn wait_for_path(path: &Path, operation: &str) {
     panic!("{operation} did not create {}", path.display());
 }
 
+struct HttpsServer {
+    child: Child,
+    port: u16,
+}
+
+impl HttpsServer {
+    fn start(root: &Path, project_root: &Path, credential: &Path) -> Self {
+        let ready = root.join("https-server.ready");
+        let mut child = Command::new(env!("CARGO_BIN_EXE_credential-https-server"))
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fixtures/credential-tls/server.pem"
+            ))
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/fixtures/credential-tls/server-key.pem"
+            ))
+            .arg(project_root)
+            .arg(credential)
+            .arg(&ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("start controlled HTTPS server");
+        for _ in 0..200 {
+            if let Ok(value) = fs::read_to_string(&ready) {
+                let port = value.parse().expect("HTTPS fixture port");
+                return Self { child, port };
+            }
+            assert!(
+                child.try_wait().expect("inspect HTTPS fixture").is_none(),
+                "controlled HTTPS server exited before readiness"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let _ = child.kill();
+        let _ = child.wait();
+        panic!("controlled HTTPS server did not become ready");
+    }
+}
+
+impl Drop for HttpsServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 struct Agent {
     child: Child,
     socket: PathBuf,
+    public_key: PathBuf,
 }
 
 impl Agent {
@@ -96,7 +146,11 @@ impl Agent {
                     .status()
                     .expect("start ssh-add");
                 assert!(added.success(), "load controlled agent key");
-                return Self { child, socket };
+                return Self {
+                    child,
+                    socket,
+                    public_key: key.with_extension("pub"),
+                };
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -113,14 +167,19 @@ impl Drop for Agent {
     }
 }
 
-fn create_repository(root: &Path) -> PathBuf {
+fn create_repository(root: &Path, agent_public_key: &Path) -> PathBuf {
     let repository = root.join("repository");
     fs::create_dir_all(repository.join(".devcontainer")).expect("repository directory");
+    fs::copy(
+        agent_public_key,
+        repository.join(".devcontainer/fixture-agent-key.pub"),
+    )
+    .expect("copy fixture agent public key");
     fs::write(
         repository.join(".devcontainer/devcontainer.json"),
         r#"{
   "name": "credential-release-gate",
-  "image": "debian:13-slim",
+  "image": "buildpack-deps:trixie",
   "workspaceFolder": "/workspaces/credential-release-gate",
   "onCreateCommand": ["/bin/sh", "-c", "test -S \"$SSH_AUTH_SOCK\" && printf first-hook > .credential-first-hook"],
   "postStartCommand": ["/bin/sh", "-c", "test -S \"$SSH_AUTH_SOCK\" && printf detached > .credential-detached"],
@@ -159,7 +218,7 @@ fn create_repository(root: &Path) -> PathBuf {
         &Command::new("git")
             .args(["-C"])
             .arg(&repository)
-            .args(["add", ".devcontainer/devcontainer.json"])
+            .args(["add", ".devcontainer"])
             .output()
             .expect("git add"),
         "git add",
@@ -176,8 +235,8 @@ fn create_repository(root: &Path) -> PathBuf {
     repository
 }
 
-fn contains_marker(root: &Path) -> bool {
-    fn visit(path: &Path) -> bool {
+fn contains_bytes(root: &Path, marker: &[u8]) -> bool {
+    fn visit(path: &Path, marker: &[u8]) -> bool {
         let Ok(entries) = fs::read_dir(path) else {
             return false;
         };
@@ -187,22 +246,23 @@ fn contains_marker(root: &Path) -> bool {
                 continue;
             };
             if metadata.is_dir() {
-                if visit(&path) {
+                if visit(&path, marker) {
                     return true;
                 }
             } else if metadata.is_file()
-                && fs::read(&path).is_ok_and(|bytes| {
-                    bytes
-                        .windows(SECRET_MARKER.len())
-                        .any(|window| window == SECRET_MARKER.as_bytes())
-                })
+                && fs::read(&path)
+                    .is_ok_and(|bytes| bytes.windows(marker.len()).any(|window| window == marker))
             {
                 return true;
             }
         }
         false
     }
-    visit(root)
+    visit(root, marker)
+}
+
+fn contains_marker(root: &Path) -> bool {
+    contains_bytes(root, SECRET_MARKER.as_bytes())
 }
 
 #[test]
@@ -216,6 +276,295 @@ fn credential_traceability_manifest_is_nonempty_and_names_public_workflows() {
         .expect("criteria array");
 
     assert!(scenarios.len() >= 10 && criteria.len() >= 10);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the authenticated smart-HTTP sequence remains explicit and auditable"
+)]
+fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
+    const FIRST_TOKEN: &str = "credential-https-secret-one";
+    const SECOND_TOKEN: &str = "credential-https-secret-two";
+
+    let binary = PathBuf::from(
+        std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
+            .expect("xtask must provide the packaged cdenv binary"),
+    );
+    require_success(
+        &run(&binary, &["__validate-artifacts"], &[]),
+        "artifact validation",
+    );
+    let shared_host_directory = std::env::var_os("CDENV_INTEGRATION_SHARED_TMP")
+        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let temporary = tempfile::Builder::new()
+        .prefix("cdenv-credential-https-")
+        .tempdir_in(shared_host_directory)
+        .expect("temporary HTTPS workflow");
+    let home = temporary.path().join("home");
+    fs::create_dir(&home).expect("host home");
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("host home mode");
+    let credential = temporary.path().join("host-credential");
+    fs::write(&credential, format!("alice\n{FIRST_TOKEN}\n")).expect("initial credential");
+    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).expect("credential mode");
+    let helper = temporary.path().join("host-helper");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = get ] || exit 0\ncat >/dev/null\n{{ read username; read password; }} < '{}'\nprintf 'username=%s\\npassword=%s\\n' \"$username\" \"$password\"\n",
+            credential.display()
+        ),
+    )
+    .expect("host helper");
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper mode");
+    fs::write(
+        home.join(".gitconfig"),
+        format!("[credential]\n\thelper = !{}\n", helper.display()),
+    )
+    .expect("host Git config");
+
+    let project_root = temporary.path().join("smart-http");
+    let bare = project_root.join("team/repo.git");
+    fs::create_dir_all(bare.parent().expect("bare parent")).expect("smart HTTP root");
+    require_success(
+        &Command::new("git")
+            .args(["init", "--bare", "--initial-branch", "main"])
+            .arg(&bare)
+            .output()
+            .expect("initialize bare repository"),
+        "initialize smart-HTTP bare repository",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&bare)
+            .args(["config", "http.receivepack", "true"])
+            .output()
+            .expect("enable authenticated push"),
+        "enable authenticated smart-HTTP push",
+    );
+    let seed = temporary.path().join("seed");
+    require_success(
+        &Command::new("git")
+            .args(["init", "--initial-branch", "main"])
+            .arg(&seed)
+            .output()
+            .expect("initialize seed"),
+        "initialize HTTPS seed",
+    );
+    fs::write(seed.join("private.txt"), "controlled private repository\n").expect("seed file");
+    for (key, value) in [
+        ("user.name", "Credential HTTPS Gate"),
+        ("user.email", "https-gate@example.invalid"),
+    ] {
+        require_success(
+            &Command::new("git")
+                .args(["-C"])
+                .arg(&seed)
+                .args(["config", key, value])
+                .output()
+                .expect("configure seed"),
+            "configure HTTPS seed",
+        );
+    }
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&seed)
+            .args(["add", "private.txt"])
+            .output()
+            .expect("add seed"),
+        "add HTTPS seed",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&seed)
+            .args(["commit", "-m", "seed"])
+            .output()
+            .expect("commit seed"),
+        "commit HTTPS seed",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&seed)
+            .args(["push"])
+            .arg(&bare)
+            .arg("main")
+            .output()
+            .expect("push seed"),
+        "push HTTPS seed",
+    );
+
+    let server = HttpsServer::start(temporary.path(), &project_root, &credential);
+    let origin = format!("https://credential.test:{}", server.port);
+    let repository = temporary.path().join("repository");
+    fs::create_dir_all(repository.join(".devcontainer")).expect("HTTPS source repository");
+    fs::copy(
+        concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/fixtures/credential-tls/ca.pem"
+        ),
+        repository.join(".devcontainer/ca.pem"),
+    )
+    .expect("copy controlled CA");
+    fs::write(
+        repository.join(".devcontainer/devcontainer.json"),
+        format!(
+            r#"{{
+  "name": "credential-https-gate",
+  "image": "buildpack-deps:trixie",
+  "workspaceFolder": "/workspaces/credential-https-gate",
+  "runArgs": ["--add-host", "credential.test:host-gateway", "--add-host", "denied.test:host-gateway"],
+  "remoteEnv": {{"GIT_SSL_CAINFO": "/workspaces/credential-https-gate/.devcontainer/ca.pem"}},
+  "onCreateCommand": ["/bin/sh", "-c", "git clone '{origin}/team/repo.git' https-checkout && test -f https-checkout/private.txt"]
+}}
+"#
+        ),
+    )
+    .expect("HTTPS devcontainer config");
+    require_success(
+        &Command::new("git")
+            .args(["init", "--initial-branch", "main"])
+            .arg(&repository)
+            .output()
+            .expect("initialize HTTPS source"),
+        "initialize HTTPS source",
+    );
+    for (key, value) in [
+        ("user.name", "Credential HTTPS Gate"),
+        ("user.email", "https-gate@example.invalid"),
+    ] {
+        require_success(
+            &Command::new("git")
+                .args(["-C"])
+                .arg(&repository)
+                .args(["config", key, value])
+                .output()
+                .expect("configure HTTPS source"),
+            "configure HTTPS source",
+        );
+    }
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&repository)
+            .args(["add", ".devcontainer"])
+            .output()
+            .expect("add HTTPS source"),
+        "add HTTPS source",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&repository)
+            .args(["commit", "-m", "HTTPS fixture"])
+            .output()
+            .expect("commit HTTPS source"),
+        "commit HTTPS source",
+    );
+
+    let root = temporary.path().join("cdenv-root");
+    let workspace = unique_name("credential-https");
+    let root_text = root.to_str().expect("root text");
+    let repository_text = repository.to_str().expect("repository text");
+    let environment = [("HOME", home.as_path())];
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "credentials",
+                "enable",
+                &workspace,
+                "git-https",
+                "--host",
+                &origin,
+            ],
+            &environment,
+        ),
+        "stage HTTPS permission",
+    );
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "--no-modify-ssh-config",
+                "create",
+                repository_text,
+                "--name",
+                &workspace,
+            ],
+            &environment,
+        ),
+        "create with authenticated first-hook clone",
+    );
+
+    let first_push = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            "git -C https-checkout config user.name gate && git -C https-checkout config user.email gate@example.invalid && printf first > https-checkout/first && git -C https-checkout add first && git -C https-checkout commit -m first && git -C https-checkout push origin HEAD:main",
+        ],
+        &environment,
+    );
+    require_success(&first_push, "authenticated HTTPS push");
+    fs::write(&credential, format!("alice\n{SECOND_TOKEN}\n")).expect("rotate credential");
+    let rotated = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            "git -C https-checkout fetch origin && printf second > https-checkout/second && git -C https-checkout add second && git -C https-checkout commit -m second && git -C https-checkout push origin HEAD:main",
+        ],
+        &environment,
+    );
+    require_success(&rotated, "rotated HTTPS fetch and push");
+    let denied_url = format!("https://denied.test:{}/team/repo.git", server.port);
+    let denied_command =
+        format!("if git ls-remote '{denied_url}' >/dev/null 2>&1; then exit 31; fi");
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "ssh",
+                &workspace,
+                "--",
+                "/bin/sh",
+                "-c",
+                &denied_command,
+            ],
+            &environment,
+        ),
+        "denied additional HTTPS origin",
+    );
+    assert!(!contains_bytes(&root, FIRST_TOKEN.as_bytes()));
+    assert!(!contains_bytes(&root, SECOND_TOKEN.as_bytes()));
+    require_success(
+        &run(
+            &binary,
+            &["--root", root_text, "down", &workspace],
+            &environment,
+        ),
+        "HTTPS fixture down",
+    );
 }
 
 #[test]
@@ -243,9 +592,9 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
     let home = temporary.path().join("home");
     fs::create_dir(&home).expect("host home");
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("host home mode");
-    let repository = create_repository(temporary.path());
-    let workspace = unique_name("credential-gate");
     let agent = Agent::start(temporary.path());
+    let repository = create_repository(temporary.path(), &agent.public_key);
+    let workspace = unique_name("credential-gate");
     let root_text = root.to_str().expect("root text");
     let repository_text = repository.to_str().expect("repository text");
     let socket_text = agent.socket.to_str().expect("socket text");
@@ -319,6 +668,41 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
         fs::read(checkout.join(".credential-post-attach")).expect("postAttach marker"),
         b"post-attach"
     );
+    let signing = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            "printf agent-signing > .credential-signing-message && ssh-keygen -Y sign -f .devcontainer/fixture-agent-key.pub -n cdenv .credential-signing-message >/dev/null 2>&1 && test -s .credential-signing-message.sig",
+        ],
+        &environment,
+    );
+    require_success(&signing, "managed agent signing");
+    let allowed_signers = temporary.path().join("allowed-signers");
+    fs::write(
+        &allowed_signers,
+        format!(
+            "fixture {}",
+            fs::read_to_string(&agent.public_key).expect("agent public key")
+        ),
+    )
+    .expect("allowed signers");
+    let message =
+        fs::File::open(checkout.join(".credential-signing-message")).expect("signed message");
+    let verified = Command::new("ssh-keygen")
+        .args(["-Y", "verify", "-f"])
+        .arg(&allowed_signers)
+        .args(["-I", "fixture", "-n", "cdenv", "-s"])
+        .arg(checkout.join(".credential-signing-message.sig"))
+        .stdin(message)
+        .output()
+        .expect("verify managed agent signature");
+    require_success(&verified, "managed agent signature verification");
 
     let ssh_config = root.join("ssh/config");
     let ssh_config_text = ssh_config.to_str().expect("SSH config text");

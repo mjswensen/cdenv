@@ -120,9 +120,32 @@ struct Agent {
 impl Agent {
     fn start(root: &Path) -> Self {
         let socket = root.join("host-agent.sock");
+        let key = root.join("fixture-agent-key");
+        let generated = Command::new("ssh-keygen")
+            .args(["-q", "-t", "ed25519", "-N", "", "-f"])
+            .arg(&key)
+            .status()
+            .expect("start ssh-keygen");
+        assert!(generated.success(), "generate controlled agent key");
+        let child = Self::start_process(&socket, &key);
+        Self {
+            child,
+            socket,
+            public_key: key.with_extension("pub"),
+        }
+    }
+
+    fn restart_same_path(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        let _ = fs::remove_file(&self.socket);
+        self.child = Self::start_process(&self.socket, &self.public_key.with_extension(""));
+    }
+
+    fn start_process(socket: &Path, key: &Path) -> Child {
         let mut child = Command::new("ssh-agent")
             .args(["-D", "-a"])
-            .arg(&socket)
+            .arg(socket)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -130,29 +153,18 @@ impl Agent {
             .expect("start controlled SSH agent");
         for _ in 0..200 {
             if socket.exists() {
-                let key = root.join("fixture-agent-key");
-                let generated = Command::new("ssh-keygen")
-                    .args(["-q", "-t", "ed25519", "-N", "", "-f"])
-                    .arg(&key)
-                    .status()
-                    .expect("start ssh-keygen");
-                assert!(generated.success(), "generate controlled agent key");
                 let added = Command::new("ssh-add")
-                    .arg(&key)
-                    .env("SSH_AUTH_SOCK", &socket)
+                    .arg(key)
+                    .env("SSH_AUTH_SOCK", socket)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
                     .status()
                     .expect("start ssh-add");
                 assert!(added.success(), "load controlled agent key");
-                return Self {
-                    child,
-                    socket,
-                    public_key: key.with_extension("pub"),
-                };
+                return child;
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            std::thread::sleep(Duration::from_millis(10));
         }
         let _ = child.kill();
         let _ = child.wait();
@@ -283,9 +295,10 @@ fn credential_traceability_manifest_is_nonempty_and_names_public_workflows() {
     clippy::too_many_lines,
     reason = "the authenticated smart-HTTP sequence remains explicit and auditable"
 )]
-fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
+fn packaged_git_https_paths_accounts_submodule_rotation_and_helper_isolation() {
     const FIRST_TOKEN: &str = "credential-https-secret-one";
     const SECOND_TOKEN: &str = "credential-https-secret-two";
+    const DEPENDENCY_TOKEN: &str = "credential-https-dependency-secret";
 
     let binary = PathBuf::from(
         std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
@@ -304,22 +317,32 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
     let home = temporary.path().join("home");
     fs::create_dir(&home).expect("host home");
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("host home mode");
-    let credential = temporary.path().join("host-credential");
-    fs::write(&credential, format!("alice\n{FIRST_TOKEN}\n")).expect("initial credential");
-    fs::set_permissions(&credential, fs::Permissions::from_mode(0o600)).expect("credential mode");
+    let host_credentials = temporary.path().join("host-credentials");
+    let server_credentials = temporary.path().join("server-credentials");
+    let initial_credentials = format!(
+        "team/repo.git\talice\t{FIRST_TOKEN}\nteam/dependency.git\tbob\t{DEPENDENCY_TOKEN}\n"
+    );
+    fs::write(&host_credentials, &initial_credentials).expect("initial host credentials");
+    fs::write(&server_credentials, &initial_credentials).expect("initial server credentials");
+    for path in [&host_credentials, &server_credentials] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).expect("credential mode");
+    }
     let helper = temporary.path().join("host-helper");
     fs::write(
         &helper,
         format!(
-            "#!/bin/sh\n[ \"$1\" = get ] || exit 0\ncat >/dev/null\n{{ read username; read password; }} < '{}'\nprintf 'username=%s\\npassword=%s\\n' \"$username\" \"$password\"\n",
-            credential.display()
+            "#!/bin/sh\n[ \"$1\" = get ] || exit 0\npath=\nwhile IFS='=' read -r key value; do [ \"$key\" = path ] && path=$value; done\nawk -F '\\t' -v path=\"$path\" '$1 == path {{ printf \"username=%s\\npassword=%s\\n\", $2, $3; found=1 }} END {{ exit !found }}' '{}'\n",
+            host_credentials.display()
         ),
     )
     .expect("host helper");
     fs::set_permissions(&helper, fs::Permissions::from_mode(0o700)).expect("helper mode");
     fs::write(
         home.join(".gitconfig"),
-        format!("[credential]\n\thelper = !{}\n", helper.display()),
+        format!(
+            "[credential]\n\thelper = !{}\n\tuseHttpPath = true\n",
+            helper.display()
+        ),
     )
     .expect("host Git config");
 
@@ -343,6 +366,75 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
             .expect("enable authenticated push"),
         "enable authenticated smart-HTTP push",
     );
+    let dependency_bare = project_root.join("team/dependency.git");
+    require_success(
+        &Command::new("git")
+            .args(["init", "--bare", "--initial-branch", "main"])
+            .arg(&dependency_bare)
+            .output()
+            .expect("initialize dependency repository"),
+        "initialize smart-HTTP dependency repository",
+    );
+    let dependency_seed = temporary.path().join("dependency-seed");
+    require_success(
+        &Command::new("git")
+            .args(["init", "--initial-branch", "main"])
+            .arg(&dependency_seed)
+            .output()
+            .expect("initialize dependency seed"),
+        "initialize dependency seed",
+    );
+    fs::write(
+        dependency_seed.join("dependency.txt"),
+        "private submodule\n",
+    )
+    .expect("dependency file");
+    for (key, value) in [
+        ("user.name", "Credential Dependency Gate"),
+        ("user.email", "dependency-gate@example.invalid"),
+    ] {
+        require_success(
+            &Command::new("git")
+                .args(["-C"])
+                .arg(&dependency_seed)
+                .args(["config", key, value])
+                .output()
+                .expect("configure dependency seed"),
+            "configure dependency seed",
+        );
+    }
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&dependency_seed)
+            .args(["add", "dependency.txt"])
+            .output()
+            .expect("add dependency seed"),
+        "add dependency seed",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&dependency_seed)
+            .args(["commit", "-m", "dependency seed"])
+            .output()
+            .expect("commit dependency seed"),
+        "commit dependency seed",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&dependency_seed)
+            .args(["push"])
+            .arg(&dependency_bare)
+            .arg("main")
+            .output()
+            .expect("push dependency seed"),
+        "push dependency seed",
+    );
+
+    let server = HttpsServer::start(temporary.path(), &project_root, &server_credentials);
+    let origin = format!("https://credential.test:{}", server.port);
     let seed = temporary.path().join("seed");
     require_success(
         &Command::new("git")
@@ -380,6 +472,41 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
         &Command::new("git")
             .args(["-C"])
             .arg(&seed)
+            .args(["-c", "protocol.file.allow=always", "submodule", "add"])
+            .arg(&dependency_bare)
+            .arg("vendor/private")
+            .output()
+            .expect("add private submodule"),
+        "add private submodule",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&seed)
+            .args([
+                "config",
+                "-f",
+                ".gitmodules",
+                "submodule.vendor/private.url",
+                &format!("{origin}/team/dependency.git"),
+            ])
+            .output()
+            .expect("configure private submodule URL"),
+        "configure private submodule URL",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&seed)
+            .args(["add", ".gitmodules", "vendor/private"])
+            .output()
+            .expect("add private submodule metadata"),
+        "add private submodule metadata",
+    );
+    require_success(
+        &Command::new("git")
+            .args(["-C"])
+            .arg(&seed)
             .args(["commit", "-m", "seed"])
             .output()
             .expect("commit seed"),
@@ -397,8 +524,6 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
         "push HTTPS seed",
     );
 
-    let server = HttpsServer::start(temporary.path(), &project_root, &credential);
-    let origin = format!("https://credential.test:{}", server.port);
     let repository = temporary.path().join("repository");
     fs::create_dir_all(repository.join(".devcontainer")).expect("HTTPS source repository");
     fs::copy(
@@ -418,7 +543,7 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
   "workspaceFolder": "/workspaces/credential-https-gate",
   "runArgs": ["--add-host", "credential.test:host-gateway", "--add-host", "denied.test:host-gateway"],
   "remoteEnv": {{"GIT_SSL_CAINFO": "/workspaces/credential-https-gate/.devcontainer/ca.pem"}},
-  "onCreateCommand": ["/bin/sh", "-c", "git clone '{origin}/team/repo.git' https-checkout && test -f https-checkout/private.txt"]
+  "onCreateCommand": ["/bin/sh", "-c", "git clone --recurse-submodules '{origin}/team/repo.git' https-checkout && test -f https-checkout/private.txt && test -f https-checkout/vendor/private/dependency.txt"]
 }}
 "#
         ),
@@ -519,7 +644,41 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
         &environment,
     );
     require_success(&first_push, "authenticated HTTPS push");
-    fs::write(&credential, format!("alice\n{SECOND_TOKEN}\n")).expect("rotate credential");
+    let rotated_credentials = format!(
+        "team/repo.git\talice\t{SECOND_TOKEN}\nteam/dependency.git\tbob\t{DEPENDENCY_TOKEN}\n"
+    );
+    fs::write(&server_credentials, &rotated_credentials).expect("rotate server credential");
+    let stale = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            "git -C https-checkout fetch origin",
+        ],
+        &environment,
+    );
+    assert!(
+        !stale.status.success(),
+        "stale token unexpectedly authenticated"
+    );
+    assert!(
+        !stale
+            .stdout
+            .windows(FIRST_TOKEN.len())
+            .any(|value| value == FIRST_TOKEN.as_bytes())
+    );
+    assert!(
+        !stale
+            .stderr
+            .windows(FIRST_TOKEN.len())
+            .any(|value| value == FIRST_TOKEN.as_bytes())
+    );
+    fs::write(&host_credentials, &rotated_credentials).expect("refresh host credential");
     let rotated = run(
         &binary,
         &[
@@ -530,11 +689,37 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
             "--",
             "/bin/sh",
             "-c",
-            "git -C https-checkout fetch origin && printf second > https-checkout/second && git -C https-checkout add second && git -C https-checkout commit -m second && git -C https-checkout push origin HEAD:main",
+            "git -C https-checkout fetch origin && git -C https-checkout/vendor/private fetch origin && printf second > https-checkout/second && git -C https-checkout add second && git -C https-checkout commit -m second && git -C https-checkout push origin HEAD:main",
         ],
         &environment,
     );
-    require_success(&rotated, "rotated HTTPS fetch and push");
+    require_success(
+        &rotated,
+        "stale-token recovery and rotated HTTPS fetch and push",
+    );
+
+    let helper_isolation_command = format!(
+        r#"cd https-checkout && printf '%s\n' '#!/bin/sh' 'printf "native-%s\n" "$1" >> ../native-helper.log' 'cat >/dev/null' '[ "$1" = get ] && printf "username=native\npassword=native-token\n"' > .native-helper && chmod 700 .native-helper && git config --add credential.helper '!./.native-helper' && cp .git/config ../native-config.before && result=$(printf 'protocol=https\nhost=credential.test:{}\npath=team/repo.git\n\n' | git credential fill) && printf '%s\n' "$result" | grep -q '^username=alice$' && printf '%s\n\n' "$result" | git credential approve && printf '%s\n\n' "$result" | git credential reject && cmp .git/config ../native-config.before && test ! -e ../native-helper.log"#,
+        server.port
+    );
+    let helper_isolation = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            &helper_isolation_command,
+        ],
+        &environment,
+    );
+    require_success(
+        &helper_isolation,
+        "lookup/approve/store native-helper isolation and configuration preservation",
+    );
     let denied_url = format!("https://denied.test:{}/team/repo.git", server.port);
     let denied_command =
         format!("if git ls-remote '{denied_url}' >/dev/null 2>&1; then exit 31; fi");
@@ -557,6 +742,10 @@ fn packaged_git_https_fetch_push_rotation_and_origin_denial() {
     );
     assert!(!contains_bytes(&root, FIRST_TOKEN.as_bytes()));
     assert!(!contains_bytes(&root, SECOND_TOKEN.as_bytes()));
+    assert!(!contains_bytes(&root, DEPENDENCY_TOKEN.as_bytes()));
+    assert!(!contains_bytes(&repository, FIRST_TOKEN.as_bytes()));
+    assert!(!contains_bytes(&repository, SECOND_TOKEN.as_bytes()));
+    assert!(!contains_bytes(&repository, DEPENDENCY_TOKEN.as_bytes()));
     require_success(
         &run(
             &binary,
@@ -592,7 +781,8 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
     let home = temporary.path().join("home");
     fs::create_dir(&home).expect("host home");
     fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("host home mode");
-    let agent = Agent::start(temporary.path());
+    let mut agent = Agent::start(temporary.path());
+    let agent_socket = agent.socket.clone();
     let repository = create_repository(temporary.path(), &agent.public_key);
     let workspace = unique_name("credential-gate");
     let root_text = root.to_str().expect("root text");
@@ -600,7 +790,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
     let socket_text = agent.socket.to_str().expect("socket text");
     let environment = [
         ("HOME", home.as_path()),
-        ("SSH_AUTH_SOCK", agent.socket.as_path()),
+        ("SSH_AUTH_SOCK", agent_socket.as_path()),
     ];
 
     let enable = run(
@@ -703,6 +893,70 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
         .output()
         .expect("verify managed agent signature");
     require_success(&verified, "managed agent signature verification");
+
+    agent.restart_same_path();
+    let refreshed_agent = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            "ssh-add -L | grep -q '^ssh-ed25519 '",
+        ],
+        &environment,
+    );
+    require_success(
+        &refreshed_agent,
+        "same-path host SSH-agent restart without workspace restart",
+    );
+    let _ = agent.child.kill();
+    let _ = agent.child.wait();
+    let unavailable_agent = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            "ssh-add -L",
+        ],
+        &environment,
+    );
+    assert!(
+        !unavailable_agent.status.success(),
+        "unavailable host agent unexpectedly served an identity"
+    );
+    assert!(
+        !unavailable_agent
+            .stderr
+            .windows(SECRET_MARKER.len())
+            .any(|value| value == SECRET_MARKER.as_bytes())
+    );
+    agent.restart_same_path();
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "ssh",
+                &workspace,
+                "--",
+                "/bin/sh",
+                "-c",
+                "ssh-add -L | grep -q '^ssh-ed25519 '",
+            ],
+            &environment,
+        ),
+        "host SSH-agent recovery after backend unavailability",
+    );
 
     let ssh_config = root.join("ssh/config");
     let ssh_config_text = ssh_config.to_str().expect("SSH config text");

@@ -29,11 +29,13 @@ the reference Dev Container CLI.
 
 The gate runs the focused `cdenv-devcontainer` and `cdenv-cli` regression tests,
 then the black-box tests in `tests/devcontainer_v1.rs`. The named credential
-suite drives proper-CA authenticated smart-HTTP fetch/push, token rotation and
-origin denial, plus staged enable/create, first and detached hooks, PTY/non-PTY
-real forwarded-agent signing, concurrent SSH children, down/up/rebuild,
-controlled supervisor-loss
-recovery, and live revocation with old-session/new-child isolation through the
+suite drives proper-CA authenticated smart-HTTP fetch/push, stale-token recovery,
+two path/account credentials, a private submodule, native-helper isolation, token
+rotation and origin denial, plus staged enable/create, first and detached hooks,
+PTY/non-PTY real forwarded-agent signing, same-path agent restart,
+unavailable-backend recovery, concurrent SSH children, down/up/rebuild,
+controlled supervisor-loss recovery, and live
+revocation with old-session/new-child isolation through the
 packaged executable. It rejects an empty or partially skipped run. Its
 `fixtures/credential-coverage.json` record distinguishes integrated evidence,
 component evidence, and requirements still blocked on authenticated TLS/macOS

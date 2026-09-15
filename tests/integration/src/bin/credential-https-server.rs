@@ -82,7 +82,7 @@ fn handle(
     let connection = ServerConnection::new(config).map_err(|_| "TLS setup failed")?;
     let mut stream = StreamOwned::new(connection, stream);
     let request = read_request(&mut stream)?;
-    let expected = expected_authorization(credential)?;
+    let expected = expected_authorization(credential, &request.target)?;
     let authorized = request
         .headers
         .iter()
@@ -210,12 +210,28 @@ fn read_request(stream: &mut (impl Read + Write)) -> Result<Request, String> {
     })
 }
 
-fn expected_authorization(path: &Path) -> Result<String, String> {
+fn expected_authorization(path: &Path, target: &str) -> Result<String, String> {
+    let request_path = target
+        .split_once('?')
+        .map_or(target, |(path, _)| path)
+        .trim_start_matches('/');
+    let repository_end = request_path
+        .find(".git")
+        .map(|index| index + ".git".len())
+        .ok_or("request does not name a Git repository")?;
+    let repository = &request_path[..repository_end];
     let value = fs::read_to_string(path).map_err(|_| "cannot read fixture credential")?;
-    let (username, password) = value
-        .trim_end_matches('\n')
-        .split_once('\n')
-        .ok_or("invalid fixture credential")?;
+    let mut matching = value.lines().filter_map(|line| {
+        let mut fields = line.split('\t');
+        let candidate = fields.next()?;
+        let username = fields.next()?;
+        let password = fields.next()?;
+        (candidate == repository && fields.next().is_none()).then_some((username, password))
+    });
+    let (username, password) = matching.next().ok_or("no fixture credential for path")?;
+    if matching.next().is_some() {
+        return Err("duplicate fixture credential path".to_owned());
+    }
     Ok(format!(
         "Basic {}",
         base64(&format!("{username}:{password}"))
@@ -280,4 +296,38 @@ fn write_backend_response(stream: &mut impl Write, output: &[u8]) -> Result<(), 
     stream
         .write_all(body)
         .map_err(|_| "cannot write response body".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn authorization_selects_the_repository_path_and_account() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let credentials = temporary.path().join("credentials");
+        fs::write(
+            &credentials,
+            "team/one.git\talice\tone\nteam/two.git\tbob\ttwo\n",
+        )
+        .expect("credential fixture");
+
+        assert_eq!(
+            expected_authorization(
+                &credentials,
+                "/team/two.git/info/refs?service=git-upload-pack"
+            )
+            .expect("path credential"),
+            format!("Basic {}", base64("bob:two"))
+        );
+    }
+
+    #[test]
+    fn authorization_rejects_an_unconfigured_repository_path() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let credentials = temporary.path().join("credentials");
+        fs::write(&credentials, "team/one.git\talice\tone\n").expect("credential fixture");
+
+        assert!(expected_authorization(&credentials, "/team/two.git/HEAD").is_err());
+    }
 }

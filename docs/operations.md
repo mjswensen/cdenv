@@ -141,19 +141,17 @@ matrix; inspect it separately from cdenv forwarding.
 
 ## Host credential permissions (issue 68)
 
-**Implementation status: permission management and the credential transport
-substrate are implemented; production capability workflows are not yet wired.**
-The workspace supervisor can own a generation-scoped credential service with no
-TCP listeners or SSH clients. It creates one verified, selected-user Docker Exec
-to the static agent and a protocol-only bounded stdio bridge. The agent creates
-stable owner-only container Unix endpoints outside the checkout. Configured
-capabilities still fail production early preflight until issue 77 supplies lease
-authority and lifecycle handoff. The host Git lookup/identity backends, static
-HTTPS helper, fill-only-missing identity wrapper, and selected host SSH-agent relay
-are implemented but are not dispatched by production until those lease workflows
-are connected. Saving permission alone therefore does not make Git authenticate or
-make an agent available in a container.
-See [ADR 0002](adr/0002-opt-in-host-capabilities.md).
+**Implementation status: the opt-in permission, broker, backend, container
+integration, and managed lifecycle workflows are implemented.** The workspace
+supervisor owns a generation-scoped credential service even with no TCP listeners
+or SSH clients. It creates one verified, selected-user Docker Exec to the static
+agent and a protocol-only bounded stdio bridge. The agent creates stable
+owner-only container Unix endpoints outside the checkout. Production create/up,
+managed lifecycle, and SSH paths dispatch the trusted host Git lookup/identity
+backends and selected host SSH-agent relay. Issue 78 tracks the remaining
+cross-platform authenticated release evidence; configured CI jobs or component
+tests are not substitutes for required successful platform observations. See
+[ADR 0002](adr/0002-opt-in-host-capabilities.md).
 
 Permissions are independent, off by default, installation/workspace-scoped, and
 never derived from `devcontainer.json`, `customizations`, `remoteEnv`, or
@@ -183,8 +181,9 @@ HTTPS source origin. SSH/local sources require explicit origins. Re-enabling
 without origins does not widen an existing allowlist, even after every origin
 has been denied. `allow`/`deny` never enable a disabled capability. Omitted
 `--socket` preserves an existing explicit selector; the first omission records
-`auto`, not the current environment or a discovered socket. This foundation does
-not resolve or connect either kind of selector.
+`auto`, not the current environment or a discovered socket. A mutating
+reconciliation resolves `auto` from that invocation's `SSH_AUTH_SOCK`; an
+explicit selector uses only its recorded absolute path and never falls back.
 
 For a not-yet-created explicit name, stage permission without creating a
 checkout/container or running any helper/login operation:

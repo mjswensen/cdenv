@@ -857,13 +857,17 @@ workspace binding receipt outside the checkout. Existing unsafe permission
 paths/modes are rejected rather than automatically tightened. Status/list/doctor
 inspect the same staged/bound/stale facts without helper or login operations.
 
-Only the permission/parser foundation is currently implemented. Active-generation
-enable saves consent but returns nonzero because integration is unavailable.
-Disable/deny persist revocation and require proof of a stopped supervisor; they
-never claim a live acknowledgement or signal an unverified PID. Complete live
-reconciliation, transport/protocol versions, backend health, and runtime ownership
-are still required by issue 68. See [ADR 0002](docs/adr/0002-opt-in-host-capabilities.md)
-for implemented limits, DevPod comparison, and outstanding release evidence.
+The permission/parser foundation, versioned broker transport, host Git and
+selected-agent backends, reversible container integrations, supervisor ownership,
+and managed lifecycle/SSH enrollment are implemented. Create/up establishes
+credential readiness before the first hook; down retains grants, rebuild changes
+generation authority, and active-generation mutations reconcile a monotonic
+revision without rerunning hooks. Disable/deny persist revocation before requiring
+an authenticated acknowledgement or proof that the exact supervisor stopped;
+they never signal an unverified PID. Issue 78 owns the remaining controlled
+HTTPS/SSH, cross-platform, lifecycle, secret-surface, and macOS release evidence.
+See [ADR 0002](docs/adr/0002-opt-in-host-capabilities.md) for implemented limits,
+DevPod comparison, and explicit evidence blockers.
 
 ---
 

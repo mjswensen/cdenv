@@ -2,7 +2,7 @@
 
 - Date: 2026-09-07
 - Issue: 68
-- Status: architecture accepted; **permission and transport substrate** implemented
+- Status: accepted; production credential workflows implemented, release evidence pending
 - Related: [operations](../operations.md#host-credential-permissions-issue-68),
   [V1 profile boundary](../cdenv-devcontainer-v1-support.md#host-credential-capabilities)
 
@@ -16,14 +16,15 @@ non-authentication capability. Repository configuration cannot supply consent.
 At the time this ADR was accepted, production CLI dispatch wired `create` only
 through checkout creation; `up`, `down`, and `rebuild` still returned
 `CommandUnavailable`, and the lifecycle coordinators had no production caller.
-That historical prerequisite has since landed. Credential broker leases and their
-lifecycle handoff remain outside the implemented production composition.
+That prerequisite and issues 73–77 have since landed. Production now composes the
+credential lease with create/up/down/rebuild, managed lifecycle work, and managed
+SSH children, including readiness before the first hook and live policy
+reconciliation.
 
-Issue 68 therefore cannot yet provide its first-hook, down/up, and rebuild
-workflows. The transport substrate now exists, but this does **not** resolve issue
-68 or advertise working Git authentication. The host Git adapter is implemented,
-but production dispatch and the remaining capability backends remain in issues
-73–77.
+This implementation does not by itself resolve issue 68. Issue 78 retains the
+required authenticated HTTPS/SSH, lifecycle, secret-surface, Linux architecture,
+and Apple-silicon release evidence. Documentation distinguishes those blockers
+from component tests and configured-but-unobserved CI jobs.
 
 ## Decision
 
@@ -195,24 +196,25 @@ The permission/parser and host-adapter tests use fake Git/helpers, private
 filesystem fixtures, and local system Git; they require no Docker, public
 network, keychain, or real secrets. They verify standard helper input, trusted
 includes/per-URL matching, declared noninteractive variables, rotation, bounds,
-and cleanup. They do not prove HTTPS fetch/push, SSH signing, provider-specific
-helper compatibility, or transported revocation. No live-provider helper matrix
-is claimed yet. Linux
-x86_64/arm64 credential transport gates, authenticated HTTPS/SSH integration
-fixtures, and Apple-silicon Docker Desktop/keychain/agent smoke are still required.
+and cleanup. The packaged credential suite additionally exercises a controlled
+real host `ssh-agent` through create, first hook, postAttach, managed SSH,
+down/up, rebuild, and live disable. These results do not prove authenticated
+smart-HTTP fetch/push, real SSH signing and host-key workflows, provider-specific
+helper compatibility, or every lifecycle and secret surface. No live-provider
+helper matrix is claimed.
 
-Local validation on 2026-09-07 (Linux aarch64, Rust 1.97.1):
+Evidence status on 2026-09-15 (Linux aarch64, Rust 1.97.1):
 
 | Gate | Result | Scope |
 |---|---|---|
 | `cargo xtask check` | Passed | Formatting, strict Clippy, workspace tests/docs, cargo-deny; duplicate-dependency warnings remain advisory. |
-| `cargo xtask test-integration --suite openssh` | Passed, 4 discovered/executed | Existing OpenSSH transport interoperability, not credential forwarding. |
-| `cargo xtask test-integration --suite devcontainer-v1` | Passed, 8 discovered/executed | Existing profile/Docker/Compose preservation coverage, not the issue-68 broker. |
-| Linux x86_64 credential workflows | Not run / not implemented | Required before issue closure. |
-| macOS Apple-silicon credential/keychain smoke | Not run / not implemented | Linux-container access to Docker Desktop is not a macOS host-helper test. |
+| `cargo xtask test-integration --suite openssh` | Previously passed, 4 discovered/executed | Existing OpenSSH transport interoperability, not credential forwarding. |
+| `cargo xtask test-integration --suite devcontainer-v1` | Previously passed, 8 discovered/executed | Existing profile/Docker/Compose preservation coverage, not the issue-68 broker. |
+| Packaged credential workflow | Implemented and strict CI matrix configured; no retained clean native run yet | A nested-container attempt discovered two tests but could not use container-private bind paths with its Docker Desktop daemon; this is a failed prerequisite, not a skip or release result. |
+| Linux x86_64 and arm64 credential workflows | Required observation pending | Both clean native architecture jobs must pass the exact discovered count. |
+| macOS Apple-silicon credential/keychain smoke | Required observation pending | Linux-container access to Docker Desktop is not a macOS host-helper test. |
 
 These host capabilities are outside repository profile semantics. V1 parsing,
-`customizations`, `secrets`, and `remoteEnv` behavior are unchanged. The existing
-agent and supervisor protocols are not bumped merely for unused new code; the
-future live bridge requires explicit protocol/compatibility changes on mutating
-paths, not migration or repair during read-only/SSH operations.
+`customizations`, `secrets`, and `remoteEnv` behavior are unchanged. Credential
+broker/control compatibility is explicit and versioned; read-only commands do not
+migrate, repair, or silently replace incompatible live state.

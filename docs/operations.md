@@ -342,8 +342,10 @@ helpers”:
 A trusted custom helper may still display a GUI despite the declared suppression
 variables. Fake agent fixtures cover extension framing, bounds, concurrent
 connections, same-path refresh, and cancellation; the packaged credential suite
-uses a real host `ssh-agent` through create, postAttach, SSH, down/up, rebuild, and
-live revocation. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
+uses a real host `ssh-agent` through create, foreground/detached hooks,
+postAttach, PTY/non-PTY and concurrent SSH children, down/up, rebuild, controlled
+supervisor-loss recovery, and live revocation that preserves an old SSH session
+while removing credential enrollment from a new child. The [ADR](adr/0002-opt-in-host-capabilities.md#current-bounded-surface)
 publishes parser and helper limits. The static helper bounds and validates `get`
 before opening the private socket; `store` and `erase` are successful no-ops and
 unknown operations fail closed.

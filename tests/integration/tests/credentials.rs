@@ -6,7 +6,9 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const SECRET_MARKER: &str = "credential-marker-must-not-persist";
 
 fn unique_name(prefix: &str) -> String {
     let nanos = SystemTime::now()
@@ -21,7 +23,7 @@ fn run(program: &Path, arguments: &[&str], environment: &[(&str, &Path)]) -> Out
     command
         .args(arguments)
         .stdin(Stdio::null())
-        .env("CDENV_SECRET_MARKER", "credential-marker-must-not-persist");
+        .env("CDENV_SECRET_MARKER", SECRET_MARKER);
     for (name, value) in environment {
         command.env(name, value);
     }
@@ -37,6 +39,27 @@ fn require_success(output: &Output, operation: &str) {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    assert!(
+        !output
+            .stdout
+            .windows(SECRET_MARKER.len())
+            .any(|value| value == SECRET_MARKER.as_bytes())
+            && !output
+                .stderr
+                .windows(SECRET_MARKER.len())
+                .any(|value| value == SECRET_MARKER.as_bytes()),
+        "{operation} disclosed the secret marker"
+    );
+}
+
+fn wait_for_path(path: &Path, operation: &str) {
+    for _ in 0..200 {
+        if path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("{operation} did not create {}", path.display());
 }
 
 struct Agent {
@@ -100,6 +123,7 @@ fn create_repository(root: &Path) -> PathBuf {
   "image": "debian:13-slim",
   "workspaceFolder": "/workspaces/credential-release-gate",
   "onCreateCommand": ["/bin/sh", "-c", "test -S \"$SSH_AUTH_SOCK\" && printf first-hook > .credential-first-hook"],
+  "postStartCommand": ["/bin/sh", "-c", "test -S \"$SSH_AUTH_SOCK\" && printf detached > .credential-detached"],
   "postAttachCommand": ["/bin/sh", "-c", "test -S \"$SSH_AUTH_SOCK\" && printf post-attach > .credential-post-attach"]
 }
 "#,
@@ -169,8 +193,8 @@ fn contains_marker(root: &Path) -> bool {
             } else if metadata.is_file()
                 && fs::read(&path).is_ok_and(|bytes| {
                     bytes
-                        .windows(b"credential-marker-must-not-persist".len())
-                        .any(|window| window == b"credential-marker-must-not-persist")
+                        .windows(SECRET_MARKER.len())
+                        .any(|window| window == SECRET_MARKER.as_bytes())
                 })
             {
                 return true;
@@ -199,7 +223,7 @@ fn credential_traceability_manifest_is_nonempty_and_names_public_workflows() {
     clippy::too_many_lines,
     reason = "the packaged public-command sequence remains explicit and auditable"
 )]
-fn packaged_commands_enroll_first_hook_ssh_down_up_rebuild_and_revocation() {
+fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
     let binary = PathBuf::from(
         std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
             .expect("xtask must provide the packaged cdenv binary"),
@@ -269,6 +293,12 @@ fn packaged_commands_enroll_first_hook_ssh_down_up_rebuild_and_revocation() {
         fs::read(checkout.join(".credential-first-hook")).expect("first hook marker"),
         b"first-hook"
     );
+    let detached_marker = checkout.join(".credential-detached");
+    wait_for_path(&detached_marker, "detached credential lifecycle");
+    assert_eq!(
+        fs::read(&detached_marker).expect("detached marker"),
+        b"detached"
+    );
     let ssh = run(
         &binary,
         &[
@@ -289,6 +319,67 @@ fn packaged_commands_enroll_first_hook_ssh_down_up_rebuild_and_revocation() {
         fs::read(checkout.join(".credential-post-attach")).expect("postAttach marker"),
         b"post-attach"
     );
+
+    let ssh_config = root.join("ssh/config");
+    let ssh_config_text = ssh_config.to_str().expect("SSH config text");
+    let host = format!("{workspace}.cdenv");
+    let non_pty = run(
+        Path::new("ssh"),
+        &[
+            "-F",
+            ssh_config_text,
+            "-T",
+            &host,
+            "test ! -t 0 && test ! -t 1 && test -S \"$SSH_AUTH_SOCK\" && printf non-pty",
+        ],
+        &environment,
+    );
+    require_success(&non_pty, "non-PTY OpenSSH child");
+    assert_eq!(non_pty.stdout, b"non-pty");
+    let pty = run(
+        Path::new("ssh"),
+        &[
+            "-F",
+            ssh_config_text,
+            "-tt",
+            &host,
+            "test -t 0 && test -t 1 && test -S \"$SSH_AUTH_SOCK\" && printf pty",
+        ],
+        &environment,
+    );
+    require_success(&pty, "PTY OpenSSH child");
+    assert!(pty.stdout.windows(3).any(|value| value == b"pty"));
+
+    let mut concurrent = Vec::new();
+    for _ in 0..4 {
+        concurrent.push(
+            Command::new(&binary)
+                .args([
+                    "--root",
+                    root_text,
+                    "ssh",
+                    &workspace,
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    "test -S \"$SSH_AUTH_SOCK\" && sleep 0.2",
+                ])
+                .env("HOME", &home)
+                .env("SSH_AUTH_SOCK", &agent.socket)
+                .env("CDENV_SECRET_MARKER", SECRET_MARKER)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start concurrent managed SSH child"),
+        );
+    }
+    for child in concurrent {
+        require_success(
+            &child.wait_with_output().expect("concurrent SSH output"),
+            "concurrent managed SSH child",
+        );
+    }
 
     let status = run(
         &binary,
@@ -332,6 +423,73 @@ fn packaged_commands_enroll_first_hook_ssh_down_up_rebuild_and_revocation() {
         ),
         "credential rebuild",
     );
+
+    let supervisor_state = root
+        .join("workspaces")
+        .join(&workspace)
+        .join("runtime/supervisor.json");
+    let supervisor: serde_json::Value =
+        serde_json::from_slice(&fs::read(&supervisor_state).expect("supervisor state"))
+            .expect("supervisor state JSON");
+    let supervisor_pid = supervisor["pid"]
+        .as_u64()
+        .expect("supervisor PID")
+        .to_string();
+    require_success(
+        &Command::new("kill")
+            .args(["-KILL", &supervisor_pid])
+            .output()
+            .expect("kill supervisor"),
+        "controlled supervisor loss",
+    );
+    std::thread::sleep(Duration::from_millis(100));
+    require_success(
+        &run(
+            &binary,
+            &["--root", root_text, "up", &workspace],
+            &environment,
+        ),
+        "explicit up after supervisor loss",
+    );
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "ssh",
+                &workspace,
+                "--",
+                "/bin/sh",
+                "-c",
+                "test -S \"$SSH_AUTH_SOCK\"",
+            ],
+            &environment,
+        ),
+        "credential recovery after supervisor loss",
+    );
+
+    let old_client_ready = checkout.join(".credential-old-client");
+    let old_client = Command::new(&binary)
+        .args([
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            "test -S \"$SSH_AUTH_SOCK\" || exit 20; printf ready > .credential-old-client; sleep 1; printf survived > .credential-old-client-survived",
+        ])
+        .env("HOME", &home)
+        .env("SSH_AUTH_SOCK", &agent.socket)
+        .env("CDENV_SECRET_MARKER", SECRET_MARKER)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("start old credential client");
+    wait_for_path(&old_client_ready, "old credential client readiness");
     require_success(
         &run(
             &binary,
@@ -346,6 +504,15 @@ fn packaged_commands_enroll_first_hook_ssh_down_up_rebuild_and_revocation() {
             &environment,
         ),
         "credential revocation",
+    );
+    require_success(
+        &old_client.wait_with_output().expect("old client output"),
+        "unrelated old SSH client survival",
+    );
+    assert_eq!(
+        fs::read(checkout.join(".credential-old-client-survived"))
+            .expect("old client survival marker"),
+        b"survived"
     );
     let revoked = run(
         &binary,

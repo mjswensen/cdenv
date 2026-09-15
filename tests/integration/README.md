@@ -23,17 +23,20 @@ discovered tests, ignored tests, or a discrepancy between discovered and passed
 counts fail the gate. Native Linux CI uses its ordinary temporary directory. A
 nested development container may set `CDENV_INTEGRATION_SHARED_TMP` only to an
 absolute directory that exists at the same path for both that container and the
-Docker daemon; absence of such a bind is a failed local prerequisite, not a skip. The suite runs in release mode and does not require Node.js,
-an editor, or the reference Dev Container CLI.
+Docker daemon; absence of such a bind is a failed local prerequisite, not a
+skip. The suite runs in release mode and does not require Node.js, an editor, or
+the reference Dev Container CLI.
 
 The gate runs the focused `cdenv-devcontainer` and `cdenv-cli` regression tests,
 then the black-box tests in `tests/devcontainer_v1.rs`. The named credential
-suite drives staged enable/create/SSH/down/up/rebuild/revocation through the
-packaged executable and rejects an empty or partially skipped run. Its
+suite drives staged enable/create, first and detached hooks, PTY/non-PTY and
+concurrent SSH children, down/up/rebuild, controlled supervisor-loss recovery,
+and live revocation with old-session/new-child isolation through the packaged
+executable. It rejects an empty or partially skipped run. Its
 `fixtures/credential-coverage.json` record distinguishes integrated evidence,
 component evidence, and requirements still blocked on authenticated TLS/macOS
-observations. Base-image pulls are
-limited to the fixture-declared Debian and Alpine images. Feature network tests
+observations. Base-image pulls are limited to the fixture-declared Debian and
+Alpine images. Feature network tests
 use controlled fixture servers in focused component tests; normal fixture
 parsing is offline.
 

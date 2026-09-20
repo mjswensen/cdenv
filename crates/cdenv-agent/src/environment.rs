@@ -7,7 +7,9 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::{Command, ExitStatus};
 
-use cdenv_core::credentials::{CredentialCapability, CredentialGrants};
+#[cfg(target_os = "linux")]
+use cdenv_core::credentials::CredentialCapability;
+use cdenv_core::credentials::CredentialGrants;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -217,16 +219,7 @@ pub fn run_with_managed_environment(
     program: &OsStr,
     arguments: &[OsString],
 ) -> Result<ExitStatus, EnvironmentError> {
-    let mut environment = EnvironmentSnapshot::load(snapshot)?;
-    environment.enroll_credentials(runtime_directory, grants)?;
-    let mut command = Command::new(program);
-    command
-        .args(arguments)
-        .env_clear()
-        .envs(environment.entries);
-    command
-        .status()
-        .map_err(|source| EnvironmentError::ChildProcess { source })
+    platform::run_with_managed_environment(snapshot, runtime_directory, grants, program, arguments)
 }
 
 /// Effective environment capture, encoding, or reuse failure.
@@ -303,10 +296,10 @@ mod platform {
     use nix::unistd::geteuid;
 
     use super::{
-        BTreeMap, Command, EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError,
-        EnvironmentProbe, EnvironmentSnapshot, EnvironmentTemplate, EnvironmentTemplateSegment,
-        MAXIMUM_ENTRIES, MAXIMUM_ENTRY_BYTES, MAXIMUM_SNAPSHOT_BYTES, OsStr, OsString, Path,
-        PathBuf, SNAPSHOT_MAGIC,
+        BTreeMap, Command, CredentialGrants, EnvironmentCaptureRequest, EnvironmentCaptureResult,
+        EnvironmentError, EnvironmentProbe, EnvironmentSnapshot, EnvironmentTemplate,
+        EnvironmentTemplateSegment, ExitStatus, MAXIMUM_ENTRIES, MAXIMUM_ENTRY_BYTES,
+        MAXIMUM_SNAPSHOT_BYTES, OsStr, OsString, Path, PathBuf, SNAPSHOT_MAGIC,
     };
     use crate::identity;
 
@@ -347,6 +340,25 @@ mod platform {
         let mut entries = decode(&bytes)?;
         filter_transient(&mut entries);
         Ok(EnvironmentSnapshot { entries })
+    }
+
+    pub(super) fn run_with_managed_environment(
+        snapshot: &Path,
+        runtime_directory: &Path,
+        grants: &CredentialGrants,
+        program: &OsStr,
+        arguments: &[OsString],
+    ) -> Result<ExitStatus, EnvironmentError> {
+        let mut environment = load(snapshot)?;
+        environment.enroll_credentials(runtime_directory, grants)?;
+        let mut command = Command::new(program);
+        command
+            .args(arguments)
+            .env_clear()
+            .envs(environment.entries);
+        command
+            .status()
+            .map_err(|source| EnvironmentError::ChildProcess { source })
     }
 
     fn validate_generation(generation: &str) -> Result<(), EnvironmentError> {
@@ -856,6 +868,16 @@ mod platform {
     }
 
     pub(super) fn load(_: &Path) -> Result<EnvironmentSnapshot, EnvironmentError> {
+        Err(EnvironmentError::UnsupportedOperatingSystem)
+    }
+
+    pub(super) fn run_with_managed_environment(
+        _: &Path,
+        _: &Path,
+        _: &CredentialGrants,
+        _: &OsStr,
+        _: &[OsString],
+    ) -> Result<ExitStatus, EnvironmentError> {
         Err(EnvironmentError::UnsupportedOperatingSystem)
     }
 }

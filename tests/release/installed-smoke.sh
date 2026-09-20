@@ -44,6 +44,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
+host_path=$PATH
 mkdir -p "$install" "$home" "$repository"
 tar -xf "$archive" -C "$install"
 [[ -x "$install/cdenv" ]] || {
@@ -56,7 +57,9 @@ for tool in node npm npx code; do
   chmod +x "$work/forbidden-tools/$tool"
 done
 export HOME="$home"
-export PATH="$install:$work/forbidden-tools:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+# Preserve the workflow-selected Docker/OpenSSH/Git directories while shadowing
+# forbidden editor/Node tools and selecting only the extracted cdenv package.
+export PATH="$install:$work/forbidden-tools:$host_path"
 unset NODE NODE_PATH npm_config_prefix ELECTRON_RUN_AS_NODE VSCODE_IPC_HOOK_CLI
 [[ $(command -v cdenv) == "$install/cdenv" ]]
 

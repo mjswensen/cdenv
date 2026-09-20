@@ -39,9 +39,15 @@ report_status=0
 for format in json lcov html; do
   args=(--output-path "$out/coverage.$format")
   if [[ "$format" == html ]]; then args=(--output-dir "$out"); fi
-  cargo llvm-cov report "${profile[@]}" --branch --locked \
-    --ignore-filename-regex '(^|/)(tests|xtask)/' \
-    "--$format" "${args[@]}" 2>&1 | tee -a "$out/reports.log" || report_status=$?
+  if [[ "$scope" == workspace ]]; then
+    cargo llvm-cov report --branch --locked \
+      --ignore-filename-regex '(^|/)(tests|xtask)/' \
+      "--$format" "${args[@]}" 2>&1 | tee -a "$out/reports.log" || report_status=$?
+  else
+    cargo llvm-cov report --release --branch --locked \
+      --ignore-filename-regex '(^|/)(tests|xtask)/' \
+      "--$format" "${args[@]}" 2>&1 | tee -a "$out/reports.log" || report_status=$?
+  fi
 done
 printf '%s\n' "$report_status" > "$out/report-exit-code.txt"
 if (( status != 0 )); then exit "$status"; fi

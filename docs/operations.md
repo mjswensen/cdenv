@@ -124,8 +124,13 @@ Lifecycle checkpoints are generation-scoped. Successful one-time stages are not
 repeated; `postStartCommand` follows an actual start and `postAttachCommand`
 follows each new SSH transport. A definitely pending operation may retry. A
 cancelled/crashed one-time stage left running is indeterminate: preserve the
-checkout and named volumes and use `rebuild` rather than editing state. The current
-state schema records the stage but not an authenticated Docker Exec runner identity,
+checkout and named volumes and use `rebuild` rather than editing state. Every ready
+generation installs an owner-only `postAttachCommand` manifest, including an
+explicit empty manifest when no hook is configured. SSH never treats a missing or
+corrupt manifest as an empty hook: the connection fails before session access and
+`cdenv up NAME` reprovisions the selected agent, environment, and manifest for a
+safe retry. Rebuild installs a distinct manifest for the replacement generation.
+The current state schema records the stage but not an authenticated Docker Exec runner identity,
 so `down` and `rebuild` never guess a process or PID; they report the runner as
 indeterminate when safe bounded cancellation cannot be proven. Compose replacement
 is build-first but not atomic; exact per-service partial evidence is persisted after

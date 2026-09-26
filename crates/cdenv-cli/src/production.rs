@@ -20,6 +20,7 @@ use cdenv_devcontainer::{
     compose_project_name, merge_image_metadata, plan_compose, plan_docker_options, plan_immutable,
     plan_lifecycle, plan_ports, plan_runtime, resolve_features, validate_profile,
 };
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::agent_provisioning::AgentProvisioningEngine;
@@ -957,6 +958,18 @@ impl ProductionEnvironment<'_> {
             .recapture_for_ssh(&environment_request, &initial, self.cancellation)
             .await
             .map_err(message)?;
+        install_post_attach_manifest(
+            &engine,
+            &facts,
+            plan.runtime.remote_user.as_str(),
+            &provisioned,
+            ssh_environment.snapshot_path(),
+            plan.runtime.workspace.folder.as_str(),
+            &plan.lifecycle.post_attach,
+            credential_lease.as_ref(),
+            self.cancellation,
+        )
+        .await?;
         execute_lifecycle(
             &engine,
             &facts.container,
@@ -1175,6 +1188,203 @@ fn active_forwarding(
         desired.requested().to_vec(),
         assigned,
     ))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PostAttachManifestRequest {
+    generation: String,
+    build_id: String,
+    protocol_version: u32,
+    state_directory: String,
+    environment_path: String,
+    workspace_folder: String,
+    uid: u32,
+    gid: u32,
+    stages: Vec<AgentLifecycleStagePlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    credential_runtime: Option<String>,
+    #[serde(skip_serializing_if = "cdenv_core::credentials::CredentialGrants::is_empty")]
+    credential_grants: cdenv_core::credentials::CredentialGrants,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentLifecycleStagePlan {
+    stage: AgentLifecycleStage,
+    commands: Vec<AgentLifecycleCommand>,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+enum AgentLifecycleStage {
+    PostAttach,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum AgentLifecycleCommand {
+    Process {
+        process: AgentLifecycleProcess,
+    },
+    Parallel {
+        processes: BTreeMap<String, AgentLifecycleProcess>,
+    },
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum AgentLifecycleProcess {
+    Shell { command: AgentLifecycleValue },
+    Exec { arguments: Vec<AgentLifecycleValue> },
+}
+
+#[derive(Serialize)]
+#[serde(transparent)]
+struct AgentLifecycleValue(Vec<AgentLifecycleValueSegment>);
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+enum AgentLifecycleValueSegment {
+    Literal { value: String },
+    ContainerEnvironment { name: String, default: String },
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InstalledLifecycleManifest {
+    manifest_path: String,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the immutable postAttach identity and selected-user boundary remain explicit"
+)]
+async fn install_post_attach_manifest(
+    engine: &BollardAdapter,
+    facts: &EnvironmentFacts,
+    user: &str,
+    provisioned: &crate::AgentProvisioningFacts,
+    environment: &str,
+    workspace: &str,
+    post_attach: &cdenv_devcontainer::LifecycleStagePlan,
+    credential_lease: Option<&crate::SupervisorCredentialLease>,
+    cancellation: &CancellationToken,
+) -> Result<(), WorkflowMessage> {
+    let environment_path = Path::new(environment);
+    let environment_directory = environment_path
+        .parent()
+        .filter(|path| path.file_name().is_some_and(|name| name == "environment"))
+        .ok_or_else(|| message("SSH environment path has no safe lifecycle state root"))?;
+    let state_root = environment_directory
+        .parent()
+        .filter(|path| path.file_name().is_some_and(|name| name == ".cdenv"))
+        .ok_or_else(|| message("SSH environment path has no safe lifecycle state root"))?;
+    let state_directory = state_root.join("lifecycle");
+    let expected = state_directory.join(format!(".cdenv-post-attach-{}.json", facts.generation));
+    let request = PostAttachManifestRequest {
+        generation: facts.generation.to_string(),
+        build_id: provisioned.build_id.as_str().to_owned(),
+        protocol_version: provisioned.protocol_version.get(),
+        state_directory: state_directory.display().to_string(),
+        environment_path: environment.to_owned(),
+        workspace_folder: workspace.to_owned(),
+        uid: provisioned.identity.uid,
+        gid: provisioned.identity.gid,
+        stages: vec![agent_lifecycle_stage(post_attach)],
+        credential_runtime: credential_lease.map(|lease| lease.runtime_directory.clone()),
+        credential_grants: credential_lease
+            .map(|lease| lease.grants.clone())
+            .unwrap_or_default(),
+    };
+    let input = serde_json::to_vec(&request)
+        .map_err(|_| message("cannot encode postAttach lifecycle manifest"))?;
+    let command = [
+        provisioned.agent_path.clone(),
+        "install-post-attach".to_owned(),
+    ];
+    let output = engine
+        .execute(
+            crate::ExecCommand {
+                container: &facts.container,
+                command: &command,
+                user: Some(user),
+                working_directory: None,
+                environment: &[],
+            },
+            &input,
+            cancellation,
+        )
+        .await
+        .map_err(message)?;
+    if !output.stderr.is_empty() {
+        return Err(message(
+            "postAttach lifecycle manifest installation emitted diagnostics",
+        ));
+    }
+    let installed: InstalledLifecycleManifest =
+        serde_json::from_slice(&output.stdout).map_err(|_| {
+            message("postAttach lifecycle manifest installation returned invalid output")
+        })?;
+    if Path::new(&installed.manifest_path) != expected {
+        return Err(message(
+            "postAttach lifecycle manifest installation returned an unexpected path",
+        ));
+    }
+    Ok(())
+}
+
+fn agent_lifecycle_stage(
+    stage: &cdenv_devcontainer::LifecycleStagePlan,
+) -> AgentLifecycleStagePlan {
+    AgentLifecycleStagePlan {
+        stage: AgentLifecycleStage::PostAttach,
+        commands: stage.commands.iter().map(agent_lifecycle_command).collect(),
+    }
+}
+
+fn agent_lifecycle_command(command: &LifecycleCommand) -> AgentLifecycleCommand {
+    match command {
+        LifecycleCommand::Process(process) => AgentLifecycleCommand::Process {
+            process: agent_lifecycle_process(process),
+        },
+        LifecycleCommand::Parallel(processes) => AgentLifecycleCommand::Parallel {
+            processes: processes
+                .iter()
+                .map(|(name, process)| (name.clone(), agent_lifecycle_process(process)))
+                .collect(),
+        },
+    }
+}
+
+fn agent_lifecycle_process(process: &LifecycleProcess) -> AgentLifecycleProcess {
+    match process {
+        LifecycleProcess::Shell(command) => AgentLifecycleProcess::Shell {
+            command: agent_lifecycle_value(command),
+        },
+        LifecycleProcess::Exec(arguments) => AgentLifecycleProcess::Exec {
+            arguments: arguments.iter().map(agent_lifecycle_value).collect(),
+        },
+    }
+}
+
+fn agent_lifecycle_value(value: &cdenv_devcontainer::DeferredString) -> AgentLifecycleValue {
+    AgentLifecycleValue(
+        value
+            .segments()
+            .map(|segment| match segment {
+                DeferredSegment::Literal(value) => AgentLifecycleValueSegment::Literal {
+                    value: value.to_owned(),
+                },
+                DeferredSegment::ContainerEnvironment { name, default } => {
+                    AgentLifecycleValueSegment::ContainerEnvironment {
+                        name: name.to_owned(),
+                        default: default.to_owned(),
+                    }
+                }
+            })
+            .collect(),
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -2936,6 +3146,45 @@ pub fn reconcile_production(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn post_attach_manifest_wire_matches_agent_for_empty_and_configured_hooks() {
+        let mut request = PostAttachManifestRequest {
+            generation: "7".to_owned(),
+            build_id: cdenv_agent::BUILD_ID.to_owned(),
+            protocol_version: cdenv_agent::PROTOCOL_VERSION,
+            state_directory: "/home/dev/.cdenv/lifecycle".to_owned(),
+            environment_path: "/home/dev/.cdenv/environment/7.bin".to_owned(),
+            workspace_folder: "/workspaces/example".to_owned(),
+            uid: 1000,
+            gid: 1000,
+            stages: vec![AgentLifecycleStagePlan {
+                stage: AgentLifecycleStage::PostAttach,
+                commands: Vec::new(),
+            }],
+            credential_runtime: None,
+            credential_grants: cdenv_core::credentials::CredentialGrants::default(),
+        };
+        let empty: cdenv_agent::LifecycleRunRequest =
+            serde_json::from_slice(&serde_json::to_vec(&request).expect("wire encoding"))
+                .expect("agent wire decoding");
+        assert!(empty.stages[0].commands.is_empty());
+
+        request.stages[0]
+            .commands
+            .push(AgentLifecycleCommand::Process {
+                process: AgentLifecycleProcess::Shell {
+                    command: AgentLifecycleValue(vec![AgentLifecycleValueSegment::Literal {
+                        value: "touch attached".to_owned(),
+                    }]),
+                },
+            });
+        let configured: cdenv_agent::LifecycleRunRequest =
+            serde_json::from_slice(&serde_json::to_vec(&request).expect("wire encoding"))
+                .expect("agent wire decoding");
+        assert_eq!(configured.stages[0].commands.len(), 1);
+    }
 
     #[tokio::test]
     async fn lifecycle_stop_fails_closed_without_persisted_runner_control_identity() {

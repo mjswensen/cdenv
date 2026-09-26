@@ -47,10 +47,11 @@ pub use git_identity::{
 };
 #[cfg(target_os = "linux")]
 pub use lifecycle::{
-    LifecycleCommand, LifecycleError, LifecycleInspection, LifecyclePhase, LifecycleProcess,
-    LifecycleRunRequest, LifecycleRunnerState, LifecycleStage, LifecycleStagePlan, LifecycleStdin,
-    LifecycleValue, LifecycleValueSegment, cancel_lifecycle, execute_lifecycle_command,
-    inspect_lifecycle, run_lifecycle, run_post_attach,
+    LifecycleCommand, LifecycleError, LifecycleInspection, LifecycleManifest, LifecyclePhase,
+    LifecycleProcess, LifecycleRunRequest, LifecycleRunnerState, LifecycleStage,
+    LifecycleStagePlan, LifecycleStdin, LifecycleValue, LifecycleValueSegment, cancel_lifecycle,
+    execute_lifecycle_command, inspect_lifecycle, install_post_attach_manifest, run_lifecycle,
+    run_post_attach,
 };
 #[cfg(target_os = "linux")]
 pub use ssh::{SshServerConfig, SshServerError, SshServerRequest, serve_ssh_stream};

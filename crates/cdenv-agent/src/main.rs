@@ -233,6 +233,8 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
             }
             [command, manifest] if command == "update-user" => update_user(Path::new(manifest)),
             #[cfg(target_os = "linux")]
+            [command] if command == "install-post-attach" => install_post_attach(),
+            #[cfg(target_os = "linux")]
             [command, manifest] if command == "lifecycle-runner" => {
                 lifecycle_runner(Path::new(manifest))
             }
@@ -257,7 +259,7 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
                     lifecycle_cancel(Path::new(manifest), Duration::from_millis(milliseconds))
                 }),
             _ => Err(
-                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|run-managed-environment SNAPSHOT RUNTIME GRANTS -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE RUNTIME GRANTS|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY GRANTS|git-credential-helper SOCKET get|store|erase|git-with-identity METADATA REAL_GIT -- GIT_ARGS...>"
+                "Usage: cdenv-agent <version|identity|capture-environment|run-environment SNAPSHOT -- COMMAND [ARG...]|run-managed-environment SNAPSHOT RUNTIME GRANTS -- COMMAND [ARG...]|provision MANIFEST|cleanup-staging PATH|update-user MANIFEST|install-post-attach|lifecycle-runner MANIFEST|lifecycle-start MANIFEST|lifecycle-inspect MANIFEST|lifecycle-cancel MANIFEST [TIMEOUT_MS]|post-attach MANIFEST|ssh-server --stdio HOST_KEY AUTHORIZED_KEY ENVIRONMENT WORKSPACE RUNTIME GRANTS|forwarding-bridge HOST PORT BUILD_ID PROTOCOL|credential-bridge RUNTIME_DIRECTORY GRANTS|git-credential-helper SOCKET get|store|erase|git-with-identity METADATA REAL_GIT -- GIT_ARGS...>"
                     .to_owned(),
             ),
         })
@@ -372,6 +374,23 @@ fn lifecycle_request(path: &Path) -> Result<cdenv_agent::LifecycleRunRequest, St
 #[cfg(target_os = "linux")]
 fn post_attach(path: &Path) -> Result<(), String> {
     cdenv_agent::run_post_attach(&lifecycle_request(path)?).map_err(|error| error.to_string())
+}
+
+#[cfg(target_os = "linux")]
+fn install_post_attach() -> Result<String, String> {
+    let mut contents = Vec::new();
+    std::io::stdin()
+        .take(MAXIMUM_MANIFEST_BYTES + 1)
+        .read_to_end(&mut contents)
+        .map_err(|_| "cannot read postAttach lifecycle manifest".to_owned())?;
+    if contents.len() as u64 > MAXIMUM_MANIFEST_BYTES {
+        return Err("postAttach lifecycle manifest exceeded its bound".to_owned());
+    }
+    let request = serde_json::from_slice(&contents)
+        .map_err(|_| "invalid postAttach lifecycle manifest".to_owned())?;
+    let result =
+        cdenv_agent::install_post_attach_manifest(&request).map_err(|error| error.to_string())?;
+    serde_json::to_string(&result).map_err(|_| "cannot encode lifecycle manifest path".to_owned())
 }
 
 #[cfg(target_os = "linux")]

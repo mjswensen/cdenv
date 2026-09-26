@@ -97,6 +97,21 @@ cdenv --root "$root" lock "$workspace"
 cdenv --root "$root" ssh "$workspace" -- printf installed-ssh | grep -qx installed-ssh
 ssh -F "$root/ssh/config" "$workspace.cdenv" printf direct-openssh | grep -qx direct-openssh
 
+# A no-hook generation still has an explicit empty manifest. Missing state must
+# fail closed, and ordinary up must reinstall it before a later connection.
+environment_path=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["active"]["provisioned"]["environmentPath"])' "$root/workspaces/$workspace/state.json")
+state_root=$(dirname "$(dirname "$environment_path")")
+lifecycle_manifest="$state_root/lifecycle/.cdenv-post-attach-$generation.json"
+docker exec "$container_id" test -s "$lifecycle_manifest"
+docker exec "$container_id" rm "$lifecycle_manifest"
+if cdenv --root "$root" ssh "$workspace" -- true >"$work/missing-manifest.out" 2>"$work/missing-manifest.log"; then
+  echo "SSH unexpectedly ignored a missing no-hook lifecycle manifest" >&2
+  exit 1
+fi
+grep -q 'cannot read lifecycle manifest' "$work/missing-manifest.log"
+cdenv --root "$root" up "$workspace"
+cdenv --root "$root" ssh "$workspace" -- printf recovered-no-hook | grep -qx recovered-no-hook
+
 [[ $(wc -w <<<"$container_id") -eq 1 ]] || {
   echo "expected exactly one running smoke container" >&2
   exit 1
@@ -130,14 +145,46 @@ cdenv --root "$root" down "$workspace"
 cdenv --root "$root" down "$workspace"
 cdenv --root "$root" up "$workspace"
 [[ $(docker ps -q --filter "label=cdenv.workspace=$workspace") == "$container_id" ]]
+python3 - "$checkout/.devcontainer.json" <<'PY'
+import json
+import sys
+path = sys.argv[1]
+with open(path) as source:
+    config = json.load(source)
+config["postAttachCommand"] = ["/bin/sh", "-c", "printf x >> /data/post-attach-count"]
+with open(path, "w") as destination:
+    json.dump(config, destination)
+    destination.write("\n")
+PY
 cdenv --root "$root" rebuild "$workspace"
 rebuilt_id=$(docker ps -q --filter "label=cdenv.workspace=$workspace")
 rebuilt_generation=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["active"]["generation"])' "$root/workspaces/$workspace/state.json")
 [[ "$rebuilt_id" != "$container_id" && "$rebuilt_generation" -eq $((generation + 1)) ]]
+
+# Configured hooks remain mandatory. Corrupt state blocks the session; up
+# safely reinstalls the immutable generation manifest, then every reconnect
+# executes the hook before granting command access.
+environment_path=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["active"]["provisioned"]["environmentPath"])' "$root/workspaces/$workspace/state.json")
+state_root=$(dirname "$(dirname "$environment_path")")
+lifecycle_manifest="$state_root/lifecycle/.cdenv-post-attach-$rebuilt_generation.json"
+docker exec "$rebuilt_id" sh -c 'printf "not JSON" > "$1"' -- "$lifecycle_manifest"
+if cdenv --root "$root" ssh "$workspace" -- true >"$work/corrupt-manifest.out" 2>"$work/corrupt-manifest.log"; then
+  echo "SSH unexpectedly ignored a corrupt configured-hook lifecycle manifest" >&2
+  exit 1
+fi
+grep -q 'invalid lifecycle manifest' "$work/corrupt-manifest.log"
+cdenv --root "$root" up "$workspace"
+cdenv --root "$root" ssh "$workspace" -- /bin/sh -c \
+  'test "$(cat /data/post-attach-count)" = x && printf configured-hook' | grep -qx configured-hook
+ssh -F "$root/ssh/config" "$workspace.cdenv" \
+  'test "$(cat /data/post-attach-count)" = xx && printf configured-reconnect' | grep -qx configured-reconnect
+
 cdenv --root "$root" rebuild "$workspace" --no-cache
 no_cache_id=$(docker ps -q --filter "label=cdenv.workspace=$workspace")
 no_cache_generation=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["active"]["generation"])' "$root/workspaces/$workspace/state.json")
 [[ "$no_cache_id" != "$rebuilt_id" && "$no_cache_generation" -eq $((rebuilt_generation + 1)) ]]
+cdenv --root "$root" ssh "$workspace" -- /bin/sh -c \
+  'test "$(cat /data/post-attach-count)" = xxx && printf configured-generation' | grep -qx configured-generation
 [[ $(sha256sum "$root/ssh/host_keys/$workspace.pub" | awk '{print $1}') == "$host_key" ]]
 grep -q tracked-change "$checkout/tracked-smoke.txt"
 grep -qx untracked-change "$checkout/untracked-smoke.txt"

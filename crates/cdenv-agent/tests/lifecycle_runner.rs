@@ -9,8 +9,9 @@ use cdenv_agent::{
     BUILD_ID, EnvironmentCaptureRequest, EnvironmentProbe, LifecycleCommand, LifecyclePhase,
     LifecycleProcess, LifecycleRunRequest, LifecycleStage, LifecycleStagePlan, LifecycleValue,
     LifecycleValueSegment, PROTOCOL_VERSION, cancel_lifecycle, capture_environment,
-    inspect_lifecycle, run_lifecycle, run_post_attach,
+    inspect_lifecycle, install_post_attach_manifest, run_lifecycle, run_post_attach,
 };
+use cdenv_core::credentials::CredentialGrants;
 use tempfile::TempDir;
 
 fn literal(value: &str) -> LifecycleValue {
@@ -57,6 +58,8 @@ fn request(
         uid: nix::unistd::geteuid().as_raw(),
         gid: nix::unistd::getegid().as_raw(),
         stages,
+        credential_runtime: None,
+        credential_grants: CredentialGrants::default(),
     }
 }
 
@@ -240,6 +243,42 @@ fn long_running_later_stage_is_reported_active_and_cancels_definitely() {
 
     assert!(!inspection.runner_active);
     assert_eq!(state.phase, LifecyclePhase::Cancelled);
+}
+
+#[test]
+fn installed_empty_post_attach_manifest_distinguishes_no_hook_from_missing_or_corrupt_state() {
+    let directory = TempDir::new().expect("temporary directory");
+    let request = request(
+        &directory,
+        "no-hook",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostAttach,
+            commands: vec![],
+        }],
+    );
+    let installed = install_post_attach_manifest(&request).expect("manifest installation");
+    let expected = directory.path().join(".cdenv-post-attach-no-hook.json");
+    assert_eq!(installed.manifest_path, expected.display().to_string());
+
+    let invoke = || {
+        std::process::Command::new(env!("CARGO_BIN_EXE_cdenv-agent"))
+            .arg("post-attach")
+            .arg(&expected)
+            .output()
+            .expect("agent command")
+    };
+    assert!(invoke().status.success());
+
+    fs::remove_file(&expected).expect("remove manifest");
+    let missing = invoke();
+    assert!(!missing.status.success());
+    assert!(String::from_utf8_lossy(&missing.stderr).contains("cannot read lifecycle manifest"));
+
+    install_post_attach_manifest(&request).expect("manifest recovery");
+    fs::write(&expected, b"not JSON").expect("corrupt manifest");
+    let corrupt = invoke();
+    assert!(!corrupt.status.success());
+    assert!(String::from_utf8_lossy(&corrupt.stderr).contains("invalid lifecycle manifest"));
 }
 
 #[test]

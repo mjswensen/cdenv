@@ -35,6 +35,7 @@ url.workspace = true
 zeroize.workspace = true
 
 [dev-dependencies]
+cdenv-agent = { path = "../cdenv-agent" }
 tempfile.workspace = true
 
 [lints]

@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use cdenv_core::credentials::CredentialGrants;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::{Pid, getegid, geteuid};
@@ -151,6 +152,48 @@ pub struct LifecycleRunRequest {
     pub gid: u32,
     /// Ordered stages which remain for this runner.
     pub stages: Vec<LifecycleStagePlan>,
+    /// Verified managed credential runtime enrolled for lifecycle children, when enabled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_runtime: Option<String>,
+    /// Independent credential capabilities authorized for this generation.
+    #[serde(default, skip_serializing_if = "CredentialGrants::is_empty")]
+    pub credential_grants: CredentialGrants,
+}
+
+/// Installed generation-owned manifest used before each new SSH transport.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleManifest {
+    /// Absolute restricted path consumed by `post-attach`.
+    pub manifest_path: String,
+}
+
+/// Validates and atomically installs one generation's immutable `postAttachCommand` request.
+///
+/// Empty command lists are retained as an explicit no-hook manifest. This lets transports
+/// distinguish a valid no-hook plan from missing or corrupt required lifecycle state.
+///
+/// # Errors
+///
+/// Returns request, path, ownership, serialization, or filesystem errors.
+pub fn install_post_attach_manifest(
+    request: &LifecycleRunRequest,
+) -> Result<LifecycleManifest, LifecycleError> {
+    validate_request(request)?;
+    if request.stages.len() != 1 || request.stages[0].stage != LifecycleStage::PostAttach {
+        return Err(LifecycleError::InvalidRequest {
+            field: "postAttach stage",
+        });
+    }
+    let paths = RunnerPaths::new_attach(request)?;
+    let manifest_path = paths
+        .directory
+        .join(format!(".cdenv-post-attach-{}.json", request.generation));
+    let bytes = serde_json::to_vec(request).map_err(|_| LifecycleError::UnsafeState)?;
+    atomic_write_in(&paths.directory, &manifest_path, &bytes)?;
+    Ok(LifecycleManifest {
+        manifest_path: manifest_path.display().to_string(),
+    })
 }
 
 /// Durable phase for the current lifecycle command group.
@@ -503,8 +546,13 @@ pub fn run_post_attach(request: &LifecycleRunRequest) -> Result<(), LifecycleErr
             source: source.into(),
         }
     })?;
-    let environment = EnvironmentSnapshot::load(Path::new(&request.environment_path))
+    let mut environment = EnvironmentSnapshot::load(Path::new(&request.environment_path))
         .map_err(|source| LifecycleError::Environment { source })?;
+    if let Some(runtime) = &request.credential_runtime {
+        environment
+            .enroll_credentials(Path::new(runtime), &request.credential_grants)
+            .map_err(|source| LifecycleError::Environment { source })?;
+    }
     for (command_index, command) in request.stages[0].commands.iter().enumerate() {
         if execute_command(
             command,
@@ -551,6 +599,19 @@ fn validate_request(request: &LifecycleRunRequest) -> Result<(), LifecycleError>
     }
     if request.uid != geteuid().as_raw() || request.gid != getegid().as_raw() {
         return Err(LifecycleError::InvalidRequest { field: "user" });
+    }
+    match &request.credential_runtime {
+        Some(runtime) if safe_absolute(Path::new(runtime)).is_none() => {
+            return Err(LifecycleError::InvalidRequest {
+                field: "credentialRuntime",
+            });
+        }
+        None if !request.credential_grants.is_empty() => {
+            return Err(LifecycleError::InvalidRequest {
+                field: "credentialRuntime",
+            });
+        }
+        Some(_) | None => {}
     }
     let mut previous = None;
     for plan in &request.stages {

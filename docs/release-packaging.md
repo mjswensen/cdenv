@@ -50,9 +50,11 @@ adjacent-checksum validation, then extracts that exact archive into an isolated
 Node/editor commands with failing stubs, creates a local Git fixture, exercises
 the applicable implementation-plan §19 list/status/doctor/lock/down/up/rebuild,
 OpenSSH, and foreground-forward commands, and verifies that no `sshd` or published
-port 22 exists. It cleans up its container/root and never substitutes a build-tree
-binary. The release workflow runs this installed smoke on both Linux archive
-architectures. The macOS equivalent is the separately retained, versioned
+port 22 exists. It covers no-hook SSH, configured pre-session `postAttachCommand`
+execution, reconnect and generation transitions, and fail-closed recovery from
+missing/corrupt lifecycle manifests. It cleans up its container/root and never
+substitutes a build-tree binary. The release workflow runs this installed smoke on
+both Linux archive architectures. The macOS equivalent is the separately retained, versioned
 [Docker Desktop checklist](smoke/macos-docker-desktop-v1.md).
 
 ## Publishing a tagged release

@@ -668,9 +668,14 @@ printf 'username=alice\npassword=ROTATED-TOKEN\n\n'
         assert!(environment.contains("GH_PROMPT_DISABLED=1"));
         assert!(!environment.contains("GIT_CONFIG_COUNT"));
         assert!(!environment.contains("SECRET-MARKER"));
+        let expected_cwd = temporary
+            .path()
+            .join("neutral")
+            .canonicalize()
+            .expect("canonical neutral directory");
         assert_eq!(
             fs::read_to_string(temporary.path().join("cwd")).expect("cwd"),
-            temporary.path().join("neutral").display().to_string() + "\n"
+            expected_cwd.display().to_string() + "\n"
         );
     }
 

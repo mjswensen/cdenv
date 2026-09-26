@@ -28,11 +28,11 @@ jobs:
             architecture: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup show active-toolchain
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@v4
       - run: cargo xtask stage-agent --platform '${{ matrix.platform }}'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: verified-linux-agent-${{ matrix.architecture }}
           path: target/cdenv-agent/${{ github.sha }}/cdenv-agent-${{ matrix.architecture }}
@@ -43,15 +43,15 @@ jobs:
     needs: agent
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: verified-linux-agent-*
           path: target/verified-agents
           merge-multiple: true
       - name: Validate both static artifacts and create their manifest
         run: cargo xtask finalize-agents target/verified-agents
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: verified-linux-agents
           path: target/verified-agents/
@@ -72,9 +72,9 @@ jobs:
             platform: macos-aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup show active-toolchain
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           name: verified-linux-agents
           path: target/verified-agents
@@ -112,7 +112,7 @@ jobs:
       - name: Run checksum-verified installed operational smoke
         if: runner.os == 'Linux'
         run: cargo xtask test-installed target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: cdenv-${{ matrix.platform }}
           path: target/dist/
@@ -126,7 +126,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           pattern: cdenv-*
           path: target/release-artifacts

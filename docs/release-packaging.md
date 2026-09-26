@@ -4,7 +4,9 @@ For informational workspace and release-suite function/branch reports, artifact
 retention and baseline review, see [coverage reporting](coverage.md). Coverage does
 not replace the required release gates or installed-package smoke checks. The
 independent [Feature security mutation gate](security-mutations.md) requires the
-reviewed targeted mutants to be killed or explicitly owned and time-limited.
+reviewed targeted mutants to be killed or explicitly owned and time-limited. The
+[GitHub Actions runtime baseline](ci-actions.md) records workflow action versions,
+runner requirements, and artifact compatibility.
 
 From a clean checkout with the pinned Rust toolchain, run `cargo xtask dist`.
 The Cargo alias and all release builds use `--locked`. Docker Buildx and QEMU

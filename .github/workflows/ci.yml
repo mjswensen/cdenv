@@ -20,12 +20,13 @@ jobs:
     runs-on: ubuntu-24.04-arm
     steps:
       - name: Check out clean locked repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Require a clean checkout
         run: test -z "$(git status --porcelain)"
       - name: Check quality-gate bootstrap and test plumbing
         run: |
           bash -n .github/scripts/install-coverage.sh .github/scripts/coverage.sh .github/scripts/release-evidence.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-action-runtimes.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-bootstrap.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-security-mutations.py
@@ -50,7 +51,7 @@ jobs:
       matrix:
         shard: [reference-lock, transport, archive-integrity]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Require clean source and pinned Rust
         run: |
           test -z "$(git status --porcelain)"
@@ -64,7 +65,7 @@ jobs:
         run: python3 .github/scripts/security-mutations.py '${{ matrix.shard }}' --verify-source
       - name: Retain selection, diffs, test logs, outcomes and source evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: security-mutations-linux-arm64-${{ matrix.shard }}
           path: target/security-mutations/${{ matrix.shard }}/
@@ -85,7 +86,7 @@ jobs:
             platform: macos-arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Initialize explicit workspace evidence
         run: bash .github/scripts/release-evidence.sh init 'workspace-${{ matrix.platform }}'
       - run: test -z "$(git status --porcelain)"
@@ -100,7 +101,7 @@ jobs:
         run: bash .github/scripts/coverage.sh workspace
       - name: Retain reports and test outcome even on failure
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-workspace-${{ matrix.platform }}
           path: target/coverage/workspace-${{ matrix.platform }}/
@@ -145,7 +146,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Check out clean locked repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
       - name: Initialize explicit evidence for every release suite
         run: |
           bash .github/scripts/release-evidence.sh init \
@@ -194,7 +195,7 @@ jobs:
           ssh -V 2>&1 | grep -q '^OpenSSH_10\.0p2'
           test "$(uname -m)" = '${{ matrix.uname_arch }}'
       - name: Download both natively verified static agents
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v7
         with:
           name: verified-linux-agents-ci
           path: target/verified-agents
@@ -256,7 +257,7 @@ jobs:
         run: bash .github/scripts/coverage.sh openssh
       - name: Retain Dev Container coverage and gate log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}
           path: target/coverage/devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
@@ -264,7 +265,7 @@ jobs:
           retention-days: 14
       - name: Retain credential coverage and gate log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}
           path: target/coverage/credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
@@ -272,7 +273,7 @@ jobs:
           retention-days: 14
       - name: Retain OpenSSH coverage and gate log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: coverage-openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}
           path: target/coverage/openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
@@ -285,14 +286,14 @@ jobs:
     needs: [workspace-coverage, linux-release-gates]
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: coverage-*
           path: target/coverage-download
       - name: Require complete successful report inventory and summarize
         run: python3 .github/scripts/coverage-index.py target/coverage-download target/coverage-index
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: always()
         with:
           name: coverage-index
@@ -304,7 +305,7 @@ jobs:
     name: Agent unsupported-host stub
     runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: rustup show active-toolchain
       - run: cargo check --package cdenv-agent --all-targets --locked
 
@@ -322,11 +323,11 @@ jobs:
             architecture: aarch64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v4
       - name: Build and validate native static agent artifact
         run: cargo xtask stage-agent --platform '${{ matrix.platform }}'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: verified-linux-agent-ci-${{ matrix.architecture }}
           path: target/cdenv-agent/${{ github.sha }}/cdenv-agent-${{ matrix.architecture }}
@@ -337,15 +338,15 @@ jobs:
     needs: linux-agent-targets
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v7
         with:
           pattern: verified-linux-agent-ci-*
           path: target/verified-agents
           merge-multiple: true
       - name: Validate both native artifacts and create their manifest
         run: cargo xtask finalize-agents target/verified-agents
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         with:
           name: verified-linux-agents-ci
           path: target/verified-agents/

@@ -12,11 +12,11 @@ failures are errors, not informational successes.
 
 ## Matrix and artifacts
 
-`.github/workflows/ci.yml` produces seven artifacts, retained for **14 days**:
+`.github/workflows/ci.yml` produces 15 collection artifacts, retained for **14 days**:
 
-- `coverage-workspace-{linux-arm64,macos-arm64}`: locked ordinary workspace
-  tests (`--all-targets`, default features, debug profile).
-- `coverage-{devcontainer-v1,openssh}-linux-arm64-{minimum,pinned}`:
+- `coverage-workspace-{linux-x86_64,linux-arm64,macos-arm64}`: locked ordinary
+  workspace tests (`--all-targets`, default features, debug profile).
+- `coverage-{credentials,devcontainer-v1,openssh}-linux-{x86_64,arm64}-{minimum,pinned}`:
   locked release-profile suite reruns in the same native jobs and selected
   Docker/Compose/OpenSSH baselines as the required gates.
 - Additionally, `coverage-index` contains `index.md` and `index.json`, a combined,
@@ -27,24 +27,32 @@ Each collection artifact contains:
 - `coverage.json`: full LLVM export, including functions, regions and branches;
 - `coverage.lcov`: mergeable LCOV function/line/branch records;
 - `html/index.html`: human-readable source navigation, function and branch details;
-- `tests.log`, `test-exit-code.txt`, `reports.log`, `report-exit-code.txt`,
-  `versions.txt`, `environment.sh`: execution
-  outcome, gate discovery/pass counts, compiler/tool/commit identity and the
-  generated instrumentation environment (not a dump of runner secrets).
+- `gate.log`, `gate-exit-code.txt`: the original pinned-toolchain release gate's
+  diagnostics and outcome (release collections only);
+- `setup.log`, `setup-exit-code.txt`, `tests.log`, `test-exit-code.txt`,
+  `reports.log`, `report-exit-code.txt`, `versions.txt`, `environment.sh`:
+  instrumentation setup, execution, report outcomes, gate discovery/pass counts,
+  compiler/tool/commit identity and the generated instrumentation environment
+  (not a dump of runner secrets).
 
-Reports are attempted after test failure and uploaded with `always()`, but the
-original failure exit code is preserved. A setup failure or skipped suite may
-leave no report: upload and inventory checks fail rather than supplying an empty
-successful result. The inventory requires all eleven successful collections,
-nonempty artifacts and actual function and branch instrumentation. An all-zero
-*covered* count is allowed; a zero instrumentation denominator is not.
+Every expected artifact directory and outcome starts as `not-run` before release
+prerequisites or coverage-tool installation. Independent ordinary suites and
+instrumented reruns use `always()` with explicit prerequisite conditions, so one
+suite failure does not suppress safe later evidence. Reports are attempted after
+an instrumented test failure. All artifacts are uploaded with `always()`, without
+empty-upload noise, and preserve original nonzero exits and logs. Setup failures
+also retain their diagnostics and leave later phases explicitly `not-run`.
+
+The inventory requires all 15 successful collections, successful ordinary gates
+for all 12 release rows, nonempty reports, and actual function and branch
+instrumentation. Failed, absent, and `not-run` outcomes all fail closed. An
+all-zero *covered* count is allowed; a zero instrumentation denominator is not.
 
 The instrumented suites invoke the unchanged `cargo xtask test-integration`
 entry point: missing/below-baseline dependencies, unsupported/mismatched native
 architecture, zero discovered tests, ignored/unexecuted tests, and test failures
-remain errors. A failed earlier gate prevents later coverage steps from running;
-missing coverage is not evidence that a gate passed. macOS has ordinary workspace
-coverage only, **not** an automated Docker Desktop release-suite claim.
+remain errors. macOS has ordinary workspace coverage only, **not** an automated
+Docker Desktop release-suite claim.
 
 ## Isolation, merging and exclusions
 
@@ -107,7 +115,7 @@ with the selected collector. An earlier workspace rerun covered 1811 rather than
 1812 branches with identical denominators: retain per-run counts rather than
 assuming every execution yields a bit-for-bit identical trace.
 
-The first complete green eleven-report CI run must be reviewed as the matrix
+The first complete green 15-report CI run must be reviewed as the matrix
 baseline. Record its commit, CI run URL, compiler/tool versions, counts per row
 and exclusion changes in the PR/release review, and retain the downloaded
 index/relevant reports with release evidence before the 14-day CI retention

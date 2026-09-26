@@ -15,16 +15,32 @@ export CARGO_TARGET_DIR="$PWD/target/coverage-build/$scope"
 export CARGO_LLVM_COV_TARGET_DIR="$CARGO_TARGET_DIR"
 out="$PWD/target/coverage/$COVERAGE_ID"
 mkdir -p "$out"
-# Capture setup output before evaluating: a failed show-env must not be swallowed.
-cargo llvm-cov show-env --branch --locked --sh > "$out/environment.sh"
-source "$out/environment.sh"
-cargo llvm-cov clean --workspace
-{
-  rustc --version --verbose
-  cargo llvm-cov --version
-  git rev-parse HEAD
-  printf 'scope=%s\nprofile=%s\n' "$scope" "${profile[*]:-debug}"
-} > "$out/versions.txt"
+# Initialize outcomes before invoking tools so setup failures remain explicit evidence.
+printf 'not-run\n' > "$out/setup-exit-code.txt"
+printf 'not-run\n' > "$out/test-exit-code.txt"
+printf 'not-run\n' > "$out/report-exit-code.txt"
+
+setup_status=0
+cargo llvm-cov show-env --branch --locked --sh > "$out/environment.sh" 2> "$out/setup.log" || setup_status=$?
+if (( setup_status == 0 )); then
+  # Treat malformed/incompatible generated environments as setup failures too.
+  source "$out/environment.sh" 2>> "$out/setup.log" || setup_status=$?
+fi
+if (( setup_status == 0 )); then
+  cargo llvm-cov clean --workspace >> "$out/setup.log" 2>&1 || setup_status=$?
+fi
+if (( setup_status == 0 )); then
+  {
+    rustc --version --verbose
+    cargo llvm-cov --version
+    git rev-parse HEAD
+    printf 'scope=%s\nprofile=%s\n' "$scope" "${profile[*]:-debug}"
+  } > "$out/versions.txt" 2>> "$out/setup.log" || setup_status=$?
+fi
+printf '%s\n' "$setup_status" > "$out/setup-exit-code.txt"
+if (( setup_status != 0 )); then
+  exit "$setup_status"
+fi
 
 status=0
 if [[ "$scope" == workspace ]]; then

@@ -25,7 +25,7 @@ jobs:
         run: test -z "$(git status --porcelain)"
       - name: Check quality-gate bootstrap and test plumbing
         run: |
-          bash -n .github/scripts/install-coverage.sh .github/scripts/coverage.sh
+          bash -n .github/scripts/install-coverage.sh .github/scripts/coverage.sh .github/scripts/release-evidence.sh
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-bootstrap.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-security-mutations.py
@@ -86,6 +86,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Initialize explicit workspace evidence
+        run: bash .github/scripts/release-evidence.sh init 'workspace-${{ matrix.platform }}'
       - run: test -z "$(git status --porcelain)"
       - name: Use canonical macOS temporary directory spelling
         if: matrix.platform == 'macos-arm64'
@@ -144,6 +146,12 @@ jobs:
     steps:
       - name: Check out clean locked repository
         uses: actions/checkout@v4
+      - name: Initialize explicit evidence for every release suite
+        run: |
+          bash .github/scripts/release-evidence.sh init \
+            'devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}' \
+            'credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}' \
+            'openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}'
       - name: Require a clean checkout and pinned Rust toolchain
         run: |
           test -z "$(git status --porcelain)"
@@ -196,38 +204,51 @@ jobs:
         run: |
           cargo xtask dist
           echo "CDENV_CREDENTIAL_TEST_BINARY=$PWD/target/release/cdenv" >> "$GITHUB_ENV"
+      - name: Confirm release-suite prerequisites completed
+        id: release_prerequisites
+        run: true
       - name: Run nonempty editor-independent Dev Container profile suite
+        if: always() && steps.release_prerequisites.outcome == 'success'
         env:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
-        run: cargo xtask test-integration --suite devcontainer-v1
+          COVERAGE_ID: devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+        run: bash .github/scripts/release-evidence.sh run devcontainer-v1
       - name: Run nonempty credential product suite
+        if: always() && steps.release_prerequisites.outcome == 'success'
         env:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
-        run: cargo xtask test-integration --suite credentials
+          COVERAGE_ID: credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+        run: bash .github/scripts/release-evidence.sh run credentials
       - name: Run nonempty standard OpenSSH interoperability suite
+        if: always() && steps.release_prerequisites.outcome == 'success'
         env:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
-        run: cargo xtask test-integration --suite openssh
+          COVERAGE_ID: openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}
+        run: bash .github/scripts/release-evidence.sh run openssh
 
-      # These reruns cannot substitute for either required pinned-toolchain gate above.
+      # These reruns cannot substitute for any required pinned-toolchain gate above.
       - name: Install pinned coverage tools
+        if: always() && steps.release_prerequisites.outcome == 'success'
         run: bash .github/scripts/install-coverage.sh
       - name: Instrument Dev Container release suite
+        if: always() && steps.release_prerequisites.outcome == 'success'
         env:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
           COVERAGE_ID: devcontainer-v1-linux-${{ matrix.arch }}-${{ matrix.baseline }}
         run: bash .github/scripts/coverage.sh devcontainer-v1
       - name: Instrument credential release suite
+        if: always() && steps.release_prerequisites.outcome == 'success'
         env:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
           COVERAGE_ID: credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}
         run: bash .github/scripts/coverage.sh credentials
       - name: Instrument OpenSSH release suite
+        if: always() && steps.release_prerequisites.outcome == 'success'
         env:
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}

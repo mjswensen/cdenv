@@ -28,11 +28,23 @@ def index(source, destination):
     for identifier in expected_ids():
         directory = source / f"coverage-{identifier}"
         try:
-            if (directory / "test-exit-code.txt").read_text().strip() != "0":
-                raise ValueError("test/gate failed; any report is partial")
-            if (directory / "report-exit-code.txt").read_text().strip() != "0":
-                raise ValueError("report generation failed")
-            for filename in ("coverage.lcov", "html/index.html", "versions.txt", "tests.log"):
+            if not identifier.startswith("workspace-"):
+                gate_status = (directory / "gate-exit-code.txt").read_text().strip()
+                if gate_status != "0":
+                    raise ValueError(f"ordinary release gate failed or was not run ({gate_status})")
+            setup_status = (directory / "setup-exit-code.txt").read_text().strip()
+            if setup_status != "0":
+                raise ValueError(f"coverage setup failed or was not run ({setup_status})")
+            test_status = (directory / "test-exit-code.txt").read_text().strip()
+            if test_status != "0":
+                raise ValueError(f"instrumented test/gate failed or was not run ({test_status})")
+            report_status = (directory / "report-exit-code.txt").read_text().strip()
+            if report_status != "0":
+                raise ValueError(f"report generation failed or was not run ({report_status})")
+            required_files = ["coverage.lcov", "html/index.html", "versions.txt", "tests.log"]
+            if not identifier.startswith("workspace-"):
+                required_files.append("gate.log")
+            for filename in required_files:
                 if (directory / filename).stat().st_size == 0:
                     raise ValueError(f"empty {filename}")
             data = json.loads((directory / "coverage.json").read_text())

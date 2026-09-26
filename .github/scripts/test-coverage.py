@@ -30,14 +30,24 @@ class CoverageTests(unittest.TestCase):
                 (directory / "html").mkdir(parents=True)
                 for filename in ("coverage.lcov", "html/index.html", "versions.txt", "tests.log"):
                     (directory / filename).write_text("fixture\n")
+                (directory / "setup-exit-code.txt").write_text("0\n")
                 (directory / "test-exit-code.txt").write_text("0\n")
                 (directory / "report-exit-code.txt").write_text("0\n")
+                if not identifier.startswith("workspace-"):
+                    (directory / "gate-exit-code.txt").write_text("0\n")
+                    (directory / "gate.log").write_text("ordinary gate fixture\n")
                 data = {"type": "llvm.coverage.json.export", "data": [{"totals": {
                     "functions": {"count": 100, "covered": 1},
                     "branches": {"count": 100, "covered": 0},
                 }}]}
                 (directory / "coverage.json").write_text(json.dumps(data))
             self.assertFalse(INDEX.index(root, root / "index"))
+            (directory / "gate-exit-code.txt").write_text("7\n")
+            self.assertTrue(INDEX.index(root, root / "index"))
+            (directory / "gate-exit-code.txt").write_text("0\n")
+            (directory / "setup-exit-code.txt").write_text("not-run\n")
+            self.assertTrue(INDEX.index(root, root / "index"))
+            (directory / "setup-exit-code.txt").write_text("0\n")
             (directory / "report-exit-code.txt").write_text("1\n")
             self.assertTrue(INDEX.index(root, root / "index"))
             (directory / "report-exit-code.txt").write_text("0\n")
@@ -77,26 +87,59 @@ esac
             result = subprocess.run(["bash", str(SCRIPTS / "coverage.sh"), scope],
                                     cwd=root, env=environment, capture_output=True, text=True)
             outcome = root / "target/coverage/fixture/test-exit-code.txt"
+            setup_outcome = root / "target/coverage/fixture/setup-exit-code.txt"
             return result.returncode, (root / "calls").read_text(), (
-                outcome.read_text().strip() if outcome.exists() else None)
+                outcome.read_text().strip() if outcome.exists() else None), (
+                setup_outcome.read_text().strip() if setup_outcome.exists() else None)
 
     def test_release_uses_real_gate_and_preserves_failure(self):
         for suite in ("credentials", "devcontainer-v1", "openssh"):
-            code, calls, outcome = self.run_collector(suite, test_status=7)
-            self.assertEqual((code, outcome), (7, "7"))
+            code, calls, outcome, setup = self.run_collector(suite, test_status=7)
+            self.assertEqual((code, outcome, setup), (7, "7", "0"))
             self.assertIn(f"xtask test-integration --suite {suite}\n", calls)
             self.assertEqual(calls.count("llvm-cov report --release --branch --locked"), 3)
 
     def test_workspace_is_locked_and_report_failure_is_not_hidden(self):
-        code, calls, outcome = self.run_collector("workspace", report_status=9)
-        self.assertEqual((code, outcome), (9, "0"))
+        code, calls, outcome, setup = self.run_collector("workspace", report_status=9)
+        self.assertEqual((code, outcome, setup), (9, "0", "0"))
         self.assertIn("test --workspace --locked --all-targets\n", calls)
 
     def test_failed_setup_does_not_run_uninstrumented_tests(self):
-        code, calls, outcome = self.run_collector("workspace", setup_status=5)
-        self.assertEqual(code, 5)
+        code, calls, outcome, setup = self.run_collector("workspace", setup_status=5)
+        self.assertEqual((code, outcome, setup), (5, "not-run", "5"))
         self.assertNotIn("test --workspace", calls)
-        self.assertIsNone(outcome)
+
+    def test_release_evidence_retains_early_failure_and_not_run_outcomes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = SCRIPTS / "release-evidence.sh"
+            subprocess.run(["bash", str(script), "init", "first", "second"],
+                           cwd=root, check=True)
+            self.assertEqual((root / "target/coverage/second/gate-exit-code.txt").read_text(),
+                             "not-run\n")
+
+            cargo = root / "cargo"
+            cargo.write_text("#!/bin/sh\necho 'ordinary diagnostic'\nexit 7\n")
+            cargo.chmod(0o755)
+            environment = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
+                               COVERAGE_ID="first")
+            result = subprocess.run(["bash", str(script), "run", "credentials"],
+                                    cwd=root, env=environment)
+            self.assertEqual(result.returncode, 7)
+            self.assertEqual((root / "target/coverage/first/gate-exit-code.txt").read_text(),
+                             "7\n")
+            self.assertIn("ordinary diagnostic",
+                          (root / "target/coverage/first/gate.log").read_text())
+            self.assertEqual((root / "target/coverage/second/test-exit-code.txt").read_text(),
+                             "not-run\n")
+
+    def test_workflow_runs_independent_suites_and_retains_pre_tool_outcomes(self):
+        workflow = (SCRIPTS.parent / "workflows/ci.yml").read_text()
+        condition = "if: always() && steps.release_prerequisites.outcome == 'success'"
+        self.assertGreaterEqual(workflow.count(condition), 7)
+        self.assertIn("release-evidence.sh init", workflow)
+        # Instrumentation records setup failure instead of being skipped when tool install fails.
+        self.assertNotIn("&& steps.coverage_tools.outcome", workflow)
 
 
 if __name__ == "__main__":

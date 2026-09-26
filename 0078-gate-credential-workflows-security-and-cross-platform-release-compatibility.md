@@ -7,6 +7,7 @@ depends-on:
   - 80
   - 81
   - 82
+  - 83
 ---
 
 # Gate credential workflows security and cross-platform release compatibility
@@ -33,6 +34,15 @@ CI [36219272407](https://github.com/mjswensen/cdenv/actions/runs/36219272407), r
 Unlike the earlier package-preparation failure below, this run builds the packaged host, passes eight Dev Container profile tests per Linux release job, and discovers/executes three credential tests per job. Only the traceability test passes; both live workflows fail during create. Linux ordinary workspace coverage and security mutation jobs pass, but this is still not passing credential release evidence. Skipped OpenSSH/coverage steps are not test passes or independent demonstrated runtime failures.
 
 Other log noise (unstable branch-coverage notices, third-party OpenSSH build warnings, Docker cleanup of absent nftables tables, and expected negative-test Git errors in passing suites) was not classified as additional demonstrated gate failures. No acceptance checkbox is closed by this triage.
+
+### Latest release-workflow triage (2026-09-26)
+
+Release packages [36219272470](https://github.com/mjswensen/cdenv/actions/runs/36219272470), at revision `6e15e53f1879c1d3fd6c47f4b6b040ca82a761c6`, was categorized from `release.log`:
+
+- **83 — Installed lifecycle/SSH integration:** both native Linux package jobs pass archive/reproducibility checks and create a healthy-looking workspace, then fail SSH attach with `postAttachCommand failed: cannot read lifecycle manifest: No such file or directory (os error 2)`. The installed fixture defines no lifecycle hooks. Later operational assertions remain unverified and Linux package uploads are skipped downstream.
+- **82 — Shared action runtime maintenance:** the release workflow repeats the existing Node.js runtime/dependency warnings; evidence was added to issue 82 rather than creating a duplicate.
+
+Static agent builds/assembly and macOS packaging pass, but the latter does not execute Docker Desktop operational smoke. Draft release preparation is tag-only and this run is a main-branch push; its skipped state is not independently a publication failure. Third-party build/probe and cleanup messages are not additional demonstrated primary failures. Relevant excerpts/run identifiers are retained in the issues before deleting the local `ci.log` and `release.log` files. No acceptance checkbox is closed by this triage.
 
 ### Completed so far (`11b0651`, `63a6815`, `20db16f`, `65b6375`, `2af3ec2`; `Refs: 78`)
 

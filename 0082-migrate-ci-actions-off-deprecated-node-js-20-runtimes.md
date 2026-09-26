@@ -22,6 +22,12 @@ Across the annotations, the named actions are `actions/checkout@v4`, `actions/up
 
 These warnings appear in successful jobs too. They must not be confused with the bootstrap, socket-path, or evidence-retention failures.
 
+### Release workflow corroboration (2026-09-26)
+
+Release packages run [36219272470](https://github.com/mjswensen/cdenv/actions/runs/36219272470), at the same source revision, repeats the same Node.js 20-to-24 annotations for all four named actions (`release.log:45-64`; job completions at `399`, `2632`, `3272`, and `5500`). Artifact actions also repeat `DEP0040`, `DEP0005`, and `DEP0169` (examples at `196`, `207`, `370`, `376`, `3239`, and `3245`). These excerpts refer to the original local log, removed after triage; the linked run retains the source context.
+
+Include `.github/workflows/release.yml` in the migration and verify both agent and host packaging jobs. Track this shared maintenance problem here rather than duplicating it for the release workflow. The actual Linux installed-smoke failure is the missing lifecycle manifest tracked in issue 83, not these warnings.
+
 ## Work
 
 - Audit CI and related reusable/release workflows for actions whose declared runtime is deprecated, including transitive action usage.

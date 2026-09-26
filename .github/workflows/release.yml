@@ -97,6 +97,7 @@ jobs:
         uses: docker/setup-docker-action@v5
         with:
           version: v29.7.1
+          set-host: true
       - name: Set up pinned Compose for the installed Linux workflow
         if: runner.os == 'Linux'
         uses: docker/setup-compose-action@v2

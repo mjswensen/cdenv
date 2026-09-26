@@ -148,6 +148,7 @@ jobs:
         uses: docker/setup-docker-action@v5
         with:
           version: ${{ matrix.docker }}
+          set-host: true
       - name: Set up minimum Docker CLI independently of minimum Engine
         if: matrix.baseline == 'minimum'
         env:

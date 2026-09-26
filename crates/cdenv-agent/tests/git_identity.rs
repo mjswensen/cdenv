@@ -1,5 +1,6 @@
-#![cfg(target_os = "linux")]
 //! Controlled Git fixtures for fill-only-missing identity defaults.
+
+#![cfg(target_os = "linux")]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;

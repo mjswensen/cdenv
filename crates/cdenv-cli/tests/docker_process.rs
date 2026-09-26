@@ -170,10 +170,11 @@ async fn runner_redacts_environment_and_header_values_before_bounded_capture_and
             sensitive: false,
         },
     ];
+    let arguments = [fake.as_os_str()];
     let request = ProcessRequest {
         operation: "redaction",
-        executable: &fake,
-        arguments: &[],
+        executable: Path::new("/bin/sh"),
+        arguments: &arguments,
         cwd: temporary.path(),
         environment: &environment,
         redactions: &[b"header-marker"],

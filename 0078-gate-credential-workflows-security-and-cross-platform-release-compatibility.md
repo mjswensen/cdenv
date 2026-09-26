@@ -3,6 +3,10 @@ id: 78
 created: 2026-09-07
 depends-on:
   - 77
+  - 79
+  - 80
+  - 81
+  - 82
 ---
 
 # Gate credential workflows security and cross-platform release compatibility
@@ -15,7 +19,20 @@ Provide reproducible, nonempty end-to-end and release evidence for the complete 
 
 ## Implementation status
 
-_Last reconciled: 2026-09-20._
+_Last reconciled: 2026-09-26._
+
+### Latest CI triage (2026-09-26)
+
+CI [36219272407](https://github.com/mjswensen/cdenv/actions/runs/36219272407), revision `6e15e53f1879c1d3fd6c47f4b6b040ca82a761c6`, was categorized from the saved `ci.log`. Follow-up blockers:
+
+- **79 — CI bootstrap:** web-agent release lookup returns HTTP 403 and aborts the development-container bootstrap before strict Rust/cargo-deny checks run.
+- **80 — Unix-socket path portability:** the macOS registry socket test and both packaged credential workflows in all four Linux release jobs fail with `path must be shorter than SUN_LEN`. This groups the repeated failures across platforms/matrix legs.
+- **81 — Evidence retention:** early credential failures skip OpenSSH and all release coverage runs; 12 artifact uploads find no files. The aggregate coverage inventory subsequently fails with only workspace reports available, including failed macOS evidence. Preserve diagnostics and explicit not-run outcomes without weakening the required-success gate.
+- **82 — Action runtime maintenance:** migrate the actions named in Node.js 20 deprecation warnings to supported runtimes and triage their dependency deprecations. These warnings are not the cause of the failing tests.
+
+Unlike the earlier package-preparation failure below, this run builds the packaged host, passes eight Dev Container profile tests per Linux release job, and discovers/executes three credential tests per job. Only the traceability test passes; both live workflows fail during create. Linux ordinary workspace coverage and security mutation jobs pass, but this is still not passing credential release evidence. Skipped OpenSSH/coverage steps are not test passes or independent demonstrated runtime failures.
+
+Other log noise (unstable branch-coverage notices, third-party OpenSSH build warnings, Docker cleanup of absent nftables tables, and expected negative-test Git errors in passing suites) was not classified as additional demonstrated gate failures. No acceptance checkbox is closed by this triage.
 
 ### Completed so far (`11b0651`, `63a6815`, `20db16f`, `65b6375`, `2af3ec2`; `Refs: 78`)
 

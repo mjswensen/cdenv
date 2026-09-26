@@ -8,7 +8,20 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use cdenv_core::WorkspaceName;
+use sha2::{Digest, Sha256};
 use thiserror::Error;
+
+#[cfg(target_os = "linux")]
+const UNIX_SOCKET_PATH_MAXIMUM_BYTES: usize = 107;
+#[cfg(not(target_os = "linux"))]
+const UNIX_SOCKET_PATH_MAXIMUM_BYTES: usize = 103;
+// An 80-bit key leaves room for canonical macOS temporary roots; any collision
+// fails closed on the already-owned socket and authenticated workspace identity.
+const SUPERVISOR_SOCKET_KEY_BYTES: usize = 10;
+const SUPERVISOR_SOCKET_DIRECTORY: &str = ".s";
+#[cfg(test)]
+const SUPERVISOR_SOCKET_PATH_OVERHEAD_BYTES: usize =
+    2 + SUPERVISOR_SOCKET_DIRECTORY.len() + SUPERVISOR_SOCKET_KEY_BYTES * 2;
 
 /// The environment variable that overrides the default cdenv root.
 pub const CDENV_HOME: &str = "CDENV_HOME";
@@ -65,6 +78,20 @@ pub enum RootResolutionError {
         /// Byte offset of the rejected character.
         index: usize,
     },
+    /// The shortest safe supervisor endpoint below the root exceeds the host limit.
+    #[error(
+        "the cdenv root selected from {selected_from} is too long for a Unix-domain supervisor socket ({length} bytes, platform maximum {maximum}): {path:?}; choose a shorter --root or CDENV_HOME"
+    )]
+    SupervisorSocketPathTooLong {
+        /// The selected precedence source.
+        selected_from: RootSource,
+        /// Representative rejected socket path.
+        path: PathBuf,
+        /// Encoded pathname length in bytes.
+        length: usize,
+        /// Platform pathname limit in bytes.
+        maximum: usize,
+    },
 }
 
 /// An environment boundary used when resolving a root.
@@ -114,8 +141,8 @@ impl CdenvRoot {
     /// # Errors
     ///
     /// Returns [`RootResolutionError`] if no default home is available or the
-    /// selected path is relative, non-UTF-8, or unsafe to embed in OpenSSH
-    /// configuration.
+    /// selected path is relative, non-UTF-8, unsafe to embed in OpenSSH
+    /// configuration, or too long for a platform Unix-domain socket.
     pub fn resolve(
         explicit_root: Option<&Path>,
         environment: &impl RootEnvironment,
@@ -151,6 +178,18 @@ impl CdenvRoot {
             return Err(RootResolutionError::UnsafeOpenSshCharacter {
                 selected_from,
                 index,
+            });
+        }
+        let representative_socket = path
+            .join(SUPERVISOR_SOCKET_DIRECTORY)
+            .join("0".repeat(SUPERVISOR_SOCKET_KEY_BYTES * 2));
+        let length = path_byte_len(&representative_socket);
+        if length > UNIX_SOCKET_PATH_MAXIMUM_BYTES {
+            return Err(RootResolutionError::SupervisorSocketPathTooLong {
+                selected_from,
+                path: representative_socket,
+                length,
+                maximum: UNIX_SOCKET_PATH_MAXIMUM_BYTES,
             });
         }
         Ok(Self(path))
@@ -234,6 +273,12 @@ impl CdenvRoot {
     pub fn temp_dir(&self) -> PathBuf {
         self.0.join("tmp")
     }
+
+    /// Returns the private installation-scoped supervisor socket directory.
+    #[must_use]
+    pub fn supervisor_socket_dir(&self) -> PathBuf {
+        self.0.join(SUPERVISOR_SOCKET_DIRECTORY)
+    }
 }
 
 impl AsRef<Path> for CdenvRoot {
@@ -301,7 +346,7 @@ impl WorkspacePaths<'_> {
     /// Returns the private forwarding-supervisor control socket path.
     #[must_use]
     pub fn supervisor_socket(&self) -> PathBuf {
-        self.runtime_dir().join("supervisor.sock")
+        supervisor_socket_path(self.root.as_path(), self.name)
     }
 
     /// Returns the private forwarding-supervisor identity/state path.
@@ -461,6 +506,16 @@ fn unsafe_openssh_character(value: &str) -> Option<usize> {
     value.char_indices().find_map(|(index, character)| {
         (character.is_control() || matches!(character, '%' | '$')).then_some(index)
     })
+}
+
+pub(crate) fn supervisor_socket_path(root: &Path, name: &WorkspaceName) -> PathBuf {
+    let digest = Sha256::digest(name.as_str().as_bytes());
+    root.join(SUPERVISOR_SOCKET_DIRECTORY)
+        .join(hex::encode(&digest[..SUPERVISOR_SOCKET_KEY_BYTES]))
+}
+
+fn path_byte_len(path: &Path) -> usize {
+    path.to_str().map_or(usize::MAX, str::len)
 }
 
 /// The expected kind of an existing managed path.
@@ -699,7 +754,6 @@ mod tests {
                 workspace.state_file(),
                 workspace.lock_file(),
                 workspace.runtime_dir(),
-                workspace.supervisor_socket(),
                 workspace.supervisor_state_file(),
                 workspace.supervisor_lifetime_lock(),
                 workspace.logs_dir(),
@@ -722,7 +776,6 @@ mod tests {
                 PathBuf::from("/root/.cdenv/workspaces/project/state.json"),
                 PathBuf::from("/root/.cdenv/workspaces/project/.lock"),
                 PathBuf::from("/root/.cdenv/workspaces/project/runtime"),
-                PathBuf::from("/root/.cdenv/workspaces/project/runtime/supervisor.sock"),
                 PathBuf::from("/root/.cdenv/workspaces/project/runtime/supervisor.json"),
                 PathBuf::from("/root/.cdenv/workspaces/project/runtime/.supervisor.lock"),
                 PathBuf::from("/root/.cdenv/workspaces/project/logs"),
@@ -737,6 +790,79 @@ mod tests {
                 PathBuf::from("/root/.cdenv/tmp"),
             ]
         );
+        assert_eq!(
+            workspace.supervisor_socket(),
+            PathBuf::from("/root/.cdenv/.s/244210e48437b6556980")
+        );
+    }
+
+    #[test]
+    fn supervisor_socket_stays_short_for_the_longest_workspace_name() {
+        let root = CdenvRoot::resolve(
+            Some(Path::new("/tmp/a-moderately-long-cdenv-test-root")),
+            &environment(None, None),
+        )
+        .expect("supported root");
+        let name = WorkspaceName::parse(&"w".repeat(63)).expect("longest workspace name");
+
+        let socket = root.workspace(&name).supervisor_socket();
+
+        assert_eq!(
+            socket.parent(),
+            Some(root.supervisor_socket_dir().as_path())
+        );
+        assert!(path_byte_len(&socket) <= UNIX_SOCKET_PATH_MAXIMUM_BYTES);
+    }
+
+    #[test]
+    fn canonical_macos_temporary_root_stays_within_sun_len() {
+        let root = CdenvRoot::resolve(
+            Some(Path::new(
+                "/private/var/folders/zz/12345678901234567890123456789012/T/.tmpABCDEF/root",
+            )),
+            &environment(None, None),
+        )
+        .expect("canonical macOS temporary root");
+        let name = WorkspaceName::parse(&"w".repeat(63)).expect("longest workspace name");
+
+        let socket = root.workspace(&name).supervisor_socket();
+
+        assert!(path_byte_len(&socket) <= 103, "socket was {socket:?}");
+    }
+
+    #[test]
+    fn root_accepts_a_supervisor_socket_path_at_the_platform_byte_limit() {
+        let root_length = UNIX_SOCKET_PATH_MAXIMUM_BYTES - SUPERVISOR_SOCKET_PATH_OVERHEAD_BYTES;
+        let root = PathBuf::from(format!("/{}", "a".repeat(root_length - 1)));
+
+        let resolved = CdenvRoot::resolve(Some(&root), &environment(None, None))
+            .expect("boundary-length root should resolve");
+        let name = WorkspaceName::parse("project").expect("workspace");
+
+        assert_eq!(
+            path_byte_len(&resolved.workspace(&name).supervisor_socket()),
+            UNIX_SOCKET_PATH_MAXIMUM_BYTES
+        );
+    }
+
+    #[test]
+    fn root_rejects_an_overlong_multibyte_supervisor_socket_path() {
+        let root = PathBuf::from(format!(
+            "/tmp/{}",
+            "é".repeat(UNIX_SOCKET_PATH_MAXIMUM_BYTES)
+        ));
+
+        let error = CdenvRoot::resolve(Some(&root), &environment(None, None))
+            .expect_err("overlong root must fail before creating state");
+
+        assert!(matches!(
+            error,
+            RootResolutionError::SupervisorSocketPathTooLong {
+                length,
+                maximum: UNIX_SOCKET_PATH_MAXIMUM_BYTES,
+                ..
+            } if length > UNIX_SOCKET_PATH_MAXIMUM_BYTES
+        ));
     }
 
     #[test]

@@ -27,6 +27,7 @@ use zeroize::Zeroizing;
 
 use crate::agent_artifacts::AgentArtifactProvider;
 use crate::bollard::{GENERATION_LABEL, INSTALLATION_LABEL, WORKSPACE_LABEL};
+use crate::paths::supervisor_socket_path;
 use crate::{
     BOLLARD_CONTROL_TIMEOUT, BollardAdapter, BrokerBackendError, BrokerBackendFuture,
     BrokerByteStream, CancellationToken, CredentialBrokerBackend, DockerEndpoint, ExecCommand,
@@ -334,6 +335,11 @@ pub async fn start_detached_supervisor(
     })?;
     ensure_private_directory(runtime)
         .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
+    let socket_directory = manifest.control_socket.parent().ok_or_else(|| {
+        ForwardingSupervisorError::Runtime("control socket has no private directory".to_owned())
+    })?;
+    ensure_private_directory(socket_directory)
+        .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
     ensure_lock_file(&manifest.lifetime_lock)
         .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
     let bytes = serde_json::to_vec(manifest)
@@ -390,6 +396,11 @@ pub async fn run_private_supervisor_manifest(path: &Path) -> Result<(), Forwardi
 )]
 async fn run_supervisor(manifest: SupervisorManifest) -> Result<(), ForwardingSupervisorError> {
     validate_manifest_identity(&manifest)?;
+    let socket_directory = manifest.control_socket.parent().ok_or_else(|| {
+        ForwardingSupervisorError::Runtime("control socket has no private directory".to_owned())
+    })?;
+    ensure_private_directory(socket_directory)
+        .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
     let _lifetime = LockGuard::acquire(
         &manifest.lifetime_lock,
         LockMode::Exclusive,
@@ -1225,18 +1236,24 @@ fn validate_runtime_paths(
     lifetime_lock: &Path,
 ) -> Result<(), ForwardingSupervisorError> {
     let runtime = state_file.parent();
+    let workspace_root = runtime.and_then(Path::parent);
+    let workspaces = workspace_root.and_then(Path::parent);
+    let root = workspaces.and_then(Path::parent);
     let valid = runtime.is_some()
-        && control_socket.parent() == runtime
         && lifetime_lock.parent() == runtime
         && runtime
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
             == Some("runtime")
-        && runtime
-            .and_then(Path::parent)
+        && workspace_root
             .and_then(Path::file_name)
             .and_then(|name| name.to_str())
-            == Some(workspace.as_str());
+            == Some(workspace.as_str())
+        && workspaces
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            == Some("workspaces")
+        && root.is_some_and(|root| control_socket == supervisor_socket_path(root, workspace));
     if valid {
         Ok(())
     } else {
@@ -1336,11 +1353,13 @@ impl tokio::io::AsyncWrite for BoundedDiagnostics {
 mod tests {
     use super::*;
 
-    fn manifest(directory: &Path) -> SupervisorManifest {
+    fn manifest(root: &Path) -> SupervisorManifest {
         let build = AgentArtifactProvider::embedded_identity().expect("host build");
+        let workspace = WorkspaceName::parse("workspace").expect("workspace");
+        let runtime = root.join("workspaces/workspace/runtime");
         SupervisorManifest::new(
             InstallationId::parse("installation-1").expect("installation"),
-            WorkspaceName::parse("workspace").expect("workspace"),
+            workspace.clone(),
             GenerationId::new(1).expect("generation"),
             build.clone(),
             build,
@@ -1348,13 +1367,44 @@ mod tests {
             ContainerId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
                 .expect("container"),
             "/usr/local/bin/cdenv-agent".to_owned(),
-            directory.join("docker.sock"),
-            directory.join("supervisor.sock"),
-            directory.join("supervisor.json"),
-            directory.join(".supervisor.lock"),
+            runtime.join("docker.sock"),
+            supervisor_socket_path(root, &workspace),
+            runtime.join("supervisor.json"),
+            runtime.join(".supervisor.lock"),
             Vec::new(),
         )
         .expect("manifest")
+    }
+
+    #[test]
+    fn runtime_paths_require_the_compact_workspace_endpoint() {
+        let workspace = WorkspaceName::parse("workspace").expect("workspace");
+        let root = Path::new("/tmp/cdenv-root");
+        let runtime = root.join("workspaces/workspace/runtime");
+
+        let compact = validate_runtime_paths(
+            &workspace,
+            &supervisor_socket_path(root, &workspace),
+            &runtime.join("supervisor.json"),
+            &runtime.join(".supervisor.lock"),
+        );
+        let nested = validate_runtime_paths(
+            &workspace,
+            &runtime.join("supervisor.sock"),
+            &runtime.join("supervisor.json"),
+            &runtime.join(".supervisor.lock"),
+        );
+
+        assert!(
+            compact.is_ok(),
+            "compact endpoint was rejected: {compact:?}"
+        );
+        assert!(matches!(
+            nested,
+            Err(ForwardingSupervisorError::Identity {
+                field: "workspace root"
+            })
+        ));
     }
 
     #[test]
@@ -1372,11 +1422,11 @@ mod tests {
     #[tokio::test]
     async fn authenticated_control_reconciles_credentials_without_stopping_supervisor() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let workspace_root = temporary.path().join("workspace");
-        fs::create_dir(&workspace_root).expect("workspace root");
+        let workspace_root = temporary.path().join("workspaces/workspace");
+        fs::create_dir_all(&workspace_root).expect("workspace root");
         let runtime = workspace_root.join("runtime");
         ensure_private_directory(&runtime).expect("private runtime");
-        let manifest = manifest(&runtime);
+        let manifest = manifest(temporary.path());
         let _docker = std::os::unix::net::UnixListener::bind(&manifest.docker_socket)
             .expect("fake Docker socket");
         ensure_lock_file(&manifest.lifetime_lock).expect("lifetime lock");
@@ -1410,11 +1460,11 @@ mod tests {
     #[tokio::test]
     async fn supervisor_authenticates_status_and_down_without_pid_signalling() {
         let temporary = tempfile::tempdir().expect("temporary directory");
-        let workspace_root = temporary.path().join("workspace");
-        fs::create_dir(&workspace_root).expect("workspace root");
+        let workspace_root = temporary.path().join("workspaces/workspace");
+        fs::create_dir_all(&workspace_root).expect("workspace root");
         let runtime = workspace_root.join("runtime");
         ensure_private_directory(&runtime).expect("private runtime");
-        let manifest = manifest(&runtime);
+        let manifest = manifest(temporary.path());
         let _docker = std::os::unix::net::UnixListener::bind(&manifest.docker_socket)
             .expect("fake Docker socket");
         ensure_lock_file(&manifest.lifetime_lock).expect("lifetime lock");

@@ -177,6 +177,7 @@ pub fn reserve_workspace(
     name: &WorkspaceName,
 ) -> Result<WorkspaceReservation, ReservationError> {
     ensure_private_directory(root.as_path())?;
+    ensure_private_directory(&root.supervisor_socket_dir())?;
     ensure_private_directory(&root.workspaces_dir())?;
     ensure_lock_file(&root.workspace_namespace_lock())?;
     let namespace_guard = LockGuard::acquire(

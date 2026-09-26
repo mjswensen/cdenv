@@ -57,7 +57,13 @@ By default cdenv uses its documented home location. Set `CDENV_HOME` or pass
 per-command override. Do not share or copy roots between users or installations.
 A root contains installation identity, checkout registry/state, private keys,
 managed SSH configuration, forwarding control files, explicit credential
-permission records, operation logs, and caches.
+permission records, operation logs, and caches. Supervisor control sockets use
+a deterministic, workspace-isolated name in the root's owner-only `.s` directory
+rather than the longer checkout path. cdenv counts the complete encoded socket
+pathname when selecting a root: Linux permits at most 107 bytes and macOS at
+most 103 bytes. An unsupported `--root`, `CDENV_HOME`, or default home path fails
+before managed state is created and reports the measured limit; select a shorter
+root rather than linking or relocating sockets into a shared temporary directory.
 The only managed host path outside it is an explicitly consented SSH Include;
 the only checkout write is an explicit Feature lock operation.
 

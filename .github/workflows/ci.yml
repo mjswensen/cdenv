@@ -23,9 +23,10 @@ jobs:
         uses: actions/checkout@v4
       - name: Require a clean checkout
         run: test -z "$(git status --porcelain)"
-      - name: Check coverage and mutation plumbing failure handling
+      - name: Check quality-gate bootstrap and test plumbing
         run: |
           bash -n .github/scripts/install-coverage.sh .github/scripts/coverage.sh
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-bootstrap.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-security-mutations.py
       - name: Check installer success and verification failure handling

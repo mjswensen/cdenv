@@ -7,6 +7,5 @@
   "features": {
     "ghcr.io/devcontainers/features/docker-outside-of-docker:1": { "moby": false }
   },
-  "postCreateCommand": "mise install && mise bootstrap",
-  "postStartCommand": "mise web-agent"
+  "postCreateCommand": "mise install && mise bootstrap-ci"
 }

@@ -33,12 +33,21 @@ for issue 68. See the [implemented boundary and command guide](docs/operations.m
 
 ## Development
 
-The development container uses the shared [`ghcr.io/mjswensen/devcontainer`](https://ghcr.io/mjswensen/devcontainer) image and runs as its `mjs` user. On creation it installs the tools pinned in `mise.toml` (Python 3.13.15 and Rust 1.97.1) and bootstraps [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 and [Pi](https://pi.dev/). To prepare a local checkout with the same tooling, install [mise](https://mise.jdx.dev/) and run:
+The development container uses the shared [`ghcr.io/mjswensen/devcontainer`](https://ghcr.io/mjswensen/devcontainer) image and runs as its `mjs` user. On creation it installs the tools pinned in `mise.toml` (Python 3.13.15 and Rust 1.97.1) and runs `mise bootstrap-ci` to install the required [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 quality-gate dependency. To prepare a local checkout with the same required tooling, install [mise](https://mise.jdx.dev/) and run:
 
 ```bash
 mise install
-mise bootstrap
+mise bootstrap-ci
 ```
+
+The interactive web agent is optional and is not installed or started by CI or by the development-container lifecycle. Install it explicitly for local use, or use the full local bootstrap, then start it when needed:
+
+```bash
+mise web-agent-install # or: mise bootstrap
+mise web-agent
+```
+
+An unavailable web-agent release endpoint therefore does not block the required bootstrap. Failures from `mise install`, `mise bootstrap-ci`, and the strict checks remain fatal.
 
 Then run the complete local gate:
 

@@ -20,7 +20,33 @@ Provide reproducible, nonempty end-to-end and release evidence for the complete 
 
 ## Implementation status
 
-_Last reconciled: 2026-09-26._
+_Last reconciled: 2026-11-09._
+
+### Current CI baseline (2026-11-09)
+
+Pushed revision `bd2e41f4c470aaf6bda7063871d9bcc095274ae3` was checked in
+[CI 42669798783](https://github.com/mjswensen/cdenv/actions/runs/42669798783) and
+[Release packages 42669798825](https://github.com/mjswensen/cdenv/actions/runs/42669798825).
+Dependencies 77 and 79–83 are closed in this source history, but the complete
+credential release evidence remains outstanding.
+
+- Strict Rust/cargo-deny, both Linux workspace coverage jobs, all security mutation
+  shards, and native agent builds pass. The prior installed key-path rejection and
+  unbounded failure hang no longer appear.
+- macOS workspace coverage fails in `status_on_an_absent_root_does_not_create_or_probe_anything`:
+  its temporary root exceeds the conservative supervisor socket path limit.
+- All four native Linux credential gates still discover three tests, with only
+  traceability passing. Both live workflows fail during create because the detached
+  supervisor exits with status 1 before authenticated readiness. A prior missing
+  credential-parent fix and passing component tests have not established passing
+  packaged startup.
+- Both installed Linux package smokes now pass key metadata checks but time out at
+  the first `cdenv ssh` command (60 seconds). The key destination fix is not sufficient
+  evidence of successful SSH operation.
+- Coverage inventory remains unsuccessful because required observations fail.
+  No acceptance checkbox is closed by these results. Current local follow-up fixes
+  require a clean pushed matrix rerun after review.
+
 
 ### Latest CI triage (2026-09-26)
 

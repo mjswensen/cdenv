@@ -164,11 +164,14 @@ local_port=$((20000 + ($$ % 20000)))
 forward_pid=$!
 forwarded=
 for _ in $(seq 1 50); do
-  if exec 3<>"/dev/tcp/127.0.0.1/$local_port" 2>/dev/null; then
-    printf 'GET / HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
-    forwarded=$(cat <&3)
+  if { exec 3<>"/dev/tcp/127.0.0.1/$local_port"; } 2>/dev/null; then
+    if printf 'GET / HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3 &&
+       forwarded=$(timeout --kill-after=1s 2s cat <&3) &&
+       grep -q forwarded <<<"$forwarded"; then
+      exec 3>&-
+      break
+    fi
     exec 3>&-
-    break
   fi
   sleep 0.1
 done

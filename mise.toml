@@ -6,18 +6,5 @@ node = "26" # for `npx skills`
 [tasks.cargo-deny-install]
 run = "cargo install cargo-deny --version 0.20.2 --locked"
 
-[tasks.bootstrap-ci]
-description = "Install the required pinned CI quality-gate tooling"
-depends = ["cargo-deny-install"]
-
-[tasks.web-agent-install]
-description = "Install the optional interactive web agent"
-run = "curl -fsSL https://raw.githubusercontent.com/mjswensen/web-agent/main/install.sh | sh"
-
 [tasks.bootstrap]
-description = "Install required tooling and the optional local web agent"
-depends = ["bootstrap-ci", "web-agent-install"]
-
-[tasks.web-agent]
-description = "Start the optional interactive web agent"
-run = "tmux new-session -d -s web-agent 'web-agent --host 0.0.0.0 --port 6500 --allow-web-auth --allow-terminal'"
+depends = ["cargo-deny-install"]

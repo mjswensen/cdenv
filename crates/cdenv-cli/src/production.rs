@@ -937,6 +937,15 @@ impl ProductionEnvironment<'_> {
             credential_lease.as_ref(),
         )
         .await?;
+        let lifecycle_identity = LifecycleExecIdentity {
+            installation: self.installation.to_string(),
+            workspace: self.workspace.to_string(),
+            container: facts.container.to_string(),
+            generation: facts.generation.to_string(),
+            build: provisioned.build_id.to_string(),
+            protocol: provisioned.protocol_version.get(),
+        };
+        let lifecycle_record = lifecycle_exec_path(self.root, self.workspace);
         execute_lifecycle(
             &engine,
             &facts.container,
@@ -948,6 +957,8 @@ impl ProductionEnvironment<'_> {
             transition,
             previous.is_none(),
             LifecycleExecution::Foreground,
+            &lifecycle_identity,
+            &lifecycle_record,
             credential_lease.as_ref(),
             self.cancellation,
         )
@@ -979,6 +990,8 @@ impl ProductionEnvironment<'_> {
             transition,
             previous.is_none(),
             LifecycleExecution::Background,
+            &lifecycle_identity,
+            &lifecycle_record,
             credential_lease.as_ref(),
             self.cancellation,
         )
@@ -993,7 +1006,12 @@ impl ProductionEnvironment<'_> {
         .into_iter()
         .flatten()
         .find(|stage| stage.stage > plan.lifecycle.readiness && !stage.commands.is_empty())
-        .map(|stage| map_stage(stage.stage));
+        .map(|stage| map_stage(stage.stage))
+        .or_else(|| {
+            (transition == EnvironmentTransition::AlreadyRunning)
+                .then(|| previous.and_then(|active| active.lifecycle().running()))
+                .flatten()
+        });
         let checkpoint =
             LifecycleCheckpoint::new(Some(map_stage(plan.lifecycle.readiness)), running, false);
         let state = ProvisionedState::new(
@@ -1406,6 +1424,8 @@ async fn execute_lifecycle(
     transition: EnvironmentTransition,
     new_generation: bool,
     execution: LifecycleExecution,
+    lifecycle_identity: &LifecycleExecIdentity,
+    lifecycle_record: &Path,
     credential_lease: Option<&crate::SupervisorCredentialLease>,
     cancellation: &CancellationToken,
 ) -> Result<(), WorkflowMessage> {
@@ -1467,10 +1487,14 @@ async fn execute_lifecycle(
             environment: &[],
         };
         let detached = engine.create_detached_exec(&exec).await.map_err(message)?;
+        // Publish the exact identity before start. An interrupted start remains
+        // unknown (no successful final exit), never guessed to be complete.
+        persist_lifecycle_exec(lifecycle_record, lifecycle_identity, detached.id(), false)?;
         engine
             .start_detached_exec(&detached)
             .await
             .map_err(message)?;
+        persist_lifecycle_exec(lifecycle_record, lifecycle_identity, detached.id(), true)?;
     }
     Ok(())
 }
@@ -1679,9 +1703,106 @@ fn unknown_host_capabilities() -> HostCapabilities {
     }
 }
 
-struct ProductionLifecycleStop;
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LifecycleExecIdentity {
+    installation: String,
+    workspace: String,
+    container: String,
+    generation: String,
+    build: String,
+    protocol: u32,
+}
 
-impl LifecycleRunnerStop for ProductionLifecycleStop {
+#[derive(Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LifecycleExecRecord {
+    identity: LifecycleExecIdentity,
+    exec_id: String,
+    started: bool,
+}
+
+fn lifecycle_exec_path(root: &CdenvRoot, workspace: &WorkspaceName) -> PathBuf {
+    root.workspace(workspace)
+        .runtime_dir()
+        .join("lifecycle-exec.json")
+}
+
+fn persist_lifecycle_exec(
+    path: &Path,
+    identity: &LifecycleExecIdentity,
+    exec_id: &crate::ExecId,
+    started: bool,
+) -> Result<(), WorkflowMessage> {
+    crate::ensure_private_directory(
+        path.parent()
+            .ok_or_else(|| message("lifecycle record parent"))?,
+    )
+    .map_err(message)?;
+    let bytes = serde_json::to_vec(&LifecycleExecRecord {
+        identity: identity.clone(),
+        exec_id: exec_id.to_string(),
+        started,
+    })
+    .map_err(message)?;
+    crate::atomic_write(path, &bytes, crate::ManagedMode::PrivateFile).map_err(message)
+}
+
+fn load_lifecycle_exec(path: &Path) -> Option<LifecycleExecRecord> {
+    use std::io::Read as _;
+    use std::os::unix::fs::MetadataExt as _;
+
+    // Inspection must not repair state or follow links, including parent links.
+    if std::fs::canonicalize(path).ok()?.as_path() != path {
+        return None;
+    }
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.nlink() != 1
+        || metadata.len() > 4096
+    {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() > 4096 {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn completed_lifecycle_exec(
+    record: &LifecycleExecRecord,
+    expected: &LifecycleExecIdentity,
+    inspected: &crate::ExecInspect,
+) -> LifecycleStopOutcome {
+    if record.started
+        && record.identity == *expected
+        && record.exec_id == inspected.id.as_str()
+        && record.identity.container == inspected.container.as_str()
+        && !inspected.running
+        && inspected.exit_code == Some(0)
+    {
+        LifecycleStopOutcome::NotRunning
+    } else {
+        LifecycleStopOutcome::Indeterminate
+    }
+}
+
+struct ProductionLifecycleStop<'a> {
+    root: &'a CdenvRoot,
+    workspace: &'a WorkspaceName,
+    installation: &'a cdenv_core::InstallationId,
+    engine: &'a BollardAdapter,
+}
+
+impl LifecycleRunnerStop for ProductionLifecycleStop<'_> {
     type Error = WorkflowMessage;
 
     async fn cancel(
@@ -1689,15 +1810,31 @@ impl LifecycleRunnerStop for ProductionLifecycleStop {
         active: Option<&ActiveGeneration>,
         _grace: std::time::Duration,
     ) -> Result<LifecycleStopOutcome, Self::Error> {
-        Ok(
-            if active.is_some_and(|active| active.lifecycle().running().is_some()) {
-                // Production currently has no authenticated runner-control record. Never guess an
-                // exec identity: retain the one-time-work ambiguity for a required rebuild.
-                LifecycleStopOutcome::Indeterminate
-            } else {
-                LifecycleStopOutcome::NotRunning
-            },
-        )
+        let Some(active) = active.filter(|active| active.lifecycle().running().is_some()) else {
+            return Ok(LifecycleStopOutcome::NotRunning);
+        };
+        let expected = LifecycleExecIdentity {
+            installation: self.installation.to_string(),
+            workspace: self.workspace.to_string(),
+            container: active.container_id().to_string(),
+            generation: active.generation().to_string(),
+            build: active.provisioned().agent_build_id().to_string(),
+            protocol: active.provisioned().protocol_version().get(),
+        };
+        let Some(record) = load_lifecycle_exec(&lifecycle_exec_path(self.root, self.workspace))
+            .filter(|record| record.identity == expected)
+        else {
+            return Ok(LifecycleStopOutcome::Indeterminate);
+        };
+        let Ok(exec_id) = crate::ExecId::parse(&record.exec_id) else {
+            return Ok(LifecycleStopOutcome::Indeterminate);
+        };
+        // Docker Exec identity is authoritative. Never signal a guessed PID or
+        // treat a missing/active/failed legacy runner as successfully completed.
+        let Ok(inspected) = self.engine.inspect_exec(&exec_id).await else {
+            return Ok(LifecycleStopOutcome::Indeterminate);
+        };
+        Ok(completed_lifecycle_exec(&record, &expected, &inspected))
     }
 }
 
@@ -1911,7 +2048,12 @@ pub fn down_production(
                 root,
                 DownRequest::new(workspace, operation),
                 &forwarding,
-                &ProductionLifecycleStop,
+                &ProductionLifecycleStop {
+                    root,
+                    workspace,
+                    installation: &installation,
+                    engine: &managed.engine,
+                },
                 &managed,
             )
             .await;
@@ -2075,16 +2217,21 @@ impl RebuildEnvironment<ProductionPlan> for ProductionImageRebuild<'_> {
             .stop(self.workspace, previous)
             .await
             .map_err(message)?;
-        match ProductionLifecycleStop
-            .cancel(previous, crate::LIFECYCLE_STOP_GRACE)
-            .await?
+        match (ProductionLifecycleStop {
+            root: self.root,
+            workspace: self.workspace,
+            installation: &self.installation,
+            engine: &self.engine,
+        })
+        .cancel(previous, crate::LIFECYCLE_STOP_GRACE)
+        .await?
         {
             LifecycleStopOutcome::NotRunning | LifecycleStopOutcome::Graceful => Ok(()),
             LifecycleStopOutcome::Forced => Err(message(
                 "lifecycle runner required forced cancellation without persisted runner identity",
             )),
             LifecycleStopOutcome::Indeterminate => Err(message(
-                "background lifecycle runner identity is not persisted; safe cancellation is indeterminate",
+                "background lifecycle completion is unverified; active runner cancellation is unavailable",
             )),
         }
     }
@@ -2716,14 +2863,19 @@ impl ComposeRebuildRuntime<PreparedRebuildPlan<ProductionPlan>> for ProductionCo
             .stop(self.workspace, self.previous.as_ref())
             .await
             .map_err(message)?;
-        match ProductionLifecycleStop
-            .cancel(self.previous.as_ref(), crate::LIFECYCLE_STOP_GRACE)
-            .await?
+        match (ProductionLifecycleStop {
+            root: self.root,
+            workspace: self.workspace,
+            installation: &self.installation,
+            engine: &self.engine,
+        })
+        .cancel(self.previous.as_ref(), crate::LIFECYCLE_STOP_GRACE)
+        .await?
         {
             LifecycleStopOutcome::NotRunning | LifecycleStopOutcome::Graceful => {}
             LifecycleStopOutcome::Forced | LifecycleStopOutcome::Indeterminate => {
                 return Err(message(
-                    "background lifecycle runner identity is not persisted; safe cancellation is indeterminate",
+                    "background lifecycle completion is unverified; active runner cancellation is unavailable",
                 ));
             }
         }
@@ -3184,20 +3336,127 @@ mod tests {
         assert_eq!(configured.stages[0].commands.len(), 1);
     }
 
-    #[tokio::test]
-    async fn lifecycle_stop_fails_closed_without_persisted_runner_control_identity() {
-        let state = crate::decode_workspace_state(
-            Path::new("fixture.json"),
-            include_bytes!("../tests/fixtures/state-compose-background.json"),
-        )
-        .expect("state fixture")
-        .into_state();
+    fn lifecycle_exec_fixture() -> (LifecycleExecRecord, crate::ExecInspect) {
+        let identity = LifecycleExecIdentity {
+            installation: "installation-1".to_owned(),
+            workspace: "workspace".to_owned(),
+            container: "a".repeat(64),
+            generation: "1".to_owned(),
+            build: "build-1".to_owned(),
+            protocol: 1,
+        };
+        let inspected = crate::ExecInspect {
+            id: crate::ExecId::parse(&"b".repeat(64)).expect("exec"),
+            container: ContainerId::parse(&identity.container).expect("container"),
+            running: false,
+            exit_code: Some(0),
+        };
+        let record = LifecycleExecRecord {
+            identity,
+            exec_id: inspected.id.to_string(),
+            started: true,
+        };
+        (record, inspected)
+    }
 
-        let outcome = ProductionLifecycleStop
-            .cancel(state.active(), crate::LIFECYCLE_STOP_GRACE)
-            .await
-            .expect("non-selecting lifecycle inspection");
+    #[test]
+    fn lifecycle_completion_requires_exact_identity_and_successful_final_exit() {
+        let (record, inspected) = lifecycle_exec_fixture();
+        assert_eq!(
+            completed_lifecycle_exec(&record, &record.identity, &inspected),
+            LifecycleStopOutcome::NotRunning
+        );
+        for exit_code in [None, Some(1)] {
+            let mut unverified = inspected.clone();
+            unverified.exit_code = exit_code;
+            assert_eq!(
+                completed_lifecycle_exec(&record, &record.identity, &unverified),
+                LifecycleStopOutcome::Indeterminate
+            );
+        }
+        let mut running = inspected.clone();
+        running.running = true;
+        assert_eq!(
+            completed_lifecycle_exec(&record, &record.identity, &running),
+            LifecycleStopOutcome::Indeterminate
+        );
+        let mut wrong_container = inspected.clone();
+        wrong_container.container = ContainerId::parse(&"c".repeat(64)).expect("container");
+        assert_eq!(
+            completed_lifecycle_exec(&record, &record.identity, &wrong_container),
+            LifecycleStopOutcome::Indeterminate
+        );
+        let mut wrong_exec = inspected;
+        wrong_exec.id = crate::ExecId::parse(&"d".repeat(64)).expect("exec");
+        assert_eq!(
+            completed_lifecycle_exec(&record, &record.identity, &wrong_exec),
+            LifecycleStopOutcome::Indeterminate
+        );
+    }
 
-        assert_eq!(outcome, LifecycleStopOutcome::Indeterminate);
+    #[test]
+    fn lifecycle_completion_rejects_created_but_unconfirmed_started_exec() {
+        let (mut record, inspected) = lifecycle_exec_fixture();
+        record.started = false;
+        assert_eq!(
+            completed_lifecycle_exec(&record, &record.identity, &inspected),
+            LifecycleStopOutcome::Indeterminate
+        );
+    }
+
+    #[test]
+    fn lifecycle_completion_rejects_every_persisted_identity_mismatch() {
+        let (record, inspected) = lifecycle_exec_fixture();
+        for field in 0..6 {
+            let mut expected = record.identity.clone();
+            match field {
+                0 => expected.installation.push('x'),
+                1 => expected.workspace.push('x'),
+                2 => expected.container = "c".repeat(64),
+                3 => expected.generation = "2".to_owned(),
+                4 => expected.build.push('x'),
+                _ => expected.protocol += 1,
+            }
+            assert_eq!(
+                completed_lifecycle_exec(&record, &expected, &inspected),
+                LifecycleStopOutcome::Indeterminate
+            );
+        }
+    }
+
+    #[test]
+    fn lifecycle_exec_record_is_private_and_replaced_for_each_start() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let parent = std::fs::canonicalize("/tmp").expect("temp root");
+        let temporary = tempfile::tempdir_in(parent).expect("temporary");
+        let path = temporary.path().join("runtime/lifecycle-exec.json");
+        let (record, inspected) = lifecycle_exec_fixture();
+        persist_lifecycle_exec(&path, &record.identity, &inspected.id, true).expect("persist");
+        assert_eq!(
+            load_lifecycle_exec(&path).expect("load").exec_id,
+            inspected.id.as_str()
+        );
+        let replacement = crate::ExecId::parse(&"e".repeat(64)).expect("exec");
+        persist_lifecycle_exec(&path, &record.identity, &replacement, true).expect("replace");
+        assert_eq!(
+            load_lifecycle_exec(&path)
+                .expect("load replacement")
+                .exec_id,
+            replacement.as_str()
+        );
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).expect("mode");
+        assert!(load_lifecycle_exec(&path).is_none());
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).expect("mode");
+        let link = temporary.path().join("linked.json");
+        std::os::unix::fs::symlink(&path, &link).expect("symlink");
+        assert!(load_lifecycle_exec(&link).is_none());
+        std::fs::hard_link(&path, temporary.path().join("hardlink")).expect("hardlink");
+        assert!(load_lifecycle_exec(&path).is_none());
+    }
+
+    #[test]
+    fn lifecycle_stop_fails_closed_without_persisted_runner_control_identity() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        assert!(load_lifecycle_exec(&temporary.path().join("missing.json")).is_none());
     }
 }

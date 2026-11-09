@@ -390,7 +390,10 @@ impl<A: BollardApi> BollardAdapter<A> {
         Ok(ExecInspect {
             id: returned_id,
             container,
-            running: inspect.running.unwrap_or(false),
+            running: inspect.running.ok_or(BollardAdapterError::MissingField {
+                resource: "Exec inspect",
+                field: "Running",
+            })?,
             exit_code: inspect.exit_code,
         })
     }
@@ -999,6 +1002,23 @@ mod tests {
         fn assert_error<T: std::error::Error + Send + Sync + 'static>() {}
 
         assert_error::<ExecStreamError>();
+    }
+
+    #[tokio::test]
+    async fn exec_inspection_requires_an_explicit_running_state() {
+        let mut response = inspect(Some(0), false);
+        let BollardApiResponse::ExecInspect(ref mut details) = response else {
+            panic!("inspection fixture");
+        };
+        details.running = None;
+        let api = FakeApi::new([response], []);
+        let adapter = BollardAdapter::with_api(endpoint(), api, Duration::from_secs(1));
+        assert!(
+            adapter
+                .inspect_exec(&ExecId::parse(EXEC_ID).expect("exec ID"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

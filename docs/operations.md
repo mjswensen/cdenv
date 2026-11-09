@@ -130,9 +130,13 @@ explicit empty manifest when no hook is configured. SSH never treats a missing o
 corrupt manifest as an empty hook: the connection fails before session access and
 `cdenv up NAME` reprovisions the selected agent, environment, and manifest for a
 safe retry. Rebuild installs a distinct manifest for the replacement generation.
-The current state schema records the stage but not an authenticated Docker Exec runner identity,
-so `down` and `rebuild` never guess a process or PID; they report the runner as
-indeterminate when safe bounded cancellation cannot be proven. Compose replacement
+Detached lifecycle starts also retain a private Docker Exec record bound to the
+installation, workspace, container, generation, and agent build/protocol. `down`
+and `rebuild` recognize completion only after a confirmed start and an exact Exec
+inspection showing successful exit. Active, failed, missing, unstarted, or
+unverifiable executions remain indeterminate: authenticated cancellation of
+active detached work is not yet implemented, and no process or PID is guessed.
+Compose replacement
 is build-first but not atomic; exact per-service partial evidence is persisted after
 post-recreation failure or cancellation. Ordinary `down` stops only the persisted
 managed set and does not delete project networks or named volumes.
@@ -312,6 +316,12 @@ private stdin; fixed arguments contain no credential values. Normal trusted
 user/system helpers, includes, and per-URL matching therefore apply. Conditional
 `includeIf gitdir`/`onbranch` rules are intentionally not reproduced because a
 neutral lookup has no trusted checkout or branch context.
+
+At the container helper boundary, Git's `capability[]=authtype` and
+`capability[]=state` advertisements and `wwwauth[]` challenge hints are bounded
+and discarded. They do not enable those optional authentication modes or travel
+to the host. Actual `authtype`, `state[]`, and other unsupported credential fields
+remain rejected; only HTTPS origin, path, and optional username are forwarded.
 
 Lookups are uncached and lookup-only. They permit four concurrent Git processes,
 32 KiB each for request and stdout, 8 KiB discarded stderr, and a 30-second

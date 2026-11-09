@@ -746,7 +746,11 @@ printf 'username=%s\npassword=token-%s-%s-%s\n\n' "$user" "$count" "$path" "$use
     async fn deadline_cancels_the_owned_process_group_and_reaps_git() {
         let script = "base=$(dirname \"$0\"); echo $$ > \"$base/pid\"; cat >/dev/null; sleep 30";
         let (temporary, context) = fixture(script);
-        let adapter = HostGitCredentialAdapter::with_limits(context, 1, Duration::from_millis(100));
+        // The deadline includes OS process startup. Under parallel instrumented
+        // tests, 100 ms can expire before the shell writes its PID at all.
+        // Allow bounded startup headroom while remaining far below the fixture's
+        // 30-second lifetime; this changes only the test adapter's deadline.
+        let adapter = HostGitCredentialAdapter::with_limits(context, 1, Duration::from_secs(5));
         let result = adapter
             .lookup(
                 &request("repo.git", "alice"),

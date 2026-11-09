@@ -18,6 +18,12 @@ fn unique_name(prefix: &str) -> String {
     format!("{prefix}-{}-{nanos}", std::process::id())
 }
 
+// OpenSSH joins remote argv with spaces before the remote shell parses it.
+// Keep the script a single argument to /bin/sh -c, including embedded quotes.
+fn remote_script(script: &str) -> String {
+    format!("'{}'", script.replace('\'', "'\\''"))
+}
+
 fn run(program: &Path, arguments: &[&str], environment: &[(&str, &Path)]) -> Output {
     let mut command = Command::new(program);
     command
@@ -639,7 +645,9 @@ fn packaged_git_https_paths_accounts_submodule_rotation_and_helper_isolation() {
             "--",
             "/bin/sh",
             "-c",
-            "git -C https-checkout config user.name gate && git -C https-checkout config user.email gate@example.invalid && printf first > https-checkout/first && git -C https-checkout add first && git -C https-checkout commit -m first && git -C https-checkout push origin HEAD:main",
+            &remote_script(
+                "git -C https-checkout config user.name gate && git -C https-checkout config user.email gate@example.invalid && printf first > https-checkout/first && git -C https-checkout add first && git -C https-checkout commit -m first && git -C https-checkout push origin HEAD:main",
+            ),
         ],
         &environment,
     );
@@ -658,7 +666,7 @@ fn packaged_git_https_paths_accounts_submodule_rotation_and_helper_isolation() {
             "--",
             "/bin/sh",
             "-c",
-            "git -C https-checkout fetch origin",
+            &remote_script("git -C https-checkout fetch origin"),
         ],
         &environment,
     );
@@ -689,7 +697,9 @@ fn packaged_git_https_paths_accounts_submodule_rotation_and_helper_isolation() {
             "--",
             "/bin/sh",
             "-c",
-            "git -C https-checkout fetch origin && git -C https-checkout/vendor/private fetch origin && printf second > https-checkout/second && git -C https-checkout add second && git -C https-checkout commit -m second && git -C https-checkout push origin HEAD:main",
+            &remote_script(
+                "git -C https-checkout fetch origin && git -C https-checkout/vendor/private fetch origin && printf second > https-checkout/second && git -C https-checkout add second && git -C https-checkout commit -m second && git -C https-checkout push origin HEAD:main",
+            ),
         ],
         &environment,
     );
@@ -712,7 +722,7 @@ fn packaged_git_https_paths_accounts_submodule_rotation_and_helper_isolation() {
             "--",
             "/bin/sh",
             "-c",
-            &helper_isolation_command,
+            &remote_script(&helper_isolation_command),
         ],
         &environment,
     );
@@ -734,7 +744,7 @@ fn packaged_git_https_paths_accounts_submodule_rotation_and_helper_isolation() {
                 "--",
                 "/bin/sh",
                 "-c",
-                &denied_command,
+                &remote_script(&denied_command),
             ],
             &environment,
         ),
@@ -848,7 +858,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
             "--",
             "/bin/sh",
             "-c",
-            "test -S \"$SSH_AUTH_SOCK\" && printf ssh-managed",
+            &remote_script("test -S \"$SSH_AUTH_SOCK\" && printf ssh-managed"),
         ],
         &environment,
     );
@@ -868,7 +878,9 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
             "--",
             "/bin/sh",
             "-c",
-            "printf agent-signing > .credential-signing-message && ssh-keygen -Y sign -f .devcontainer/fixture-agent-key.pub -n cdenv .credential-signing-message >/dev/null 2>&1 && test -s .credential-signing-message.sig",
+            &remote_script(
+                "printf agent-signing > .credential-signing-message && ssh-keygen -Y sign -f .devcontainer/fixture-agent-key.pub -n cdenv .credential-signing-message >/dev/null 2>&1 && test -s .credential-signing-message.sig",
+            ),
         ],
         &environment,
     );
@@ -905,7 +917,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
             "--",
             "/bin/sh",
             "-c",
-            "ssh-add -L | grep -q '^ssh-ed25519 '",
+            &remote_script("ssh-add -L | grep -q '^ssh-ed25519 '"),
         ],
         &environment,
     );
@@ -925,7 +937,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
             "--",
             "/bin/sh",
             "-c",
-            "ssh-add -L",
+            &remote_script("ssh-add -L"),
         ],
         &environment,
     );
@@ -951,7 +963,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
                 "--",
                 "/bin/sh",
                 "-c",
-                "ssh-add -L | grep -q '^ssh-ed25519 '",
+                &remote_script("ssh-add -L | grep -q '^ssh-ed25519 '"),
             ],
             &environment,
         ),
@@ -1000,7 +1012,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
                     "--",
                     "/bin/sh",
                     "-c",
-                    "test -S \"$SSH_AUTH_SOCK\" && sleep 0.2",
+                    &remote_script("test -S \"$SSH_AUTH_SOCK\" && sleep 0.2"),
                 ])
                 .env("HOME", &home)
                 .env("SSH_AUTH_SOCK", &agent.socket)
@@ -1100,7 +1112,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
                 "--",
                 "/bin/sh",
                 "-c",
-                "test -S \"$SSH_AUTH_SOCK\"",
+                &remote_script("test -S \"$SSH_AUTH_SOCK\""),
             ],
             &environment,
         ),
@@ -1117,7 +1129,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
             "--",
             "/bin/sh",
             "-c",
-            "test -S \"$SSH_AUTH_SOCK\" || exit 20; printf ready > .credential-old-client; sleep 1; printf survived > .credential-old-client-survived",
+            &remote_script("test -S \"$SSH_AUTH_SOCK\" || exit 20; printf ready > .credential-old-client; sleep 1; printf survived > .credential-old-client-survived"),
         ])
         .env("HOME", &home)
         .env("SSH_AUTH_SOCK", &agent.socket)
@@ -1162,7 +1174,7 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
             "--",
             "/bin/sh",
             "-c",
-            "test -z \"${SSH_AUTH_SOCK+x}\"",
+            &remote_script("test -z \"${SSH_AUTH_SOCK+x}\""),
         ],
         &environment,
     );

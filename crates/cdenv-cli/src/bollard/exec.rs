@@ -530,6 +530,13 @@ async fn copy_stdin<R: AsyncRead + Unpin>(
                     stream: "Docker stdin",
                     source,
                 })?;
+            docker_input
+                .flush()
+                .await
+                .map_err(|source| ExecStreamError::Io {
+                    stream: "Docker stdin",
+                    source,
+                })?;
         }
     };
     tokio::select! {
@@ -556,6 +563,12 @@ async fn copy_output<O: AsyncWrite + Unpin, E: AsyncWrite + Unpin>(
                             stream: "stdout",
                             source,
                         })?;
+                    // Interactive protocols must observe this frame before
+                    // producing the next one; buffered stdio cannot wait for EOF.
+                    stdout.flush().await.map_err(|source| ExecStreamError::Io {
+                        stream: "stdout",
+                        source,
+                    })?;
                 }
                 ExecOutput::Stderr(bytes) => {
                     ensure_output_bound(bytes.len())?;
@@ -566,6 +579,12 @@ async fn copy_output<O: AsyncWrite + Unpin, E: AsyncWrite + Unpin>(
                             stream: "stderr",
                             source,
                         })?;
+                    // Interactive protocols must observe this frame before
+                    // producing the next one; buffered stdio cannot wait for EOF.
+                    stderr.flush().await.map_err(|source| ExecStreamError::Io {
+                        stream: "stderr",
+                        source,
+                    })?;
                 }
                 ExecOutput::UnexpectedStdin(bytes) => {
                     let _ = bytes.len();
@@ -903,6 +922,76 @@ mod tests {
         );
         frame.extend_from_slice(payload);
         frame
+    }
+
+    #[tokio::test]
+    async fn attached_input_flushes_protocol_bytes_before_local_eof() {
+        let (mut local_writer, mut local_reader) = tokio::io::duplex(128);
+        let (docker_writer, mut docker_reader) = tokio::io::duplex(128);
+        let cancellation = CancellationToken::default();
+        let task_cancellation = cancellation.clone();
+        let task = tokio::spawn(async move {
+            let mut input: Pin<Box<dyn AsyncWrite + Send>> =
+                Box::pin(tokio::io::BufWriter::new(docker_writer));
+            copy_stdin(&mut local_reader, &mut input, &task_cancellation).await
+        });
+        local_writer
+            .write_all(b"client-hello")
+            .await
+            .expect("input");
+        let mut bytes = [0; 12];
+        let received =
+            tokio::time::timeout(Duration::from_secs(1), docker_reader.read_exact(&mut bytes))
+                .await;
+        cancellation.cancel();
+        assert!(matches!(
+            task.await.expect("input task"),
+            Err(ExecStreamError::Cancelled)
+        ));
+        received
+            .expect("request must arrive before local EOF")
+            .expect("Docker input");
+        assert_eq!(&bytes, b"client-hello");
+    }
+
+    #[tokio::test]
+    async fn attached_output_flushes_protocol_frames_before_exec_eof() {
+        let (output_sink, mut output_reader) = tokio::io::duplex(128);
+        let (error_sink, mut error_reader) = tokio::io::duplex(128);
+        let cancellation = CancellationToken::default();
+        let task_cancellation = cancellation.clone();
+        let task = tokio::spawn(async move {
+            let mut output: Pin<
+                Box<dyn Stream<Item = Result<ExecOutput, BollardApiError>> + Send>,
+            > = Box::pin(
+                stream::iter([
+                    Ok(ExecOutput::Stdout(b"SSH-banner".to_vec())),
+                    Ok(ExecOutput::Stderr(b"diagnostic".to_vec())),
+                ])
+                .chain(stream::pending()),
+            );
+            let mut stdout = tokio::io::BufWriter::new(output_sink);
+            let mut stderr = tokio::io::BufWriter::new(error_sink);
+            copy_output(&mut output, &mut stdout, &mut stderr, &task_cancellation).await
+        });
+        let received = tokio::time::timeout(Duration::from_secs(1), async {
+            let mut stdout = [0; 10];
+            let mut stderr = [0; 10];
+            output_reader.read_exact(&mut stdout).await.expect("banner");
+            error_reader
+                .read_exact(&mut stderr)
+                .await
+                .expect("diagnostic");
+            assert_eq!(&stdout, b"SSH-banner");
+            assert_eq!(&stderr, b"diagnostic");
+        })
+        .await;
+        cancellation.cancel();
+        assert!(matches!(
+            task.await.expect("output task"),
+            Err(ExecStreamError::Cancelled)
+        ));
+        received.expect("interactive frames must arrive while Exec remains open");
     }
 
     #[test]

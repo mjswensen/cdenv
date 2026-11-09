@@ -381,6 +381,15 @@ mod platform {
             field: "stateDirectory",
         })?;
         reject_symlink_components(path)?;
+        // The environment leaf is private, but credentials also need a private
+        // shared state root. Never change a generic request's parent/home mode.
+        if let Some(parent) = path
+            .parent()
+            .filter(|parent| parent.file_name().is_some_and(|name| name == ".cdenv"))
+        {
+            let value = parent.to_str().ok_or(EnvironmentError::UnsafeState)?;
+            prepare_state_directory(value)?;
+        }
         fs::create_dir_all(path).map_err(|source| EnvironmentError::StateIo { source })?;
         reject_symlink_components(path)?;
         let metadata =
@@ -908,6 +917,34 @@ mod managed_tests {
     use cdenv_core::credentials::{HttpsOrigin, SshAgentSelector};
 
     use super::*;
+
+    #[test]
+    fn capture_secures_only_the_owned_cdenv_ancestor() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        let home = temporary.path().join("home");
+        let state = home.join(".cdenv");
+        fs::create_dir_all(&state).expect("existing state");
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o755)).expect("home mode");
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o777)).expect("state mode");
+        let request = EnvironmentCaptureRequest {
+            generation: "private-parent".to_owned(),
+            state_directory: state.join("environment").display().to_string(),
+            probe: EnvironmentProbe::None,
+            remote_environment: BTreeMap::new(),
+        };
+        capture_environment(&request).expect("capture");
+        assert_eq!(
+            fs::metadata(&state).expect("state").permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&home).expect("home").permissions().mode() & 0o777,
+            0o755
+        );
+        fs::remove_dir_all(&state).expect("remove state");
+        std::os::unix::fs::symlink(&home, &state).expect("symlink");
+        assert!(capture_environment(&request).is_err());
+    }
 
     #[test]
     fn managed_child_receives_only_verified_enabled_integrations() {

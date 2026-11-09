@@ -59,6 +59,7 @@ jobs:
 
   host:
     name: Package ${{ matrix.platform }}
+    timeout-minutes: 20
     needs: agents
     strategy:
       fail-fast: false
@@ -73,6 +74,20 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
+      - name: Restore Rust build cache
+        id: rust_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+            target/release
+            target/coverage-build
+            target/coverage-tools
+          key: rust-v1-${{ runner.os }}-${{ runner.arch }}-host-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/scripts/coverage.sh', '.github/workflows/ci.yml') }}-${{ github.sha }}
+          restore-keys: |
+            rust-v1-${{ runner.os }}-${{ runner.arch }}-host-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/scripts/coverage.sh', '.github/workflows/ci.yml') }}-
       - run: rustup show active-toolchain
       - uses: actions/download-artifact@v7
         with:
@@ -110,6 +125,7 @@ jobs:
           sudo apt-get install --yes build-essential libssl-dev zlib1g-dev
           .github/scripts/install-openssh.sh
       - name: Run checksum-verified installed operational smoke
+        timeout-minutes: 5
         if: runner.os == 'Linux'
         run: cargo xtask test-installed target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar
       - uses: actions/upload-artifact@v6
@@ -117,6 +133,18 @@ jobs:
           name: cdenv-${{ matrix.platform }}
           path: target/dist/
           if-no-files-found: error
+      - name: Save Rust build cache even after test failure
+        if: ${{ !cancelled() && steps.rust_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+            target/release
+            target/coverage-build
+            target/coverage-tools
+          key: ${{ steps.rust_cache.outputs.cache-primary-key }}
 
   publish:
     name: Prepare draft GitHub release

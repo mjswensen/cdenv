@@ -11,7 +11,11 @@ esac
 : "${COVERAGE_TOOLCHAIN:?pinned nightly required for branch instrumentation}"
 export RUSTUP_TOOLCHAIN="$COVERAGE_TOOLCHAIN"
 # show-env uses Cargo metadata's target directory for subsequent report discovery.
-export CARGO_TARGET_DIR="$PWD/target/coverage-build/$scope"
+# Sequential release suites reuse dependencies. Cleaning workspace packages below
+# removes stale test binaries/profile data so each report remains suite-specific.
+build_scope=release
+if [[ "$scope" == workspace ]]; then build_scope=workspace; fi
+export CARGO_TARGET_DIR="$PWD/target/coverage-build/$build_scope"
 export CARGO_LLVM_COV_TARGET_DIR="$CARGO_TARGET_DIR"
 out="$PWD/target/coverage/$COVERAGE_ID"
 mkdir -p "$out"

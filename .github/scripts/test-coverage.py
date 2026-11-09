@@ -99,6 +99,15 @@ esac
             self.assertIn(f"xtask test-integration --suite {suite}\n", calls)
             self.assertEqual(calls.count("llvm-cov report --release --branch --locked"), 3)
 
+    def test_release_reuses_dependencies_but_cleans_workspace_profiles(self):
+        script = (SCRIPTS / "coverage.sh").read_text()
+        self.assertIn('build_scope=release', script)
+        self.assertIn('coverage-build/$build_scope', script)
+        code, calls, _, _ = self.run_collector("credentials")
+        self.assertEqual(code, 0)
+        self.assertLess(calls.index("llvm-cov clean --workspace"),
+                        calls.index("xtask test-integration"))
+
     def test_workspace_is_locked_and_report_failure_is_not_hidden(self):
         code, calls, outcome, setup = self.run_collector("workspace", report_status=9)
         self.assertEqual((code, outcome, setup), (9, "0", "0"))

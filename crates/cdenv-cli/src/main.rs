@@ -203,7 +203,7 @@ fn proxy_exit(root: &CdenvRoot, workspace: &cdenv_core::WorkspaceName) -> ExitCo
     };
     let cancellation = CancellationToken::default();
     let signal_cancellation = cancellation.clone();
-    runtime.block_on(async {
+    let outcome = runtime.block_on(async {
         let signal = tokio::spawn(async move {
             if tokio::signal::ctrl_c().await.is_ok() {
                 signal_cancellation.cancel();
@@ -218,7 +218,16 @@ fn proxy_exit(root: &CdenvRoot, workspace: &cdenv_core::WorkspaceName) -> ExitCo
                 ExitCode::FAILURE
             }
         }
-    })
+    });
+    // Tokio stdin uses an uncancellable blocking read. OpenSSH can keep the
+    // pipe open while waiting for this proxy to exit after agent failure.
+    // All transport work has finished; do not wait for stdin at process exit.
+    shutdown_proxy_runtime(runtime);
+    outcome
+}
+
+fn shutdown_proxy_runtime(runtime: tokio::runtime::Runtime) {
+    runtime.shutdown_background();
 }
 
 fn complete_ssh_setup(command_line: &CommandLine, argv0: &OsStr) -> Result<(), ApplicationError> {
@@ -276,4 +285,53 @@ fn ssh_exit_code(status: std::process::ExitStatus) -> ExitCode {
         }
     }
     ExitCode::FAILURE
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn proxy_runtime_exits_with_stdin_still_open() {
+        const CHILD: &str = "CDENV_TEST_PROXY_STDIN_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let runtime = tokio::runtime::Runtime::new().expect("runtime");
+            runtime.block_on(async {
+                use tokio::io::AsyncReadExt;
+                let mut input = tokio::io::stdin();
+                let mut byte = [0];
+                // Model transport failure after stdin has started its blocking read.
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), input.read(&mut byte))
+                        .await
+                        .is_err()
+                );
+            });
+            super::shutdown_proxy_runtime(runtime);
+            return;
+        }
+        let mut child = Command::new(std::env::current_exe().expect("test executable"))
+            .args([
+                "--exact",
+                "tests::proxy_runtime_exits_with_stdin_still_open",
+            ])
+            .env(CHILD, "1")
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("child");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(status) = child.try_wait().expect("child status") {
+                assert!(status.success());
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().expect("kill hung child");
+                child.wait().expect("reap child");
+                panic!("proxy runtime waited for stdin EOF");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 }

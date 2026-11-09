@@ -6,6 +6,7 @@ reviewed Node.js 24 release lines:
 
 | Action | Release line | Migration notes |
 | --- | --- | --- |
+| `actions/cache/restore`, `actions/cache/save` | `v5` | Node.js 24; restore/save build caches even when subsequent tests fail. |
 | `actions/checkout` | `v5` | Node.js 24 migration release; checkout and credential behavior used here is unchanged. |
 | `actions/upload-artifact` | `v6` | Node.js 24 runtime and updated artifact client; existing names, paths, missing-file errors, and retention inputs remain supported. |
 | `actions/download-artifact` | `v7` | Node.js 24 runtime and updated artifact client; downloads by name and by pattern retain their existing layouts. |
@@ -42,3 +43,12 @@ both workflow files. It fails when an unreviewed action or release line is added
 so any future action addition or major upgrade must review its declared runtime,
 minimum runner, architecture support, and migration notes before updating the
 baseline table and test.
+
+Rust caches are separated by runner OS/architecture, job purpose, locked dependencies,
+toolchain, and coverage configuration. Commit-specific keys restore compatible prior
+builds; Cargo still validates fingerprints and the packaging gate validates embedded
+agent identities. Caches contain build inputs/outputs, never release evidence or
+verified-agent downloads. Release coverage suites share dependency artifacts but clean
+workspace packages and profiles before each suite to keep reports independent.
+Installed Linux smoke has a five-minute step deadline, bounded SSH calls and cleanup;
+package jobs have a twenty-minute outer deadline.

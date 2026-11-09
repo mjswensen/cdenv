@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = (ROOT / ".github/workflows/ci.yml", ROOT / ".github/workflows/release.yml")
 NODE24_RELEASES = {
     "actions/checkout": "v5",
+    "actions/cache/restore": "v5",
+    "actions/cache/save": "v5",
     "actions/upload-artifact": "v6",
     "actions/download-artifact": "v7",
     "docker/setup-buildx-action": "v4",

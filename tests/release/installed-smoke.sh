@@ -34,15 +34,21 @@ forward_pid=
 cleanup() {
   if [[ -n "$forward_pid" ]]; then
     kill "$forward_pid" 2>/dev/null || true
+    for _ in $(seq 1 50); do
+      kill -0 "$forward_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    kill -KILL "$forward_pid" 2>/dev/null || true
     wait "$forward_pid" 2>/dev/null || true
   fi
-  "$install/cdenv" --root "$root" down "$workspace" >/dev/null 2>&1 || true
-  docker ps -aq --filter "label=cdenv.workspace=$workspace" | xargs -r docker rm -f >/dev/null 2>&1 || true
-  [[ -z "$unrelated_id" ]] || docker rm -f "$unrelated_id" >/dev/null 2>&1 || true
-  docker volume rm installed-smoke-data >/dev/null 2>&1 || true
+  timeout --kill-after=5s 15s "$install/cdenv" --root "$root" down "$workspace" >/dev/null 2>&1 || true
+  timeout --kill-after=5s 15s docker ps -aq --filter "label=cdenv.workspace=$workspace" | xargs -r timeout --kill-after=5s 15s docker rm -f >/dev/null 2>&1 || true
+  [[ -z "$unrelated_id" ]] || timeout --kill-after=5s 15s docker rm -f "$unrelated_id" >/dev/null 2>&1 || true
+  timeout --kill-after=5s 15s docker volume rm installed-smoke-data >/dev/null 2>&1 || true
   rm -rf "$work"
 }
 trap cleanup EXIT
+trap 'printf "installed smoke failed at line %s (exit %s)\n" "$LINENO" "$?" >&2' ERR
 
 host_path=$PATH
 mkdir -p "$install" "$home" "$repository"
@@ -62,6 +68,16 @@ export HOME="$home"
 export PATH="$install:$work/forbidden-tools:$host_path"
 unset NODE NODE_PATH npm_config_prefix ELECTRON_RUN_AS_NODE VSCODE_IPC_HOOK_CLI
 [[ $(command -v cdenv) == "$install/cdenv" ]]
+
+# Bound each SSH operation, including direct OpenSSH and any proxy children.
+cdenv() {
+  if [[ ${3:-} == ssh ]]; then
+    timeout --kill-after=5s 60s "$install/cdenv" "$@"
+  else
+    "$install/cdenv" "$@"
+  fi
+}
+ssh() { timeout --kill-after=5s 60s "$(type -P ssh)" "$@"; }
 
 cat >"$repository/.devcontainer.json" <<'JSON'
 {
@@ -124,7 +140,7 @@ docker exec "$container_id" /bin/sh -c '! command -v sshd >/dev/null && ! ps | g
 cdenv --root "$root" ssh "$workspace" -- /bin/sh -c \
   'mkdir -p /tmp/cdenv-smoke-www; printf forwarded >/tmp/cdenv-smoke-www/index.html; busybox httpd -p 3000 -h /tmp/cdenv-smoke-www'
 local_port=$((20000 + ($$ % 20000)))
-cdenv --root "$root" forward "$workspace" "$local_port:3000" >"$work/forward.log" 2>&1 &
+"$install/cdenv" --root "$root" forward "$workspace" "$local_port:3000" >"$work/forward.log" 2>&1 &
 forward_pid=$!
 forwarded=
 for _ in $(seq 1 50); do

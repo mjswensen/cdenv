@@ -87,6 +87,20 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
+      - name: Restore Rust build cache
+        id: rust_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+            target/release
+            target/coverage-build
+            target/coverage-tools
+          key: rust-v1-${{ runner.os }}-${{ runner.arch }}-workspace-coverage-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/scripts/coverage.sh', '.github/workflows/ci.yml') }}-${{ github.sha }}
+          restore-keys: |
+            rust-v1-${{ runner.os }}-${{ runner.arch }}-workspace-coverage-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/scripts/coverage.sh', '.github/workflows/ci.yml') }}-
       - name: Initialize explicit workspace evidence
         run: bash .github/scripts/release-evidence.sh init 'workspace-${{ matrix.platform }}'
       - run: test -z "$(git status --porcelain)"
@@ -107,6 +121,18 @@ jobs:
           path: target/coverage/workspace-${{ matrix.platform }}/
           if-no-files-found: error
           retention-days: 14
+      - name: Save Rust build cache even after test failure
+        if: ${{ !cancelled() && steps.rust_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+            target/release
+            target/coverage-build
+            target/coverage-tools
+          key: ${{ steps.rust_cache.outputs.cache-primary-key }}
 
   linux-release-gates:
     name: Linux release suites (${{ matrix.arch }}, ${{ matrix.baseline }})
@@ -147,6 +173,20 @@ jobs:
     steps:
       - name: Check out clean locked repository
         uses: actions/checkout@v5
+      - name: Restore Rust build cache
+        id: rust_cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+            target/release
+            target/coverage-build
+            target/coverage-tools
+          key: rust-v1-${{ runner.os }}-${{ runner.arch }}-linux-release-gates-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/scripts/coverage.sh', '.github/workflows/ci.yml') }}-${{ github.sha }}
+          restore-keys: |
+            rust-v1-${{ runner.os }}-${{ runner.arch }}-linux-release-gates-${{ hashFiles('Cargo.lock', 'rust-toolchain.toml', '.github/scripts/coverage.sh', '.github/workflows/ci.yml') }}-
       - name: Initialize explicit evidence for every release suite
         run: |
           bash .github/scripts/release-evidence.sh init \
@@ -279,6 +319,18 @@ jobs:
           path: target/coverage/openssh-linux-${{ matrix.arch }}-${{ matrix.baseline }}/
           if-no-files-found: error
           retention-days: 14
+      - name: Save Rust build cache even after test failure
+        if: ${{ !cancelled() && steps.rust_cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target/debug
+            target/release
+            target/coverage-build
+            target/coverage-tools
+          key: ${{ steps.rust_cache.outputs.cache-primary-key }}
 
   coverage-index:
     name: Coverage report inventory (no percentage gate)

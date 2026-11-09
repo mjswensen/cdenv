@@ -3,7 +3,7 @@
 use std::fs;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -1186,16 +1186,94 @@ async fn control_exchange(
 ///
 /// Rejects non-private files and malformed state.
 pub fn load_supervisor_state(path: &Path) -> Result<SupervisorState, ForwardingSupervisorError> {
-    let metadata = fs::metadata(path)
-        .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
-    if metadata.permissions().mode() & 0o077 != 0 {
-        return Err(ForwardingSupervisorError::Runtime(
-            "supervisor state is not private".to_owned(),
-        ));
+    use std::io::Read as _;
+    let unsafe_state = || ForwardingSupervisorError::Runtime("unsafe supervisor state".to_owned());
+    if fs::canonicalize(path).map_err(|_| unsafe_state())? != path {
+        return Err(unsafe_state());
     }
-    let bytes =
-        fs::read(path).map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
+    let metadata = fs::symlink_metadata(path).map_err(|_| unsafe_state())?;
+    if !metadata.is_file()
+        || metadata.uid() != nix::unistd::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o600
+        || metadata.nlink() != 1
+        || metadata.len() > MAXIMUM_CONTROL_MESSAGE_BYTES
+    {
+        return Err(unsafe_state());
+    }
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
+        .open(path)
+        .map_err(|_| unsafe_state())?;
+    let opened = file.metadata().map_err(|_| unsafe_state())?;
+    if opened.dev() != metadata.dev() || opened.ino() != metadata.ino() {
+        return Err(unsafe_state());
+    }
+    let mut bytes = Vec::new();
+    file.take(MAXIMUM_CONTROL_MESSAGE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| unsafe_state())?;
+    if bytes.len() as u64 > MAXIMUM_CONTROL_MESSAGE_BYTES {
+        return Err(unsafe_state());
+    }
     serde_json::from_slice(&bytes)
+        .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))
+}
+
+/// Removes only an exact, private stale runtime after proving no supervisor owns its lock.
+pub(crate) fn remove_stale_supervisor_runtime(
+    socket: &Path,
+    state_file: &Path,
+    lifetime_lock: &Path,
+    claim: &SupervisorClaim<'_>,
+) -> Result<(), ForwardingSupervisorError> {
+    validate_runtime_paths(claim.workspace, socket, state_file, lifetime_lock)?;
+    let _guard = LockGuard::acquire(lifetime_lock, LockMode::Exclusive, LockBehavior::FailFast)
+        .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
+    let socket_parent = socket.parent().ok_or(ForwardingSupervisorError::Identity {
+        field: "socket parent",
+    })?;
+    let parent_metadata = fs::symlink_metadata(socket_parent)
+        .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
+    if fs::canonicalize(socket_parent).ok().as_deref() != Some(socket_parent)
+        || !parent_metadata.is_dir()
+        || parent_metadata.uid() != nix::unistd::geteuid().as_raw()
+        || parent_metadata.mode() & 0o777 != 0o700
+    {
+        return Err(ForwardingSupervisorError::Identity {
+            field: "socket parent",
+        });
+    }
+    let state = load_supervisor_state(state_file)?;
+    if state.installation != *claim.installation
+        || state.workspace != *claim.workspace
+        || state.generation != claim.generation
+        || state.host_build_id != *claim.host_build_id
+        || state.agent_build_id != *claim.agent_build_id
+        || state.agent_protocol != claim.agent_protocol
+        || state.supervisor_protocol != FORWARDING_SUPERVISOR_PROTOCOL
+    {
+        return Err(ForwardingSupervisorError::Identity {
+            field: "stale supervisor",
+        });
+    }
+    match fs::symlink_metadata(socket) {
+        Ok(metadata)
+            if metadata.file_type().is_socket()
+                && metadata.uid() == nix::unistd::geteuid().as_raw()
+                && metadata.mode() & 0o777 == 0o600 =>
+        {
+            fs::remove_file(socket)
+                .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        _ => {
+            return Err(ForwardingSupervisorError::Runtime(
+                "unsafe stale supervisor socket".to_owned(),
+            ));
+        }
+    }
+    fs::remove_file(state_file)
         .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))
 }
 
@@ -1440,6 +1518,103 @@ mod tests {
                 field: "workspace root"
             })
         ));
+    }
+
+    #[test]
+    fn stale_cleanup_requires_exact_private_state_and_unowned_lifetime_lock() {
+        let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+        let temporary = tempfile::tempdir_in(parent).expect("temporary");
+        let manifest = manifest(temporary.path());
+        fs::create_dir_all(manifest.state_file.parent().expect("runtime")).expect("parents");
+        ensure_private_directory(manifest.state_file.parent().expect("runtime")).expect("runtime");
+        ensure_private_directory(manifest.control_socket.parent().expect("socket root"))
+            .expect("socket root");
+        ensure_lock_file(&manifest.lifetime_lock).expect("lock");
+        let state = SupervisorState {
+            installation: manifest.installation.clone(),
+            workspace: manifest.workspace.clone(),
+            generation: manifest.generation,
+            host_build_id: manifest.host_build_id.clone(),
+            agent_build_id: manifest.agent_build_id.clone(),
+            agent_protocol: manifest.agent_protocol,
+            supervisor_protocol: FORWARDING_SUPERVISOR_PROTOCOL,
+            pid: 123,
+            listeners: vec![],
+            credential_lease: None,
+            token: manifest.token.clone(),
+        };
+        atomic_write(
+            &manifest.state_file,
+            &serde_json::to_vec(&state).expect("state"),
+            ManagedMode::PrivateFile,
+        )
+        .expect("state file");
+        let socket =
+            std::os::unix::net::UnixListener::bind(&manifest.control_socket).expect("socket");
+        fs::set_permissions(&manifest.control_socket, fs::Permissions::from_mode(0o600))
+            .expect("mode");
+        drop(socket);
+        let claim = claim_from_manifest(&manifest);
+        let cleanup = |claim: &SupervisorClaim<'_>| {
+            remove_stale_supervisor_runtime(
+                &manifest.control_socket,
+                &manifest.state_file,
+                &manifest.lifetime_lock,
+                claim,
+            )
+        };
+        let live = LockGuard::acquire(
+            &manifest.lifetime_lock,
+            LockMode::Exclusive,
+            LockBehavior::FailFast,
+        )
+        .expect("live lock");
+        assert!(cleanup(&claim).is_err());
+        assert!(manifest.control_socket.exists());
+        assert!(manifest.state_file.exists());
+        live.release().expect("release");
+        let foreign = SupervisorClaim {
+            generation: GenerationId::new(2).expect("generation"),
+            ..claim.clone()
+        };
+        assert!(cleanup(&foreign).is_err());
+        assert!(manifest.control_socket.exists());
+        cleanup(&claim).expect("verified stale cleanup");
+        assert!(!manifest.control_socket.exists());
+        assert!(!manifest.state_file.exists());
+        assert!(manifest.lifetime_lock.exists());
+    }
+
+    #[test]
+    fn stale_cleanup_never_follows_a_socket_parent_symlink() {
+        let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+        let temporary = tempfile::tempdir_in(&parent).expect("temporary");
+        let outside = tempfile::tempdir_in(&parent).expect("outside");
+        let manifest = manifest(temporary.path());
+        fs::create_dir_all(manifest.state_file.parent().expect("runtime")).expect("parents");
+        ensure_private_directory(manifest.state_file.parent().expect("runtime")).expect("runtime");
+        ensure_lock_file(&manifest.lifetime_lock).expect("lock");
+        let outside_socket = outside
+            .path()
+            .join(manifest.control_socket.file_name().expect("socket name"));
+        let listener =
+            std::os::unix::net::UnixListener::bind(&outside_socket).expect("outside socket");
+        std::os::unix::fs::symlink(
+            outside.path(),
+            manifest.control_socket.parent().expect("socket parent"),
+        )
+        .expect("parent link");
+        assert!(
+            remove_stale_supervisor_runtime(
+                &manifest.control_socket,
+                &manifest.state_file,
+                &manifest.lifetime_lock,
+                &claim_from_manifest(&manifest)
+            )
+            .is_err()
+        );
+        assert!(outside_socket.exists());
+        drop(listener);
     }
 
     #[test]

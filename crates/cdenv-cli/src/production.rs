@@ -1085,11 +1085,25 @@ async fn reconcile_forwarding(
     let rollback = previous
         .filter(|previous| !previous.requested().is_empty())
         .map(|previous| previous.requested().to_vec());
-    if let Ok(state) = load_supervisor_state(&paths.supervisor_state_file()) {
+    if paths
+        .supervisor_state_file()
+        .try_exists()
+        .map_err(message)?
+    {
+        let state = load_supervisor_state(&paths.supervisor_state_file()).map_err(message)?;
         let token = supervisor_control_token(&state).to_owned();
-        stop_supervisor(&paths.supervisor_socket(), &token, &claim)
+        if stop_supervisor(&paths.supervisor_socket(), &token, &claim)
             .await
+            .is_err()
+        {
+            crate::forwarding::remove_stale_supervisor_runtime(
+                &paths.supervisor_socket(),
+                &paths.supervisor_state_file(),
+                &paths.supervisor_lifetime_lock(),
+                &claim,
+            )
             .map_err(message)?;
+        }
     }
     if desired.is_empty() && credential_lease.is_none() {
         return Ok(ActiveForwarding::new(None, Vec::new(), Vec::new()));
@@ -1748,29 +1762,39 @@ fn persist_lifecycle_exec(
     crate::atomic_write(path, &bytes, crate::ManagedMode::PrivateFile).map_err(message)
 }
 
+fn open_lifecycle_exec(path: &Path, expected: &std::fs::Metadata) -> Option<std::fs::File> {
+    use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _};
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags((nix::fcntl::OFlag::O_NOFOLLOW | nix::fcntl::OFlag::O_NONBLOCK).bits())
+        .open(path)
+        .ok()?;
+    let opened = file.metadata().ok()?;
+    if opened.dev() != expected.dev()
+        || opened.ino() != expected.ino()
+        || !opened.is_file()
+        || opened.uid() != nix::unistd::geteuid().as_raw()
+        || opened.mode() & 0o777 != 0o600
+        || opened.nlink() != 1
+        || opened.len() > 4096
+    {
+        return None;
+    }
+    Some(file)
+}
+
 fn load_lifecycle_exec(path: &Path) -> Option<LifecycleExecRecord> {
     use std::io::Read as _;
-    use std::os::unix::fs::MetadataExt as _;
 
     // Inspection must not repair state or follow links, including parent links.
     if std::fs::canonicalize(path).ok()?.as_path() != path {
         return None;
     }
     let metadata = std::fs::symlink_metadata(path).ok()?;
-    if !metadata.is_file()
-        || metadata.uid() != nix::unistd::geteuid().as_raw()
-        || metadata.mode() & 0o777 != 0o600
-        || metadata.nlink() != 1
-        || metadata.len() > 4096
-    {
-        return None;
-    }
+    let file = open_lifecycle_exec(path, &metadata)?;
     let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .ok()?
-        .take(4097)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(4097).read_to_end(&mut bytes).ok()?;
     if bytes.len() > 4096 {
         return None;
     }
@@ -3452,6 +3476,26 @@ mod tests {
         assert!(load_lifecycle_exec(&link).is_none());
         std::fs::hard_link(&path, temporary.path().join("hardlink")).expect("hardlink");
         assert!(load_lifecycle_exec(&path).is_none());
+    }
+
+    #[test]
+    fn lifecycle_exec_open_rejects_leaf_replacement_after_inspection() {
+        let parent = std::fs::canonicalize("/tmp").expect("temp root");
+        let temporary = tempfile::tempdir_in(parent).expect("temporary");
+        let path = temporary.path().join("record.json");
+        let (record, inspected) = lifecycle_exec_fixture();
+        persist_lifecycle_exec(&path, &record.identity, &inspected.id, true).expect("persist");
+        let metadata = std::fs::symlink_metadata(&path).expect("inspection");
+        let saved = temporary.path().join("saved.json");
+        std::fs::rename(&path, &saved).expect("move inspected inode");
+        std::os::unix::fs::symlink(&saved, &path).expect("replacement link");
+        assert!(open_lifecycle_exec(&path, &metadata).is_none());
+        std::fs::remove_file(&path).expect("remove link");
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR).expect("replacement FIFO");
+        assert!(open_lifecycle_exec(&path, &metadata).is_none());
+        std::fs::remove_file(&path).expect("remove FIFO");
+        persist_lifecycle_exec(&path, &record.identity, &inspected.id, true).expect("new inode");
+        assert!(open_lifecycle_exec(&path, &metadata).is_none());
     }
 
     #[test]

@@ -11,7 +11,8 @@ use std::process::Command;
 use std::time::Duration;
 
 use cdenv_core::credential_protocol::{
-    CredentialHelperOperation, CredentialProtocolError, GitCredentialRequest, GitCredentialResponse,
+    CredentialHelperOperation, CredentialProtocolError, GitCredentialRequest,
+    GitCredentialResponse, MAX_CREDENTIAL_BYTES, MAX_CREDENTIAL_FIELD_BYTES, MAX_CREDENTIAL_FIELDS,
 };
 use cdenv_core::credentials::HttpsOrigin;
 use thiserror::Error;
@@ -48,7 +49,7 @@ pub fn run_git_credential_helper(
     }
 
     let body = cdenv_core::credential_protocol::read_private_body(&mut io::stdin().lock())?;
-    let request = GitCredentialRequest::parse(&body)?;
+    let request = parse_git_lookup(&body)?;
     let mut stream = UnixStream::connect(socket).map_err(|_| GitCredentialHelperError::Bridge)?;
     stream
         .set_read_timeout(Some(GIT_HELPER_TIMEOUT))
@@ -56,8 +57,8 @@ pub fn run_git_credential_helper(
     stream
         .set_write_timeout(Some(GIT_HELPER_TIMEOUT))
         .map_err(|_| GitCredentialHelperError::Bridge)?;
-    stream
-        .write_all(&body)
+    request
+        .write_private(&mut stream)
         .map_err(|_| GitCredentialHelperError::Bridge)?;
     stream
         .shutdown(std::net::Shutdown::Write)
@@ -78,6 +79,50 @@ fn unix_time() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+// Git advertises optional features and HTTP challenges even to a basic helper.
+// They do not negotiate support: drop them at this boundary, never forwarding
+// challenge values or capabilities to the host broker's strict V1 parser.
+fn parse_git_lookup(body: &[u8]) -> Result<GitCredentialRequest, CredentialProtocolError> {
+    if body.len() > MAX_CREDENTIAL_BYTES {
+        return Err(CredentialProtocolError::Bounds);
+    }
+    let text = std::str::from_utf8(body).map_err(|_| CredentialProtocolError::Framing)?;
+    if !text.is_empty() && !text.ends_with('\n') {
+        return Err(CredentialProtocolError::Framing);
+    }
+    let mut normalized = Zeroizing::new(Vec::new());
+    let mut fields = 0;
+    let mut terminated = false;
+    for line in text.split_terminator('\n') {
+        if terminated {
+            return Err(CredentialProtocolError::Framing);
+        }
+        if line.is_empty() {
+            terminated = true;
+            continue;
+        }
+        fields += 1;
+        if fields > MAX_CREDENTIAL_FIELDS || line.len() > MAX_CREDENTIAL_FIELD_BYTES {
+            return Err(CredentialProtocolError::Bounds);
+        }
+        if line.chars().any(char::is_control) {
+            return Err(CredentialProtocolError::Framing);
+        }
+        if let Some(capability) = line.strip_prefix("capability[]=") {
+            if !matches!(capability, "authtype" | "state") {
+                return Err(CredentialProtocolError::UnsupportedField);
+            }
+            continue;
+        }
+        if line.starts_with("wwwauth[]=") {
+            continue;
+        }
+        normalized.extend_from_slice(line.as_bytes());
+        normalized.push(b'\n');
+    }
+    GitCredentialRequest::parse(&normalized)
 }
 
 /// A cdenv-owned, nonsecret Git integration fragment outside the checkout.
@@ -330,6 +375,56 @@ pub enum GitIntegrationError {
 mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn git_challenge_advertisements_do_not_extend_the_private_protocol() {
+        let wire = b"capability[]=authtype\ncapability[]=state\nprotocol=https\nhost=example.com\npath=team/repo.git\nwwwauth[]=Basic realm=fixture\n\n";
+        let request = parse_git_lookup(wire).expect("basic challenge request");
+        let mut forwarded = Vec::new();
+        request
+            .write_private(&mut forwarded)
+            .expect("canonical request");
+        assert_eq!(
+            forwarded,
+            b"protocol=https\nhost=example.com\npath=team/repo.git\n\n"
+        );
+        assert!(GitCredentialRequest::parse(wire).is_err());
+        for suffix in [
+            "state[]=secret",
+            "authtype=Bearer",
+            "password=secret",
+            "capability[]=unknown",
+            "protocol=http",
+        ] {
+            let body = format!("protocol=https\nhost=example.com\n{suffix}\n\n");
+            assert!(parse_git_lookup(body.as_bytes()).is_err());
+        }
+        assert!(parse_git_lookup(b"protocol=https\nhost=example.com\n\nwwwauth[]=late\n").is_err());
+        for metadata in ["wwwauth[]=bad\r", "wwwauth[]=bad\0", "capability[]=state\r"] {
+            let body = format!("protocol=https\nhost=example.com\n{metadata}\n");
+            assert!(matches!(
+                parse_git_lookup(body.as_bytes()),
+                Err(CredentialProtocolError::Framing)
+            ));
+        }
+        let field = format!("wwwauth[]={}\n", "x".repeat(MAX_CREDENTIAL_FIELD_BYTES));
+        assert!(matches!(
+            parse_git_lookup(field.as_bytes()),
+            Err(CredentialProtocolError::Bounds)
+        ));
+        assert!(matches!(
+            parse_git_lookup(&vec![b'x'; MAX_CREDENTIAL_BYTES + 1]),
+            Err(CredentialProtocolError::Bounds)
+        ));
+        let oversized = format!(
+            "protocol=https\nhost=example.com\n{}",
+            "wwwauth[]=x\n".repeat(MAX_CREDENTIAL_FIELDS)
+        );
+        assert!(matches!(
+            parse_git_lookup(oversized.as_bytes()),
+            Err(CredentialProtocolError::Bounds)
+        ));
+    }
 
     #[test]
     fn enrollment_appends_without_replacing_existing_git_environment() {

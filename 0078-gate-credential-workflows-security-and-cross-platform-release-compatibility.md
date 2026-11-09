@@ -65,10 +65,33 @@ credential release evidence remains outstanding.
   create and initial foreground/detached hooks. Ownership/symlink checks remain
   strict and home permissions remain unchanged.
 
-These observations used a diagnostic host/archive and rebuilt ARM64 agent; they
-are not clean release matrix evidence. The credential workflow advanced to a later
-remote-shell fixture failure, still under investigation. Clean native x86_64/ARM64
-minimum/pinned gates and the actual macOS smoke remain required before closure.
+- `27217f0` preserves the bridge across rejected host-agent opens using bounded
+  known-stream draining and an actual agent Cancel acknowledgment; arbitrary
+  unknown IDs still fail. `cd23862` fixes remote-shell quoting in credential tests.
+- `73a1a23` consumes bounded known Git capability advertisements and HTTP challenge
+  metadata at the helper boundary; the private credential parser remains strict.
+- `8ef56db` records exact detached Exec identity and confirmed start so a successful
+  completed hook can be recognized during down/up. Active, failed, unstarted, or
+  unverifiable work remains indeterminate; active detached cancellation is still
+  an explicit runtime limitation, not completed evidence.
+- `67f1b65` safely recovers exact stale supervisors under the lifetime lock and
+  hardens private runtime record reads. Live-lock, foreign identity, unsafe paths,
+  and symlink replacement remain rejected.
+
+Final local validation used native Linux ARM64 with Docker Engine/CLI 29.7.1,
+Compose 5.3.1, OpenSSH 10.0p2, proper TLS trust, and rebuilt agent artifacts.
+`cargo xtask test-integration --suite credentials` enforced the declared
+prerequisites and reported **3 discovered, 3 executed, 3 passed**. Both live
+workflows pass, including host-agent loss/recovery, down/up, rebuild, controlled
+supervisor loss, revocation, and the authenticated HTTPS cases. The complete
+installed operational smoke and ordinary macOS workspace tests also pass locally.
+Diagnostic logs are retained locally at `/tmp/cdenv-credentials-final-gate.log`
+and `/tmp/cdenv-installed-smoke-final.log`.
+
+These observations used a diagnostic host/archive with an explicit prior build
+identity and rebuilt ARM64 agent; they are not clean release matrix evidence.
+Clean native x86_64/ARM64 minimum/pinned CI gates and the actual macOS smoke remain
+required before closure. No acceptance checkbox is closed by this local validation.
 
 ### Latest CI triage (2026-09-26)
 

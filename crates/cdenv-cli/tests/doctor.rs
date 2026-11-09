@@ -7,6 +7,12 @@ use std::time::SystemTime;
 
 use cdenv_cli::{CdenvRoot, Installation, ProcessEnvironment};
 
+fn private_tempdir() -> tempfile::TempDir {
+    // Runner TMPDIR paths can exceed the supervisor socket budget before doctor runs.
+    let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+    tempfile::tempdir_in(parent).expect("private temporary directory")
+}
+
 fn snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>, SystemTime)> {
     let mut entries = fs::read_dir(path)
         .expect("directory")
@@ -31,7 +37,7 @@ fn snapshot(path: &Path) -> Vec<(PathBuf, Vec<u8>, SystemTime)> {
 
 #[test]
 fn doctor_json_is_one_document_on_required_failure_and_never_creates_the_root() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = temporary.path().join("missing-root");
     let output = Command::new(env!("CARGO_BIN_EXE_cdenv"))
         .arg("--root")
@@ -44,13 +50,16 @@ fn doctor_json_is_one_document_on_required_failure_and_never_creates_the_root() 
     assert!(output.stderr.is_empty());
     let document: serde_json::Value = serde_json::from_slice(&output.stdout).expect("JSON output");
     assert_eq!(document["schemaVersion"], 1);
-    assert!(document["checks"].is_array());
+    assert!(
+        document["checks"].is_array(),
+        "unexpected doctor document: {document}"
+    );
     assert!(!root.exists());
 }
 
 #[test]
 fn doctor_does_not_change_existing_managed_files() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root_path = temporary.path().join("root");
     fs::create_dir(&root_path).expect("root");
     let root = CdenvRoot::resolve(Some(&root_path), &ProcessEnvironment).expect("root path");

@@ -503,7 +503,13 @@ async fn serve_agent_socket(
                     .shutdown()
                     .await
                     .map_err(|_| CredentialBridgeError::Io)?;
-                return Ok(());
+                // Let accept_loop send Cancel to acknowledge a rejected open;
+                // the host can then retire its bounded in-flight drain state.
+                return if frame.kind == BrokerFrameKind::Error {
+                    Err(CredentialBridgeError::Io)
+                } else {
+                    Ok(())
+                };
             }
             _ => return Err(BrokerProtocolError::Kind.into()),
         }
@@ -810,6 +816,97 @@ mod tests {
             broker_protocol: 1,
             grant_revision: 1,
         }
+    }
+
+    #[tokio::test]
+    async fn rejected_agent_open_acknowledges_cancel_after_queued_request() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+            .expect("private parent");
+        let runtime = temporary.path().join("runtime");
+        let bridge_runtime = runtime.clone();
+        let (bridge, mut host) = tokio::io::duplex(4096);
+        let task = tokio::spawn(async move {
+            serve_credential_bridge(bridge, &bridge_runtime, &CredentialGrants::default()).await
+        });
+        write_frame(
+            &mut host,
+            &BrokerFrame::new(
+                BrokerFrameKind::Hello,
+                0,
+                identity(1).encode().expect("identity"),
+            )
+            .expect("hello"),
+        )
+        .await
+        .expect("hello");
+        assert_eq!(
+            read_frame(&mut host)
+                .await
+                .expect("read")
+                .expect("ack")
+                .kind,
+            BrokerFrameKind::HelloAck
+        );
+        assert_eq!(
+            read_frame(&mut host)
+                .await
+                .expect("read")
+                .expect("identity request")
+                .kind,
+            BrokerFrameKind::IdentityRequest
+        );
+        write_frame(
+            &mut host,
+            &BrokerFrame::new(BrokerFrameKind::Error, 1, vec![]).expect("identity disabled"),
+        )
+        .await
+        .expect("write");
+        assert_eq!(
+            read_frame(&mut host)
+                .await
+                .expect("read")
+                .expect("health")
+                .kind,
+            BrokerFrameKind::Health
+        );
+        write_frame(
+            &mut host,
+            &BrokerFrame::new(BrokerFrameKind::HealthAck, 0, vec![]).expect("ready"),
+        )
+        .await
+        .expect("write");
+        let mut client = UnixStream::connect(runtime.join(SSH_AGENT_SOCKET_NAME))
+            .await
+            .expect("agent client");
+        client
+            .write_all(&[0, 0, 0, 1, 11])
+            .await
+            .expect("identity request");
+        let open = read_frame(&mut host).await.expect("read").expect("open");
+        assert_eq!(open.kind, BrokerFrameKind::AgentOpen);
+        let queued = read_frame(&mut host)
+            .await
+            .expect("read")
+            .expect("queued request");
+        assert_eq!(queued.kind, BrokerFrameKind::StreamData);
+        assert_eq!(queued.stream_id, open.stream_id);
+        write_frame(
+            &mut host,
+            &BrokerFrame::new(BrokerFrameKind::Error, open.stream_id, vec![]).expect("rejected"),
+        )
+        .await
+        .expect("write");
+        let cancelled =
+            tokio::time::timeout(std::time::Duration::from_secs(1), read_frame(&mut host))
+                .await
+                .expect("cancel deadline")
+                .expect("read")
+                .expect("cancel");
+        assert_eq!(cancelled.kind, BrokerFrameKind::Cancel);
+        assert_eq!(cancelled.stream_id, open.stream_id);
+        task.abort();
+        let _ = task.await;
     }
 
     #[test]

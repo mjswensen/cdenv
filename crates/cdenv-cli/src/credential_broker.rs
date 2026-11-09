@@ -1,6 +1,6 @@
 //! Host end of the authenticated, bounded workspace credential bridge.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -119,6 +119,9 @@ where
     let helper_admission = Arc::new(Semaphore::new(MAX_BROKER_HELPERS));
     let agent_inputs = Arc::new(Mutex::new(HashMap::<u32, mpsc::Sender<BrokerFrame>>::new()));
     let mut tasks = JoinSet::new();
+    // A rejected open can already have a request packet in flight. Drain only
+    // that known stream until the agent acknowledges the rejection with Cancel.
+    let mut rejected_agents = HashSet::new();
 
     let result = loop {
         tokio::select! {
@@ -173,13 +176,17 @@ where
                         });
                     }
                     BrokerFrameKind::AgentOpen => {
-                        if !backend.is_authorized(&expected, BrokerFrameKind::AgentOpen) { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; }
+                        if rejected_agents.contains(&frame.stream_id) || agent_inputs.lock().await.contains_key(&frame.stream_id) {
+                            return Err(BrokerProtocolError::UnknownStream.into());
+                        }
+                        if !backend.is_authorized(&expected, BrokerFrameKind::AgentOpen) { remember_rejected_agent(&mut rejected_agents, frame.stream_id)?; send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; }
                         let Ok(permit) = stream_admission.clone().try_acquire_owned() else {
+                            remember_rejected_agent(&mut rejected_agents, frame.stream_id)?;
                             send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?;
                             continue;
                         };
                         let connection = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, backend.connect_agent()).await;
-                        let Ok(Ok(connection)) = connection else { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; };
+                        let Ok(Ok(connection)) = connection else { remember_rejected_agent(&mut rejected_agents, frame.stream_id)?; send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; };
                         let (tx, rx) = mpsc::channel(8);
                         if agent_inputs.lock().await.insert(frame.stream_id, tx).is_some() { send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; }
                         let outgoing = outgoing_tx.clone(); let bytes = byte_admission.clone(); let inputs = agent_inputs.clone(); let stream_id = frame.stream_id;
@@ -198,6 +205,10 @@ where
                         });
                     }
                     BrokerFrameKind::StreamData | BrokerFrameKind::StreamClose | BrokerFrameKind::Cancel => {
+                        if rejected_agents.contains(&frame.stream_id) {
+                            if frame.kind != BrokerFrameKind::StreamData { rejected_agents.remove(&frame.stream_id); }
+                            continue;
+                        }
                         let recipient = agent_inputs.lock().await.get(&frame.stream_id).cloned().ok_or(BrokerProtocolError::UnknownStream)?;
                         recipient.send(frame).await.map_err(|_| BrokerProtocolError::UnknownStream)?;
                     }
@@ -232,6 +243,17 @@ where
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
     result
+}
+
+fn remember_rejected_agent(
+    streams: &mut HashSet<u32>,
+    id: u32,
+) -> Result<(), HostCredentialBrokerError> {
+    if streams.len() >= MAX_BROKER_STREAMS {
+        return Err(HostCredentialBrokerError::Saturated);
+    }
+    streams.insert(id);
+    Ok(())
 }
 
 async fn authority_revoked<B: CredentialBrokerBackend>(
@@ -530,6 +552,92 @@ mod tests {
         .await
         .expect("write");
         task.await.expect("task").expect("broker");
+    }
+
+    struct UnavailableAgent;
+    impl CredentialBrokerBackend for UnavailableAgent {
+        fn is_authorized(&self, _: &CredentialLeaseIdentity, _: BrokerFrameKind) -> bool {
+            true
+        }
+        fn credential_lookup(&self, _: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+        fn connect_agent(&self) -> BrokerBackendFuture<'_, Pin<Box<dyn BrokerByteStream>>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+        fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_agent_open_drains_only_its_in_flight_frames() {
+        let (host, mut agent) = tokio::io::duplex(4096);
+        let task = tokio::spawn(serve_host_credential_broker(
+            host,
+            identity(),
+            Arc::new(UnavailableAgent),
+        ));
+        let hello = read_frame(&mut agent).await.expect("read").expect("hello");
+        write_frame(
+            &mut agent,
+            &BrokerFrame::new(BrokerFrameKind::HelloAck, 0, hello.into_payload()).expect("ack"),
+        )
+        .await
+        .expect("ack");
+        for id in 2..(u32::try_from(MAX_BROKER_STREAMS).expect("bounded stream count") + 4) {
+            for (kind, body) in [
+                (BrokerFrameKind::AgentOpen, vec![]),
+                (BrokerFrameKind::StreamData, vec![1]),
+            ] {
+                write_frame(
+                    &mut agent,
+                    &BrokerFrame::new(kind, id, body).expect("frame"),
+                )
+                .await
+                .expect("write");
+            }
+            let response =
+                tokio::time::timeout(std::time::Duration::from_secs(1), read_frame(&mut agent))
+                    .await
+                    .expect("response deadline")
+                    .expect("read")
+                    .expect("error frame");
+            assert_eq!(response.kind, BrokerFrameKind::Error);
+            assert_eq!(response.stream_id, id);
+            write_frame(
+                &mut agent,
+                &BrokerFrame::new(BrokerFrameKind::Cancel, id, vec![]).expect("cancel"),
+            )
+            .await
+            .expect("cancel");
+        }
+        write_frame(
+            &mut agent,
+            &BrokerFrame::new(BrokerFrameKind::Health, 0, vec![]).expect("health"),
+        )
+        .await
+        .expect("health");
+        assert_eq!(
+            read_frame(&mut agent)
+                .await
+                .expect("read")
+                .expect("health ack")
+                .kind,
+            BrokerFrameKind::HealthAck
+        );
+        write_frame(
+            &mut agent,
+            &BrokerFrame::new(BrokerFrameKind::StreamData, 9999, vec![1]).expect("unknown"),
+        )
+        .await
+        .expect("unknown");
+        assert!(matches!(
+            task.await.expect("task"),
+            Err(HostCredentialBrokerError::Protocol(
+                BrokerProtocolError::UnknownStream
+            ))
+        ));
     }
 
     struct PausedBackend {

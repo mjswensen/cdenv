@@ -15,6 +15,9 @@ use crate::{
     ensure_lock_file, ensure_private_directory, inspect_managed_path, tighten_managed_file,
 };
 
+pub(crate) const AGENT_HOST_KEY: &str = "/var/lib/cdenv/ssh/host-key";
+pub(crate) const AGENT_AUTHORIZED_KEY: &str = "/var/lib/cdenv/ssh/authorized-key";
+
 const CLIENT_COMMENT: &str = "cdenv-client";
 const HOST_COMMENT: &str = "cdenv-host";
 
@@ -48,6 +51,10 @@ impl WorkspaceSshAssets {
     #[must_use]
     pub fn authorized_client_key(&self) -> &[u8] {
         &self.authorized_client_key
+    }
+
+    pub(crate) fn installed_provision_assets(&self) -> [AgentProvisionAsset<'_>; 2] {
+        self.provision_assets(AGENT_HOST_KEY, AGENT_AUTHORIZED_KEY)
     }
 
     /// Builds the exact two restricted assets for an always-upload provisioning pass.

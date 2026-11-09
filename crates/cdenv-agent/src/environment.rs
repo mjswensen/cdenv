@@ -859,7 +859,10 @@ mod platform {
 
 #[cfg(not(target_os = "linux"))]
 mod platform {
-    use super::*;
+    use super::{
+        CredentialGrants, EnvironmentCaptureRequest, EnvironmentCaptureResult, EnvironmentError,
+        EnvironmentSnapshot, ExitStatus, OsStr, OsString, Path,
+    };
 
     pub(super) fn capture(
         _: &EnvironmentCaptureRequest,

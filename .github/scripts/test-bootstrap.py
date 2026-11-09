@@ -12,7 +12,9 @@ TASKS = MISE["tasks"]
 
 
 def main() -> None:
-    assert TASKS["bootstrap"]["run"] == (
+    assert TASKS["bootstrap"]["depends"] == ["cargo-deny-install"]
+    assert "run" not in TASKS["bootstrap"]
+    assert TASKS["cargo-deny-install"]["run"] == (
         "cargo install cargo-deny --version 0.20.2 --locked"
     )
 

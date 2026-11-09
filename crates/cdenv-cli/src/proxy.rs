@@ -64,12 +64,12 @@ impl ProxyTarget {
         )
     }
 
-    fn host_key(&self) -> String {
-        format!("{}/host_key", self.state_root)
+    fn host_key() -> String {
+        crate::ssh_identity::AGENT_HOST_KEY.to_owned()
     }
 
-    fn authorized_key(&self) -> String {
-        format!("{}/authorized_keys", self.state_root)
+    fn authorized_key() -> String {
+        crate::ssh_identity::AGENT_AUTHORIZED_KEY.to_owned()
     }
 }
 
@@ -509,8 +509,8 @@ impl ProxyEngine for BollardProxyEngine {
             target.provisioned().agent_path().to_owned(),
             "ssh-server".to_owned(),
             "--stdio".to_owned(),
-            target.host_key(),
-            target.authorized_key(),
+            ProxyTarget::host_key(),
+            ProxyTarget::authorized_key(),
             target.provisioned().environment_path().to_owned(),
             target.workspace_folder().to_owned(),
             target
@@ -833,6 +833,22 @@ mod tests {
         );
         persist_workspace_state(&paths.state_file(), &state).expect("state");
         (temporary, root, name)
+    }
+
+    #[test]
+    fn proxy_uses_the_keys_installed_by_production_readiness() {
+        let (_temporary, root, name) = fixture();
+        crate::ensure_workspace_ssh_identity(&root, &name).expect("SSH identity");
+        let assets = crate::load_workspace_ssh_assets(&root, &name).expect("SSH assets");
+        let installed = assets.installed_provision_assets();
+        let target = super::load_target(&root, &name).expect("proxy target");
+        assert_eq!(ProxyTarget::host_key(), installed[0].destination);
+        assert_eq!(ProxyTarget::authorized_key(), installed[1].destination);
+        assert_eq!(installed[0].mode, 0o600);
+        assert_eq!(installed[1].mode, 0o600);
+        // Environment snapshots live under the selected user's home, whereas
+        // SSH policy is provisioned at the fixed container-private location.
+        assert!(!ProxyTarget::host_key().starts_with(&target.state_root));
     }
 
     #[tokio::test]

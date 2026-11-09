@@ -110,6 +110,15 @@ cdenv --root "$root" status "$workspace" --json
 cdenv --root "$root" doctor
 cdenv --root "$root" doctor --json
 cdenv --root "$root" lock "$workspace"
+# Verify the installed root-user SSH policy before opening a transport.
+# Provisioning destinations are independent of the environment snapshot.
+docker exec "$container_id" sh -c '
+  for key in /var/lib/cdenv/ssh/host-key /var/lib/cdenv/ssh/authorized-key; do
+    test -f "$key" && test ! -L "$key" || exit 1
+    test "$(stat -c %a "$key")" = 600 || exit 1
+    test "$(stat -c %u "$key")" = 0 || exit 1
+  done
+'
 cdenv --root "$root" ssh "$workspace" -- printf installed-ssh | grep -qx installed-ssh
 ssh -F "$root/ssh/config" "$workspace.cdenv" printf direct-openssh | grep -qx direct-openssh
 

@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::io::Write as _;
-use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -640,11 +640,25 @@ fn prepare_endpoints(
     let parent = path.parent().ok_or(CredentialBridgeError::UnsafePath(
         "runtime directory has no parent",
     ))?;
+    // Provisioning owns .cdenv; the bridge owns its credentials directory.
+    // Create only this one missing level, never arbitrary ancestor directories.
+    if matches!(fs::symlink_metadata(parent), Err(error) if error.kind() == io::ErrorKind::NotFound)
+    {
+        let ancestor = parent.parent().ok_or(CredentialBridgeError::UnsafePath(
+            "runtime parent has no ancestor",
+        ))?;
+        let metadata = fs::symlink_metadata(ancestor)
+            .map_err(|_| CredentialBridgeError::UnsafePath("runtime ancestor is unavailable"))?;
+        validate_directory(&metadata, identity.user.uid)?;
+        match fs::DirBuilder::new().mode(0o700).create(parent) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(_) => return Err(CredentialBridgeError::Io),
+        }
+    }
     let parent_metadata = fs::symlink_metadata(parent)
         .map_err(|_| CredentialBridgeError::UnsafePath("runtime parent is unavailable"))?;
-    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
-        return Err(CredentialBridgeError::UnsafePath("runtime parent type"));
-    }
+    validate_directory(&parent_metadata, identity.user.uid)?;
     match fs::symlink_metadata(path) {
         Ok(metadata) => validate_directory(&metadata, identity.user.uid)?,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -799,8 +813,36 @@ mod tests {
     }
 
     #[test]
+    fn fresh_generation_creates_private_credential_parent() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+            .expect("private parent");
+        let runtime = temporary.path().join("credentials/1");
+        prepare_endpoints(&runtime, &identity(1)).expect("fresh credential parent");
+        let metadata = fs::symlink_metadata(runtime.parent().expect("parent")).expect("metadata");
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+        assert_eq!(metadata.uid(), nix::unistd::geteuid().as_raw());
+    }
+
+    #[test]
+    fn credential_parent_rejects_symlinks_and_shared_permissions() {
+        let temporary = tempfile::tempdir().expect("temporary");
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+            .expect("private parent");
+        let parent = temporary.path().join("credentials");
+        std::os::unix::fs::symlink(temporary.path(), &parent).expect("symlink");
+        assert!(prepare_endpoints(&parent.join("1"), &identity(1)).is_err());
+        fs::remove_file(&parent).expect("unlink");
+        fs::create_dir(&parent).expect("parent");
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o755)).expect("mode");
+        assert!(prepare_endpoints(&parent.join("1"), &identity(1)).is_err());
+    }
+
+    #[test]
     fn stable_reconnect_replaces_only_exact_owned_sockets_and_rejects_generation_change() {
         let temporary = tempfile::tempdir().expect("temporary");
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+            .expect("private parent");
         let runtime = temporary.path().join("credential-runtime");
         let first = identity(1);
         let paths = prepare_endpoints(&runtime, &first).expect("prepare");
@@ -815,6 +857,8 @@ mod tests {
     #[test]
     fn managed_agent_enrollment_adds_only_the_verified_socket_after_sanitization() {
         let temporary = tempfile::tempdir().expect("temporary");
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+            .expect("private parent");
         let runtime = temporary.path().join("runtime");
         let lease = identity(1);
         let paths = prepare_endpoints(&runtime, &lease).expect("prepare");
@@ -846,6 +890,8 @@ mod tests {
     fn unsafe_symlink_and_non_socket_replacements_are_rejected() {
         use std::os::unix::fs::symlink;
         let temporary = tempfile::tempdir().expect("temporary");
+        fs::set_permissions(temporary.path(), fs::Permissions::from_mode(0o700))
+            .expect("private parent");
         let target = temporary.path().join("target");
         fs::create_dir(&target).expect("target");
         let linked = temporary.path().join("linked");

@@ -347,7 +347,7 @@ pub async fn start_detached_supervisor(
     atomic_write(&manifest.state_file, &bytes, ManagedMode::PrivateFile)
         .map_err(|error| ForwardingSupervisorError::Runtime(error.to_string()))?;
     let executable = std::env::current_exe().map_err(ForwardingSupervisorError::Start)?;
-    Command::new(executable)
+    let mut child = Command::new(executable)
         .arg("__forwarding-supervisor")
         .arg(&manifest.state_file)
         .stdin(Stdio::null())
@@ -357,9 +357,23 @@ pub async fn start_detached_supervisor(
         .spawn()
         .map_err(ForwardingSupervisorError::Start)?;
 
+    wait_for_supervisor(manifest, &mut child).await
+}
+
+async fn wait_for_supervisor(
+    manifest: &SupervisorManifest,
+    child: &mut std::process::Child,
+) -> Result<SupervisorState, ForwardingSupervisorError> {
     let claim = claim_from_manifest(manifest);
     let deadline = Instant::now() + SUPERVISOR_CONTROL_TIMEOUT;
     loop {
+        if let Some(status) = child.try_wait().map_err(ForwardingSupervisorError::Start)? {
+            // Only the exit status is public: the manifest, grants and child
+            // diagnostics may contain private host context and must not leak.
+            return Err(ForwardingSupervisorError::Runtime(format!(
+                "detached supervisor exited before authenticated readiness ({status})"
+            )));
+        }
         match supervisor_status(&manifest.control_socket, &manifest.token, &claim).await {
             Ok(state) => return Ok(state),
             Err(_) if Instant::now() < deadline => {
@@ -1353,6 +1367,27 @@ impl tokio::io::AsyncWrite for BoundedDiagnostics {
 mod tests {
     use super::*;
 
+    #[tokio::test]
+    async fn detached_startup_reports_early_child_exit_without_waiting_for_socket_timeout() {
+        let base = fs::canonicalize("/tmp").expect("canonical temporary root");
+        let temporary = tempfile::tempdir_in(base).expect("temporary");
+        let manifest = manifest(temporary.path());
+        let mut child = Command::new("sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("child");
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            wait_for_supervisor(&manifest, &mut child),
+        )
+        .await
+        .expect("early exit must not wait for readiness deadline");
+        let error = result.expect_err("child failed").to_string();
+        assert!(error.contains("exited before authenticated readiness"));
+        assert!(error.contains('7'));
+        assert!(!error.contains(&manifest.token));
+    }
+
     fn manifest(root: &Path) -> SupervisorManifest {
         let build = AgentArtifactProvider::embedded_identity().expect("host build");
         let workspace = WorkspaceName::parse("workspace").expect("workspace");
@@ -1367,7 +1402,7 @@ mod tests {
             ContainerId::parse("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
                 .expect("container"),
             "/usr/local/bin/cdenv-agent".to_owned(),
-            runtime.join("docker.sock"),
+            root.join("docker.sock"),
             supervisor_socket_path(root, &workspace),
             runtime.join("supervisor.json"),
             runtime.join(".supervisor.lock"),
@@ -1421,7 +1456,9 @@ mod tests {
 
     #[tokio::test]
     async fn authenticated_control_reconciles_credentials_without_stopping_supervisor() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
+        // macOS TMPDIR is long enough to exceed sun_path even for test sockets.
+        let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+        let temporary = tempfile::tempdir_in(parent).expect("private temporary directory");
         let workspace_root = temporary.path().join("workspaces/workspace");
         fs::create_dir_all(&workspace_root).expect("workspace root");
         let runtime = workspace_root.join("runtime");
@@ -1435,12 +1472,17 @@ mod tests {
         let socket = manifest.control_socket.clone();
         let token = manifest.token.clone();
         let task = tokio::spawn(run_supervisor(manifest));
-        loop {
-            if supervisor_status(&socket, &token, &claim).await.is_ok() {
-                break;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                assert!(!task.is_finished(), "supervisor exited before readiness");
+                if supervisor_status(&socket, &token, &claim).await.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        })
+        .await
+        .expect("supervisor readiness deadline");
         let before = supervisor_status(&socket, &token, &claim)
             .await
             .expect("status");
@@ -1454,12 +1496,18 @@ mod tests {
         stop_supervisor(&socket, &token, &claim)
             .await
             .expect("authenticated down");
-        task.await.expect("supervisor task").expect("clean exit");
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("supervisor shutdown deadline")
+            .expect("supervisor task")
+            .expect("clean exit");
     }
 
     #[tokio::test]
     async fn supervisor_authenticates_status_and_down_without_pid_signalling() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
+        // macOS TMPDIR is long enough to exceed sun_path even for test sockets.
+        let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+        let temporary = tempfile::tempdir_in(parent).expect("private temporary directory");
         let workspace_root = temporary.path().join("workspaces/workspace");
         fs::create_dir_all(&workspace_root).expect("workspace root");
         let runtime = workspace_root.join("runtime");
@@ -1473,12 +1521,17 @@ mod tests {
         let socket = manifest.control_socket.clone();
         let token = manifest.token.clone();
         let task = tokio::spawn(run_supervisor(manifest));
-        loop {
-            if supervisor_status(&socket, &token, &claim).await.is_ok() {
-                break;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                assert!(!task.is_finished(), "supervisor exited before readiness");
+                if supervisor_status(&socket, &token, &claim).await.is_ok() {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
+        })
+        .await
+        .expect("supervisor readiness deadline");
 
         let denied = supervisor_status(&socket, "wrong-token", &claim).await;
         assert!(matches!(
@@ -1488,6 +1541,10 @@ mod tests {
         stop_supervisor(&socket, &token, &claim)
             .await
             .expect("authenticated down");
-        task.await.expect("supervisor task").expect("clean exit");
+        tokio::time::timeout(Duration::from_secs(5), task)
+            .await
+            .expect("supervisor shutdown deadline")
+            .expect("supervisor task")
+            .expect("clean exit");
     }
 }

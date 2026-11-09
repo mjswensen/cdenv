@@ -56,8 +56,6 @@ use crate::{
 };
 
 const PROFILE: &str = "cdenv-devcontainer-v1";
-const AGENT_HOST_KEY: &str = "/var/lib/cdenv/ssh/host-key";
-const AGENT_AUTHORIZED_KEY: &str = "/var/lib/cdenv/ssh/authorized-key";
 
 #[derive(Debug)]
 struct WorkflowMessage(String);
@@ -881,7 +879,7 @@ impl ProductionEnvironment<'_> {
     ) -> Result<ReadyEnvironment, WorkflowMessage> {
         ensure_workspace_ssh_identity(self.root, self.workspace).map_err(message)?;
         let ssh = load_workspace_ssh_assets(self.root, self.workspace).map_err(message)?;
-        let assets = ssh.provision_assets(AGENT_HOST_KEY, AGENT_AUTHORIZED_KEY);
+        let assets = ssh.installed_provision_assets();
         let build_id = AgentArtifactProvider::embedded_identity().map_err(message)?;
         let expected =
             AgentArtifactIdentity::new(build_id, ProtocolVersion::new(1).map_err(message)?);

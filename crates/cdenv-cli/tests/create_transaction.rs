@@ -390,13 +390,32 @@ fn cancellation_observed_after_successful_clone_retains_recoverable_workspace() 
     let temporary = tempfile::tempdir().expect("temporary directory should exist");
     let executable = temporary.path().join("cancel-after-clone-git");
     let marker = temporary.path().join("clone-complete");
+    let release = temporary.path().join("release-output");
+    // Keep the output pipe open after fake Git exits. The marker is published
+    // only once Git has been reaped, so cancellation cannot race clone success.
+    // Both fixture waits are bounded to avoid orphaning a helper on test failure.
     let script = format!(
-        "#!/bin/sh\n\
-         if [ \"$1\" = --version ]; then printf 'git version 2.47.1\\n'; exit 0; fi\n\
-         mkdir -p \"$4\"\n\
-         : > '{}'\n\
-         sleep 0.002\n",
-        marker.display()
+        r#"#!/bin/sh
+if [ "$1" = --version ]; then printf 'git version 2.47.1\n'; exit 0; fi
+mkdir -p "$4"
+clone_pid=$$
+(
+  i=0
+  while kill -0 "$clone_pid" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -lt 500 ] || exit 1
+    sleep 0.01
+  done
+  : > '{}'
+  i=0
+  while [ ! -e '{}' ]; do
+    i=$((i + 1)); [ "$i" -lt 500 ] || exit 1
+    sleep 0.01
+  done
+) &
+exit 0
+"#,
+        marker.display(),
+        release.display()
     );
     fs::write(&executable, script).expect("fake Git should be written");
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))
@@ -426,6 +445,7 @@ fn cancellation_observed_after_successful_clone_retains_recoverable_workspace() 
         thread::sleep(Duration::from_millis(1));
     }
     cancellation.cancel();
+    fs::write(&release, []).expect("release completed clone output");
     let error = child
         .join()
         .expect("create thread should not panic")

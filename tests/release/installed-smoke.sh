@@ -142,12 +142,23 @@ cdenv --root "$root" ssh "$workspace" -- printf recovered-no-hook | grep -qx rec
   exit 1
 }
 docker inspect --format '{{json .HostConfig.PortBindings}}' "$container_id" | grep -vq '22/tcp'
-docker exec "$container_id" /bin/sh -c '! command -v sshd >/dev/null && ! ps | grep "[s]shd" >/dev/null'
+docker exec "$container_id" /bin/sh -c '! command -v sshd >/dev/null && ! ps -o comm | grep -qx sshd'
 
-# Exercise the installed foreground forwarding wrapper against a process started
-# through the authenticated agent transport. BusyBox httpd daemonizes itself.
-cdenv --root "$root" ssh "$workspace" -- /bin/sh -c \
-  'mkdir -p /tmp/cdenv-smoke-www; printf forwarded >/tmp/cdenv-smoke-www/index.html; busybox httpd -p 3000 -h /tmp/cdenv-smoke-www'
+# Exercise forwarding against a server started through authenticated SSH.
+# Alpine's base BusyBox supplies nc/setsid but not the optional httpd applet.
+http_server_command=$(cat <<'REMOTE'
+cat >/tmp/cdenv-smoke-http <<'SERVER'
+#!/bin/sh
+while IFS= read -r line; do
+  [ "$line" = "$(printf '\r')" ] && break
+done
+printf 'HTTP/1.0 200 OK\r\nContent-Length: 9\r\nConnection: close\r\n\r\nforwarded'
+SERVER
+chmod 700 /tmp/cdenv-smoke-http
+setsid nc -lk -p 3000 -e /tmp/cdenv-smoke-http </dev/null >/tmp/cdenv-smoke-http.log 2>&1 &
+REMOTE
+)
+cdenv --root "$root" ssh "$workspace" -- "$http_server_command"
 local_port=$((20000 + ($$ % 20000)))
 "$install/cdenv" --root "$root" forward "$workspace" "$local_port:3000" >"$work/forward.log" 2>&1 &
 forward_pid=$!
@@ -199,7 +210,7 @@ if cdenv --root "$root" ssh "$workspace" -- true >"$work/corrupt-manifest.out" 2
 fi
 grep -q 'invalid lifecycle manifest' "$work/corrupt-manifest.log"
 cdenv --root "$root" up "$workspace"
-cdenv --root "$root" ssh "$workspace" -- /bin/sh -c \
+cdenv --root "$root" ssh "$workspace" -- \
   'test "$(cat /data/post-attach-count)" = x && printf configured-hook' | grep -qx configured-hook
 ssh -F "$root/ssh/config" "$workspace.cdenv" \
   'test "$(cat /data/post-attach-count)" = xx && printf configured-reconnect' | grep -qx configured-reconnect
@@ -208,7 +219,7 @@ cdenv --root "$root" rebuild "$workspace" --no-cache
 no_cache_id=$(docker ps -q --filter "label=cdenv.workspace=$workspace")
 no_cache_generation=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["active"]["generation"])' "$root/workspaces/$workspace/state.json")
 [[ "$no_cache_id" != "$rebuilt_id" && "$no_cache_generation" -eq $((rebuilt_generation + 1)) ]]
-cdenv --root "$root" ssh "$workspace" -- /bin/sh -c \
+cdenv --root "$root" ssh "$workspace" -- \
   'test "$(cat /data/post-attach-count)" = xxx && printf configured-generation' | grep -qx configured-generation
 [[ $(sha256sum "$root/ssh/host_keys/$workspace.pub" | awk '{print $1}') == "$host_key" ]]
 grep -q tracked-change "$checkout/tracked-smoke.txt"

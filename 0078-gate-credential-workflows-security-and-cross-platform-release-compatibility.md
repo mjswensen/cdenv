@@ -48,6 +48,28 @@ credential release evidence remains outstanding.
   require a clean pushed matrix rerun after review.
 
 
+### Local follow-up diagnosis (2026-11-09; not release evidence)
+
+- `70fb88a` makes credential permission fixtures use short private canonical
+  temporary roots; all 27 tests pass even with deliberately long TMPDIR.
+- `8653977` flushes interactive Docker Exec input/output before EOF. Buffered-stream
+  regressions fail with the old behavior and pass with the fix. This resolves the
+  first installed SSH timeout in a native ARM64 diagnostic environment.
+- `072279e` and `1023f4b` repair installed-smoke shell quoting, process-name checks,
+  the Alpine HTTP fixture, and bounded response retries. The entire diagnostic
+  installed smoke passes on Docker Engine/CLI 29.7.1, Compose 5.3.1, OpenSSH 10.0p2,
+  including lifecycle recovery, forwarding, rebuilds and preservation assertions.
+- `d92ad9f` secures the owned shared `.cdenv` state root during environment capture.
+  Live comparison confirmed the old agent rejected its permissive ancestor before
+  bridge readiness, while the rebuilt native ARM64 agent completes credential
+  create and initial foreground/detached hooks. Ownership/symlink checks remain
+  strict and home permissions remain unchanged.
+
+These observations used a diagnostic host/archive and rebuilt ARM64 agent; they
+are not clean release matrix evidence. The credential workflow advanced to a later
+remote-shell fixture failure, still under investigation. Clean native x86_64/ARM64
+minimum/pinned gates and the actual macOS smoke remain required before closure.
+
 ### Latest CI triage (2026-09-26)
 
 CI [36219272407](https://github.com/mjswensen/cdenv/actions/runs/36219272407), revision `6e15e53f1879c1d3fd6c47f4b6b040ca82a761c6`, was categorized from the saved `ci.log`. Follow-up blockers:

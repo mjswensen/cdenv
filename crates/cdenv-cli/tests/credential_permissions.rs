@@ -19,6 +19,13 @@ use cdenv_core::{GenerationId, WorkspaceName};
 use clap::Parser;
 use serde_json::Value;
 
+fn private_tempdir() -> tempfile::TempDir {
+    // macOS runner TMPDIR can consume nearly the entire Unix-socket path budget.
+    // Keep permission fixtures private and short without changing production limits.
+    let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+    tempfile::tempdir_in(parent).expect("private temporary directory")
+}
+
 fn root(path: &Path) -> CdenvRoot {
     CdenvRoot::resolve(Some(path), &ProcessEnvironment).expect("absolute private root")
 }
@@ -80,7 +87,7 @@ fn clone_workspace(
 
 #[test]
 fn status_on_an_absent_root_does_not_create_or_probe_anything() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("missing-root"));
     let status = credential_status(&root, &project());
     assert_eq!(status.permission(), CredentialPermissionState::Absent);
@@ -89,7 +96,7 @@ fn status_on_an_absent_root_does_not_create_or_probe_anything() {
 
 #[test]
 fn staged_enable_is_independent_private_and_has_no_checkout_or_selected_socket() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     let status = mutate(
         &root,
@@ -141,7 +148,7 @@ fn staged_enable_is_independent_private_and_has_no_checkout_or_selected_socket()
 
 #[test]
 fn multiple_and_repeated_host_flags_normalize_and_deduplicate() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     let status = mutate(
         &root,
@@ -170,7 +177,7 @@ fn multiple_and_repeated_host_flags_normalize_and_deduplicate() {
 
 #[test]
 fn first_staged_https_enable_requires_explicit_origins() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     assert!(mutate(&root, &["enable", "project", "git-https"]).is_err());
     assert!(!root.credential_permission_file(&project()).exists());
@@ -178,7 +185,7 @@ fn first_staged_https_enable_requires_explicit_origins() {
 
 #[test]
 fn idempotent_enable_keeps_bytes_revision_and_explicit_agent_selector() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(
         &root,
@@ -212,7 +219,7 @@ fn idempotent_enable_keeps_bytes_revision_and_explicit_agent_selector() {
 
 #[test]
 fn origin_adjustments_never_enable_and_selective_disable_discards_grants() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     assert!(
         mutate(
@@ -266,7 +273,7 @@ fn origin_adjustments_never_enable_and_selective_disable_discards_grants() {
 
 #[test]
 fn explicit_successful_clone_consumes_staged_permission_before_later_work() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(
         &root,
@@ -297,7 +304,7 @@ fn explicit_successful_clone_consumes_staged_permission_before_later_work() {
 
 #[test]
 fn explicit_clone_exposes_bound_lease_for_first_generation_readiness() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     clone_workspace(&root, &fake_git(temporary.path(), false), true).expect("clone");
@@ -324,7 +331,7 @@ fn explicit_clone_exposes_bound_lease_for_first_generation_readiness() {
 
 #[test]
 fn failed_clone_leaves_staged_bytes_untouched_for_explicit_retry() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     let before = policy_bytes(&root);
@@ -340,7 +347,7 @@ fn failed_clone_leaves_staged_bytes_untouched_for_explicit_retry() {
 
 #[test]
 fn automatically_selected_name_cannot_consume_or_later_inherit_staged_permission() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     let before = policy_bytes(&root);
@@ -355,7 +362,7 @@ fn automatically_selected_name_cannot_consume_or_later_inherit_staged_permission
 
 #[test]
 fn disabled_workflow_does_not_create_permission_or_receipt_files() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     clone_workspace(&root, &fake_git(temporary.path(), false), false).expect("normal clone");
     assert!(!root.credential_permissions_dir().exists());
@@ -369,7 +376,7 @@ fn disabled_workflow_does_not_create_permission_or_receipt_files() {
 
 #[test]
 fn first_bound_https_enable_uses_only_original_host_metadata() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     clone_workspace(&root, &fake_git(temporary.path(), false), true).expect("clone");
     fs::write(
@@ -396,7 +403,7 @@ fn first_bound_https_enable_uses_only_original_host_metadata() {
 
 #[test]
 fn policy_copy_to_another_installation_cannot_transfer_grants() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let first = root(&temporary.path().join("first"));
     let second = root(&temporary.path().join("second"));
     mutate(&first, &["enable", "project", "git-identity"]).expect("first stage");
@@ -415,7 +422,7 @@ fn policy_copy_to_another_installation_cannot_transfer_grants() {
 
 #[test]
 fn workspace_replacement_does_not_inherit_an_old_bound_grant() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     let git = fake_git(temporary.path(), false);
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
@@ -438,7 +445,7 @@ fn workspace_replacement_does_not_inherit_an_old_bound_grant() {
 
 #[test]
 fn receipt_survives_a_policy_write_interruption_without_becoming_a_wildcard() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     let staged = policy_bytes(&root);
@@ -458,7 +465,7 @@ fn receipt_survives_a_policy_write_interruption_without_becoming_a_wildcard() {
 
 #[test]
 fn live_supervisor_lock_prevents_a_false_revocation_success_but_disk_is_revoked() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     clone_workspace(&root, &fake_git(temporary.path(), false), true).expect("clone");
@@ -478,7 +485,7 @@ fn live_supervisor_lock_prevents_a_false_revocation_success_but_disk_is_revoked(
 
 #[test]
 fn unknown_control_state_is_not_permission_to_signal_an_unverified_pid() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "ssh-agent"]).expect("stage");
     clone_workspace(&root, &fake_git(temporary.path(), false), true).expect("clone");
@@ -497,7 +504,7 @@ fn unknown_control_state_is_not_permission_to_signal_an_unverified_pid() {
 
 #[test]
 fn status_and_mutation_reject_symlinks_hardlinks_and_unsafe_modes_without_repair() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     let path = root.credential_permission_file(&project());
@@ -529,7 +536,7 @@ fn status_and_mutation_reject_symlinks_hardlinks_and_unsafe_modes_without_repair
 
 #[test]
 fn unsupported_corrupt_and_oversized_policy_is_value_free_and_never_migrated() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     let original: Value = serde_json::from_slice(&policy_bytes(&root)).expect("policy");
@@ -559,7 +566,7 @@ fn unsupported_corrupt_and_oversized_policy_is_value_free_and_never_migrated() {
 
 #[test]
 fn status_json_is_one_document_with_no_repair_or_backend_lookup() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     let before = policy_bytes(&root);
@@ -615,7 +622,7 @@ fn grammar_rejects_unknown_capabilities_cross_capability_flags_and_raw_origin_ec
 
 #[test]
 fn active_generation_enable_saves_permission_but_fails_readiness_without_touching_runtime() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     clone_workspace(&root, &fake_git(temporary.path(), false), true).expect("clone");
     let path = root.workspace(&project()).state_file();
@@ -647,7 +654,7 @@ fn active_generation_enable_saves_permission_but_fails_readiness_without_touchin
 
 #[test]
 fn copying_even_installation_metadata_cannot_retarget_staged_permission_to_another_root() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let first = root(&temporary.path().join("first"));
     let second = root(&temporary.path().join("second"));
     mutate(&first, &["enable", "project", "git-identity"]).expect("first stage");
@@ -667,7 +674,7 @@ fn copying_even_installation_metadata_cannot_retarget_staged_permission_to_anoth
 
 #[test]
 fn revisions_never_wrap_or_allow_old_authority_to_be_reused() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     let mut policy: Value = serde_json::from_slice(&policy_bytes(&root)).expect("policy");
@@ -685,7 +692,7 @@ fn revisions_never_wrap_or_allow_old_authority_to_be_reused() {
 
 #[test]
 fn list_and_detailed_status_share_the_dedicated_permission_facts() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(&root, &["enable", "project", "git-identity"]).expect("stage");
     clone_workspace(&root, &fake_git(temporary.path(), false), true).expect("clone");
@@ -708,7 +715,7 @@ fn list_and_detailed_status_share_the_dedicated_permission_facts() {
 
 #[test]
 fn doctor_inspects_staged_permission_without_invoking_a_credential_helper() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let root = root(&temporary.path().join("root"));
     mutate(
         &root,
@@ -752,7 +759,7 @@ fn doctor_inspects_staged_permission_without_invoking_a_credential_helper() {
 
 #[test]
 fn credential_commands_honor_root_selection_in_the_installed_binary_boundary() {
-    let temporary = tempfile::tempdir().expect("tempdir");
+    let temporary = private_tempdir();
     let explicit = temporary.path().join("explicit");
     let ignored = temporary.path().join("ignored");
     let output = Command::new(env!("CARGO_BIN_EXE_cdenv"))

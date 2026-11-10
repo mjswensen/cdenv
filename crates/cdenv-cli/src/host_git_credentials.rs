@@ -373,7 +373,10 @@ impl HostGitCredentialAdapter {
                     HostGitCredentialUnavailable::GitMissing,
                 ));
             }
-            Err(_) => return Err(HostGitCredentialError::PrivateIo),
+            Err(error) => {
+                trace_private_io("spawn", &error);
+                return Err(HostGitCredentialError::PrivateIo);
+            }
         };
         let mut process_group = OwnedProcessGroup::new(&child);
         let mut stdin = child
@@ -392,12 +395,26 @@ impl HostGitCredentialAdapter {
         let result = {
             let operation = async {
                 let write = async move {
-                    stdin.write_all(&input).await?;
-                    stdin.shutdown().await
+                    stdin
+                        .write_all(&input)
+                        .await
+                        .map_err(|error| ("stdin write", error))?;
+                    stdin
+                        .shutdown()
+                        .await
+                        .map_err(|error| ("stdin shutdown", error))
                 };
-                let read_stdout = read_bounded(&mut stdout, MAX_CREDENTIAL_BYTES);
-                let read_stderr = read_bounded(&mut stderr, MAX_HOST_GIT_STDERR_BYTES);
-                let wait = child.wait();
+                let read_stdout = async {
+                    read_bounded(&mut stdout, MAX_CREDENTIAL_BYTES)
+                        .await
+                        .map_err(|error| ("stdout read", error))
+                };
+                let read_stderr = async {
+                    read_bounded(&mut stderr, MAX_HOST_GIT_STDERR_BYTES)
+                        .await
+                        .map_err(|error| ("stderr read", error))
+                };
+                let wait = async { child.wait().await.map_err(|error| ("child wait", error)) };
                 tokio::try_join!(write, read_stdout, read_stderr, wait)
             };
             tokio::pin!(operation);
@@ -427,7 +444,8 @@ impl HostGitCredentialAdapter {
                     })
                 }
             }
-            Some(Err(_)) => {
+            Some(Err((stage, error))) => {
+                trace_private_io(stage, &error);
                 terminate_and_reap(&mut child).await?;
                 process_group.disarm();
                 Err(HostGitCredentialError::PrivateIo)
@@ -445,6 +463,19 @@ impl HostGitCredentialAdapter {
             }
         }
     }
+}
+
+// Unit-test diagnostics contain only fixed stage names and OS error classification.
+// Never format the error itself: private subprocess details may contain secrets.
+fn trace_private_io(stage: &str, error: &io::Error) {
+    #[cfg(test)]
+    eprintln!(
+        "credential subprocess I/O: stage={stage}, kind={:?}, os_code={:?}",
+        error.kind(),
+        error.raw_os_error()
+    );
+    #[cfg(not(test))]
+    let _ = (stage, error);
 }
 
 struct BoundedPrivateOutput {
@@ -735,7 +766,7 @@ printf 'username=%s\npassword=token-%s-%s-%s\n\n' "$user" "$count" "$path" "$use
                     &CancellationToken::default(),
                 )
                 .await
-                .expect("typed outcome");
+                .unwrap_or_else(|error| panic!("expected {expected:?}, lookup failed: {error:?}"));
             assert!(
                 matches!(result, HostGitCredentialOutcome::Unavailable(reason) if reason == expected)
             );

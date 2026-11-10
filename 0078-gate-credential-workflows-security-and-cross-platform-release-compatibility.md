@@ -20,9 +20,28 @@ Provide reproducible, nonempty end-to-end and release evidence for the complete 
 
 ## Implementation status
 
-_Last reconciled: 2026-11-09._
+_Last reconciled: 2026-11-10._
 
-### Current CI baseline (2026-11-09)
+### Passing clean baseline (2026-11-10)
+
+Revision `c268e9e8980701e55de20b589e14f815062cc33a` passes
+[CI 42833912796](https://github.com/mjswensen/cdenv/actions/runs/42833912796)
+and [Release packages 42833912999](https://github.com/mjswensen/cdenv/actions/runs/42833912999).
+Each native Linux x86_64/arm64 minimum/pinned credential leg discovers, executes,
+and passes **3 tests**, both in release execution and instrumented coverage.
+This supersedes the failing November 9 baseline and establishes work package 1.
+The passing workflows include workspace/quality checks, release suites, installed
+package smoke and coverage inventory. The CI log was inspected locally at
+`/tmp/cdenv-78-ci.log`; the linked run retains the durable evidence.
+
+This baseline covers the existing fixtures only. Active detached cancellation,
+Git-over-SSH and remaining agent-selection cases, synchronized in-flight
+revocation, rollback/partial replacement, complete secret-surface auditing, and
+actual macOS Docker Desktop/helper observations remain required. macOS packaging
+and workspace tests do not substitute for that smoke. Repeat affected gates after
+implementation changes; this baseline does not close the acceptance checklist.
+
+### Historical CI baseline (2026-11-09)
 
 Pushed revision `bd2e41f4c470aaf6bda7063871d9bcc095274ae3` was checked in
 [CI 42669798783](https://github.com/mjswensen/cdenv/actions/runs/42669798783) and
@@ -144,6 +163,31 @@ all applicable implementation and platform evidence is complete.
 - **Exit evidence:** passing clean baseline jobs, or explicitly identified remaining failures with retained logs. This establishes the starting point; repeat the complete matrix after subsequent implementation changes.
 
 #### 2. Complete active detached-lifecycle cancellation
+
+Implementation audit (2026-11-10): production `execute_lifecycle` still launches
+concatenated shell commands through detached Docker Exec and
+`run-managed-environment`. The agent's separate `run_lifecycle` runner is not a
+drop-in replacement: its request lacks installation/workspace/container/per-run
+identity, its paths and terminal checkpoints are permanently generation-scoped,
+and it does not enroll credential grants as `run_post_attach` does. Reusing it
+would skip subsequent same-generation `postStartCommand` runs and lose credential
+availability. The host execution record identifies the exact Exec but has no
+per-run manifest identity or cancellation request/acknowledgment contract.
+
+The implementation therefore needs coordinated agent request/manifest and host
+record changes, credential enrollment in the owned runner, per-start paths,
+authenticated cancellation and cleanup acknowledgment, authoritative final Exec
+verification, and distinct checkpoint outcomes for cancelled one-time work versus
+repeatable post-start work. Routing production directly to the existing cancel
+API or signaling a recorded PID is insufficient.
+
+Local safety follow-up removes timeout signaling through a persisted runner PID
+(which can be reused) and verifies the immutable plan before writing a cancel
+marker. Named regressions are `cancellation_timeout_does_not_signal_a_persisted_pid`
+and `mismatched_cancellation_does_not_publish_a_cancel_request`. They are Linux-only;
+macOS compilation/zero-test execution is not passing runtime evidence. These
+changes preserve an active/indeterminate outcome on timeout and do not complete
+active detached cancellation.
 
 - Extend the lifecycle runner/host supervision contract with durable per-start/run identity, bound to installation, workspace, container, generation, build/protocol, and execution ownership. Preserve rerunning `postStartCommand` after down/up within the same generation; the existing immutable per-generation runner cannot simply be reused for this.
 - Implement authenticated cancellation of an active owned execution with bounded graceful/forced cleanup and a precise verified outcome. Keep the completed-Exec inspection path, and keep missing, mismatched, unstarted, legacy, or unverifiable records fail-closed. Do not clear a running checkpoint or guess a process identity to make down/rebuild succeed.

@@ -262,3 +262,79 @@ in 6/7. Source and issue commits remain local until the user's review/push.
 ## Closure boundary
 
 This issue owns the final test/release evidence and documentation, not permission to weaken failing runtime requirements. Fix failures in the responsible component/integration issue. Issue 68 remains the umbrella for final contract review and is resolved separately only when its complete agreed acceptance criteria are met.
+
+
+## Verification and completion checklist (2026-11-10)
+
+Implementation commit: `7c3c6f3` (Refs: 78). Evidence update: `62c3d76` on the
+issues branch. Both were committed locally; no push was performed in that session.
+Follow these steps in order. Several require implementation, not just verification.
+The earlier passing baseline does not validate the new commit.
+
+- [ ] **Push and verify the current changes.** Run:
+
+  ```sh
+  git push origin main
+  git issue push
+  gh run list --commit "$(git rev-parse HEAD)"
+  ```
+
+  Wait for both **CI** and **Release packages**. Retain their run URLs, logs,
+  and artifacts.
+
+- [ ] **Verify the newly added Linux scenarios.** Confirm all four
+  x86_64/arm64 × minimum/pinned jobs execute the credential suite successfully.
+  Currently expect **3 discovered, 3 executed, 3 passed**. Inspect failures in
+  Git-over-SSH clone/fetch/push, unknown/changed host-key rejection, and empty-agent
+  recovery. Confirm the two new lifecycle cancellation regressions execute on
+  Linux; macOS compilation alone does not test them.
+
+- [ ] **Implement active detached-lifecycle cancellation.** Add durable per-start
+  identity bound to installation, workspace, container, generation, build/protocol,
+  and execution ownership. Enroll the runner in credential forwarding, authenticate
+  cancellation, and verify bounded child cleanup. Test repeated `postStartCommand`
+  execution after down/up, active down/rebuild, crash recovery, mismatched/missing
+  records, and preservation of unrelated processes. The committed PID safety fix
+  does not complete this feature.
+
+- [ ] **Finish agent-selection scenarios.** Add packaged tests for explicit versus
+  automatic selection, automatic socket changes followed by refresh,
+  confirmation/timeout behavior, and independent identity-default
+  precedence/removal. Clearly label simulated confirmation behavior.
+
+- [ ] **Finish revocation and replacement scenarios.** Add synchronized in-flight
+  revocation and old-client tests; degraded-backend versus failed-bridge
+  diagnostics/recovery; rejected-open/cancellation races; failed rebuild/rollback;
+  and credential-enabled Compose partial replacement. Verify generation isolation,
+  checkout/named-volume preservation, and unrelated-container preservation.
+
+- [ ] **Complete the security evidence audit.** Map each issue-68 criterion to
+  named tests in `tests/integration/fixtures/credential-coverage.json`. Cover
+  malformed/truncated/oversized frames, identity mismatches, unsafe paths,
+  injection, concurrency, and backpressure. Verify unique secret markers reach
+  intended recipients but do not appear in persistence, diagnostics,
+  arguments/environment, snapshots, helper configuration, or native helper
+  storage—including failure/revocation paths.
+
+- [ ] **Run the final clean release matrix after those changes.** Commit and push
+  the completed implementation. Require passing quality/dependency checks,
+  security mutations, workspace coverage, profile/OpenSSH/credential suites,
+  installed-package smoke, artifact/protocol compatibility, and coverage inventory.
+  Build host and agents from the same clean revision. Retain exact suite counts,
+  dependency versions, archive checksums, revision, and run URLs. Missing
+  prerequisites or skipped tests are failures.
+
+- [ ] **Perform the actual Apple-silicon smoke.** Use the matching release archive
+  and complete every required field and step in
+  `docs/smoke/macos-docker-desktop-v1.md`. Run on the macOS host with Docker Desktop
+  and real helper/keychain behavior. Record selected/automatic agents, refresh,
+  revocation, secret-surface observations, and which confirmation/provider
+  interactions were real or simulated. Save the completed record with redacted
+  evidence.
+
+- [ ] **Reconcile documentation and close.** Update ADR 0002, operations, profile
+  support, implementation-plan/runtime descriptions, release guidance, and
+  traceability to the demonstrated guarantees. Check this issue's acceptance boxes
+  only when fully supported. Commit the final completion with `Resolves: 78`, then
+  run `git issue show 78` and verify it reports **closed**. Issue 68 still requires
+  its separate final contract review.

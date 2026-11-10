@@ -50,5 +50,9 @@ builds; Cargo still validates fingerprints and the packaging gate validates embe
 agent identities. Caches contain build inputs/outputs, never release evidence or
 verified-agent downloads. Release coverage suites share dependency artifacts but clean
 workspace packages and profiles before each suite to keep reports independent.
+Credential coverage builds an instrumented host in that shared coverage directory,
+embeds the already verified static agents, and selects it only for the coverage
+rerun. This adds a host build/link without another target directory or agent build;
+ordinary credential gates continue to exercise the packaged release host.
 Installed Linux smoke has a five-minute step deadline, bounded SSH calls and cleanup;
 package jobs have a twenty-minute outer deadline.

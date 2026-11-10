@@ -24,6 +24,20 @@ printf 'not-run\n' > "$out/setup-exit-code.txt"
 printf 'not-run\n' > "$out/test-exit-code.txt"
 printf 'not-run\n' > "$out/report-exit-code.txt"
 
+prepare_credential_host() {
+  if [[ -z ${CDENV_AGENT_ARTIFACT_DIR:-} ]]; then
+    echo 'Credential coverage requires the verified agent artifact directory.' >&2
+    return 1
+  fi
+  export CDENV_BUILD_ID
+  CDENV_BUILD_ID=$(git rev-parse HEAD) || return
+  # Build after show-env and clean, preserving the instrumentation flags and
+  # shared coverage target directory. xtask dist overrides both for packaging.
+  cargo build --release --package cdenv-cli --bin cdenv --locked || return
+  export CDENV_CREDENTIAL_TEST_BINARY="$CARGO_TARGET_DIR/release/cdenv"
+  "$CDENV_CREDENTIAL_TEST_BINARY" __validate-artifacts > "$out/host-artifacts.json"
+}
+
 setup_status=0
 cargo llvm-cov show-env --branch --locked --sh > "$out/environment.sh" 2> "$out/setup.log" || setup_status=$?
 if (( setup_status == 0 )); then
@@ -32,6 +46,9 @@ if (( setup_status == 0 )); then
 fi
 if (( setup_status == 0 )); then
   cargo llvm-cov clean --workspace >> "$out/setup.log" 2>&1 || setup_status=$?
+fi
+if (( setup_status == 0 )) && [[ "$scope" == credentials ]]; then
+  prepare_credential_host >> "$out/setup.log" 2>&1 || setup_status=$?
 fi
 if (( setup_status == 0 )); then
   {

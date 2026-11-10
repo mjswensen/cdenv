@@ -58,17 +58,41 @@ class CoverageTests(unittest.TestCase):
             (directory / "coverage.json").write_text(json.dumps(data))
             self.assertTrue(INDEX.index(root, root / "index"))
 
-    def run_collector(self, scope, test_status=0, report_status=0, setup_status=0):
+    def run_collector(self, scope, test_status=0, report_status=0, setup_status=0,
+                      build_status=0, host_status=0, verified_agents=True):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             cargo = root / "cargo"
             cargo.write_text('''#!/usr/bin/env bash
 printf '%s\\n' "$*" >> "$CALLS"
 case "$*" in
-  'llvm-cov show-env'*) exit "$SETUP_STATUS" ;;
+  'llvm-cov show-env'*)
+    echo 'export RUSTFLAGS=coverage-fixture'
+    exit "$SETUP_STATUS" ;;
+  build*)
+    [[ "$RUSTFLAGS" == coverage-fixture ]] || exit 93
+    [[ "$CARGO_TARGET_DIR" == "$CARGO_LLVM_COV_TARGET_DIR" ]] || exit 94
+    [[ "$CDENV_BUILD_ID" == "$(git rev-parse HEAD)" ]] || exit 95
+    [[ -n "$CDENV_AGENT_ARTIFACT_DIR" ]] || exit 96
+    if (( BUILD_STATUS != 0 )); then exit "$BUILD_STATUS"; fi
+    mkdir -p "$CARGO_TARGET_DIR/release"
+    cat > "$CARGO_TARGET_DIR/release/cdenv" <<'HOST'
+#!/usr/bin/env bash
+[[ "$1" == __validate-artifacts ]] || exit 97
+echo 'host validation' >> "$CALLS"
+exit "$HOST_STATUS"
+HOST
+    chmod +x "$CARGO_TARGET_DIR/release/cdenv" ;;
   test*|xtask*)
     [[ "$CARGO_TARGET_DIR" == "$CARGO_LLVM_COV_TARGET_DIR" ]] || exit 91
     [[ "$CARGO_TARGET_DIR" == "$PWD/target/coverage-build/"* ]] || exit 92
+    if [[ "$*" == 'xtask test-integration --suite credentials' ]]; then
+      [[ "$CDENV_CREDENTIAL_TEST_BINARY" == "$CARGO_TARGET_DIR/release/cdenv" ]] || exit 98
+      [[ -x "$CDENV_CREDENTIAL_TEST_BINARY" ]] || exit 99
+      echo "credential binary=$CDENV_CREDENTIAL_TEST_BINARY" >> "$CALLS"
+    else
+      [[ "$CDENV_CREDENTIAL_TEST_BINARY" == "$PWD/target/release/cdenv" ]] || exit 100
+    fi
     echo 'test output'; exit "$TEST_STATUS" ;;
   'llvm-cov report'*) exit "$REPORT_STATUS" ;;
 esac
@@ -83,7 +107,12 @@ esac
             environment = dict(os.environ, PATH=f"{root}:{os.environ['PATH']}",
                                CALLS=str(root / "calls"), COVERAGE_ID="fixture",
                                COVERAGE_TOOLCHAIN="mock-nightly", TEST_STATUS=str(test_status),
-                               REPORT_STATUS=str(report_status), SETUP_STATUS=str(setup_status))
+                               REPORT_STATUS=str(report_status), SETUP_STATUS=str(setup_status),
+                               BUILD_STATUS=str(build_status), HOST_STATUS=str(host_status),
+                               CDENV_CREDENTIAL_TEST_BINARY=str(root / "target/release/cdenv"))
+            environment.pop("CDENV_AGENT_ARTIFACT_DIR", None)
+            if verified_agents:
+                environment["CDENV_AGENT_ARTIFACT_DIR"] = str(root / "verified-agents")
             result = subprocess.run(["bash", str(SCRIPTS / "coverage.sh"), scope],
                                     cwd=root, env=environment, capture_output=True, text=True)
             outcome = root / "target/coverage/fixture/test-exit-code.txt"
@@ -107,6 +136,33 @@ esac
         self.assertEqual(code, 0)
         self.assertLess(calls.index("llvm-cov clean --workspace"),
                         calls.index("xtask test-integration"))
+
+    def test_credentials_build_and_validate_instrumented_host_before_gate(self):
+        code, calls, outcome, setup = self.run_collector("credentials")
+        self.assertEqual((code, outcome, setup), (0, "0", "0"))
+        build = "build --release --package cdenv-cli --bin cdenv --locked"
+        self.assertLess(calls.index("llvm-cov clean --workspace"), calls.index(build))
+        self.assertLess(calls.index(build), calls.index("host validation"))
+        self.assertLess(calls.index("host validation"), calls.index("xtask test-integration"))
+        self.assertIn("/target/coverage-build/release/release/cdenv\n", calls)
+        self.assertEqual(calls.count("llvm-cov report --release --branch --locked"), 3)
+
+    def test_credential_host_setup_failures_prevent_gate_and_reports(self):
+        for options, expected in [({"build_status": 7}, 7),
+                                  ({"host_status": 8}, 8),
+                                  ({"verified_agents": False}, 1)]:
+            with self.subTest(options=options):
+                code, calls, outcome, setup = self.run_collector("credentials", **options)
+                self.assertEqual((code, outcome, setup), (expected, "not-run", str(expected)))
+                self.assertNotIn("xtask test-integration", calls)
+                self.assertNotIn("llvm-cov report", calls)
+
+    def test_other_scopes_keep_original_host_and_do_not_build_coverage_host(self):
+        for scope in ("workspace", "devcontainer-v1", "openssh"):
+            code, calls, outcome, setup = self.run_collector(scope)
+            self.assertEqual((code, outcome, setup), (0, "0", "0"))
+            self.assertNotIn("build --release", calls)
+            self.assertNotIn("host validation", calls)
 
     def test_workspace_is_locked_and_report_failure_is_not_hidden(self):
         code, calls, outcome, setup = self.run_collector("workspace", report_status=9)

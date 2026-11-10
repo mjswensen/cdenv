@@ -284,6 +284,7 @@ jobs:
       - name: Instrument credential release suite
         if: always() && steps.release_prerequisites.outcome == 'success'
         env:
+          CDENV_AGENT_ARTIFACT_DIR: ${{ github.workspace }}/target/verified-agents
           CDENV_INTEGRATION: "1"
           CDENV_INTEGRATION_ARCH: ${{ matrix.arch }}
           COVERAGE_ID: credentials-linux-${{ matrix.arch }}-${{ matrix.baseline }}

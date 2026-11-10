@@ -6,9 +6,15 @@ mod unix {
     use std::os::unix::fs::PermissionsExt;
     use std::process::Command;
 
+    fn private_tempdir() -> tempfile::TempDir {
+        // Preserve space-containing roots without depending on the runner TMPDIR length.
+        let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+        tempfile::tempdir_in(parent).expect("private temporary directory")
+    }
+
     #[test]
     fn cdenv_ssh_propagates_system_ssh_status() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
+        let temporary = private_tempdir();
         let fake_ssh = temporary.path().join("ssh");
         fs::write(&fake_ssh, "#!/bin/sh\nexit 37\n").expect("fake ssh");
         fs::set_permissions(&fake_ssh, fs::Permissions::from_mode(0o755)).expect("mode");
@@ -30,7 +36,7 @@ mod unix {
 
     #[test]
     fn cdenv_ssh_passes_explicit_config_host_and_remote_arguments_unchanged() {
-        let temporary = tempfile::tempdir().expect("temporary directory");
+        let temporary = private_tempdir();
         let fake_ssh = temporary.path().join("ssh");
         let observed = temporary.path().join("arguments");
         fs::write(

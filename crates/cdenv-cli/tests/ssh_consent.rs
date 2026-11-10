@@ -9,6 +9,12 @@ use cdenv_cli::{
     SshIncludeConsent, SshIncludeOutcome, apply_ssh_include_consent,
 };
 
+fn private_tempdir() -> tempfile::TempDir {
+    // Keep space/quote fixtures within the socket budget even with macOS runner TMPDIR.
+    let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+    tempfile::tempdir_in(parent).expect("private temporary directory")
+}
+
 fn root_at(path: &Path) -> CdenvRoot {
     CdenvRoot::resolve(Some(path), &ProcessEnvironment).expect("absolute test root")
 }
@@ -39,7 +45,7 @@ impl SshConsentInteraction for Interaction {
 
 #[test]
 fn unknown_noninteractive_consent_does_not_prompt_or_modify() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let home = temporary.path().join("home");
     fs::create_dir(&home).expect("home");
@@ -57,7 +63,7 @@ fn unknown_noninteractive_consent_does_not_prompt_or_modify() {
 
 #[test]
 fn tty_acceptance_inserts_before_first_host_and_is_remembered() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root with space"));
     let home = temporary.path().join("home");
     fs::create_dir_all(home.join(".ssh")).expect("SSH directory");
@@ -89,7 +95,7 @@ fn tty_acceptance_inserts_before_first_host_and_is_remembered() {
 
 #[test]
 fn accepted_include_insertion_is_idempotent_without_another_prompt() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root with \"quote"));
     let home = temporary.path().join("home");
     fs::create_dir(&home).expect("home");
@@ -116,7 +122,7 @@ fn accepted_include_insertion_is_idempotent_without_another_prompt() {
 
 #[test]
 fn tty_decline_is_remembered_and_never_prompts_again() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let home = temporary.path().join("home");
     fs::create_dir(&home).expect("home");
@@ -148,7 +154,7 @@ fn tty_decline_is_remembered_and_never_prompts_again() {
 
 #[test]
 fn explicit_decline_does_not_remove_an_existing_include() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let home = temporary.path().join("home");
     fs::create_dir_all(home.join(".ssh")).expect("SSH directory");
@@ -178,7 +184,7 @@ fn explicit_decline_does_not_remove_an_existing_include() {
 fn symlinked_user_config_is_refused_with_manual_instructions() {
     use std::os::unix::fs::symlink;
 
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let home = temporary.path().join("home");
     fs::create_dir_all(home.join(".ssh")).expect("SSH directory");
@@ -210,7 +216,7 @@ fn symlinked_user_config_is_refused_with_manual_instructions() {
 fn insertion_preserves_existing_user_config_mode() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let home = temporary.path().join("home");
     fs::create_dir_all(home.join(".ssh")).expect("SSH directory");

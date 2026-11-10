@@ -693,12 +693,13 @@ printf 'username=%s\npassword=token-%s-%s-%s\n\n' "$user" "$count" "$path" "$use
         let (_temporary, context) = fixture(script);
         let adapter = HostGitCredentialAdapter::new(context);
         for (path, username) in [("one.git", "alice"), ("two.git", "bob")] {
-            assert!(matches!(
-                adapter
-                    .lookup(&request(path, username), 1, &CancellationToken::default())
-                    .await,
-                Ok(HostGitCredentialOutcome::Available(_))
-            ));
+            let outcome = adapter
+                .lookup(&request(path, username), 1, &CancellationToken::default())
+                .await;
+            assert!(
+                matches!(outcome, Ok(HostGitCredentialOutcome::Available(_))),
+                "lookup for {path}/{username}: {outcome:?}"
+            );
         }
     }
 

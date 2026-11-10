@@ -13,13 +13,19 @@ use cdenv_cli::{
 use cdenv_core::WorkspaceName;
 use ssh_key::{Algorithm, PrivateKey, PublicKey};
 
+fn private_tempdir() -> tempfile::TempDir {
+    // Preserve space/quote coverage within the socket budget even with a long runner TMPDIR.
+    let parent = fs::canonicalize("/tmp").expect("canonical temporary root");
+    tempfile::tempdir_in(parent).expect("private temporary directory")
+}
+
 fn root_at(path: &Path) -> CdenvRoot {
     CdenvRoot::resolve(Some(path), &ProcessEnvironment).expect("absolute test root should resolve")
 }
 
 #[test]
 fn generated_roles_are_distinct_matching_ed25519_identities() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let name: WorkspaceName = "project".parse().expect("workspace name");
 
@@ -45,7 +51,7 @@ fn generated_roles_are_distinct_matching_ed25519_identities() {
 
 #[test]
 fn workspace_host_key_remains_stable_across_repeated_setup() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let name: WorkspaceName = "project".parse().expect("workspace name");
 
@@ -62,7 +68,7 @@ fn workspace_host_key_remains_stable_across_repeated_setup() {
 fn generated_identity_and_configuration_modes_are_strict() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let name: WorkspaceName = "project".parse().expect("workspace name");
     regenerate_managed_ssh(&root, Path::new("/usr/bin/cdenv"), [name.clone()]).expect("SSH setup");
@@ -82,7 +88,7 @@ fn generated_identity_and_configuration_modes_are_strict() {
 
 #[test]
 fn mismatched_managed_public_key_is_rejected() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let project: WorkspaceName = "project".parse().expect("workspace name");
     let other: WorkspaceName = "other".parse().expect("workspace name");
@@ -102,7 +108,7 @@ fn mismatched_managed_public_key_is_rejected() {
 
 #[test]
 fn provision_assets_contain_host_private_and_exact_client_public_roles() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let name: WorkspaceName = "project".parse().expect("workspace name");
     ensure_workspace_ssh_identity(&root, &name).expect("identity setup");
@@ -131,7 +137,7 @@ fn provision_assets_contain_host_private_and_exact_client_public_roles() {
 
 #[test]
 fn generated_config_contains_only_explicit_workspace_blocks() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let alpha: WorkspaceName = "alpha".parse().expect("workspace name");
     let beta: WorkspaceName = "beta".parse().expect("workspace name");
@@ -150,7 +156,7 @@ fn generated_config_contains_only_explicit_workspace_blocks() {
 fn openssh_resolves_supported_spaces_and_quotes_in_explicit_config() {
     use std::os::unix::fs::PermissionsExt;
 
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root_path = temporary.path().join("root with 'quote");
     let root = root_at(&root_path);
     let executable = temporary.path().join("bin with 'quote/cdenv");
@@ -204,7 +210,7 @@ fn openssh_resolves_supported_spaces_and_quotes_in_explicit_config() {
 fn argv0_path_lookup_retains_the_final_stable_symlink() {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let bin = temporary.path().join("bin");
     fs::create_dir(&bin).expect("bin directory");
     let versioned = bin.join("cdenv-0.1");
@@ -221,7 +227,7 @@ fn argv0_path_lookup_retains_the_final_stable_symlink() {
 
 #[test]
 fn ssh_wrapper_arguments_preserve_remote_argv_boundaries() {
-    let temporary = tempfile::tempdir().expect("temporary directory");
+    let temporary = private_tempdir();
     let root = root_at(&temporary.path().join("root"));
     let name: WorkspaceName = "project".parse().expect("workspace name");
     let remote = vec![OsString::from("printf '%s'"), OsString::from("a b")];

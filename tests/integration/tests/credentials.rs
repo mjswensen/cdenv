@@ -185,6 +185,97 @@ impl Drop for Agent {
     }
 }
 
+// Uses the production SSH implementation as a controlled Git origin; the client
+// remains the container's real Git/OpenSSH using the forwarded host agent.
+#[cfg(target_os = "linux")]
+struct GitSshServer {
+    child: Child,
+    port: u16,
+    public_key: String,
+    repository: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl GitSshServer {
+    fn start(root: &Path, source: &Path, authorized_key: &Path) -> Self {
+        let host_key = root.join("git-ssh-host-key");
+        require_success(
+            &run(
+                Path::new("ssh-keygen"),
+                &[
+                    "-q",
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-f",
+                    host_key.to_str().expect("host key"),
+                ],
+                &[],
+            ),
+            "generate Git SSH host key",
+        );
+        let repository = root.join("origin.git");
+        require_success(
+            &run(
+                Path::new("git"),
+                &[
+                    "clone",
+                    "--bare",
+                    source.to_str().expect("source"),
+                    repository.to_str().expect("origin"),
+                ],
+                &[],
+            ),
+            "create Git SSH origin",
+        );
+        let environment =
+            cdenv_agent::capture_environment(&cdenv_agent::EnvironmentCaptureRequest {
+                generation: "credential-git-ssh".to_owned(),
+                state_directory: root.join("git-ssh-state").display().to_string(),
+                probe: cdenv_agent::EnvironmentProbe::None,
+                remote_environment: std::collections::BTreeMap::new(),
+            })
+            .expect("Git SSH environment");
+        let key = root.join("git-ssh-authorized-key");
+        fs::copy(authorized_key, &key).expect("authorized key");
+        fs::set_permissions(&key, fs::Permissions::from_mode(0o600)).expect("key mode");
+        let ready = root.join("git-ssh-ready");
+        let child = Command::new(env!("CARGO_BIN_EXE_credential-ssh-server"))
+            .arg(&host_key)
+            .arg(&key)
+            .arg(environment.snapshot_path)
+            .arg(root)
+            .arg(&ready)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("Git SSH fixture");
+        let mut server = Self {
+            child,
+            port: 0,
+            public_key: fs::read_to_string(host_key.with_extension("pub"))
+                .expect("host public key"),
+            repository,
+        };
+        wait_for_path(&ready, "Git SSH fixture readiness");
+        server.port = fs::read_to_string(ready)
+            .expect("ready port")
+            .parse()
+            .expect("port");
+        server
+    }
+}
+
+#[cfg(target_os = "linux")]
+impl Drop for GitSshServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
 fn create_repository(root: &Path, agent_public_key: &Path) -> PathBuf {
     let repository = root.join("repository");
     fs::create_dir_all(repository.join(".devcontainer")).expect("repository directory");
@@ -198,6 +289,7 @@ fn create_repository(root: &Path, agent_public_key: &Path) -> PathBuf {
         r#"{
   "name": "credential-release-gate",
   "image": "buildpack-deps:trixie",
+  "runArgs": ["--add-host", "credential.test:host-gateway"],
   "workspaceFolder": "/workspaces/credential-release-gate",
   "onCreateCommand": ["/bin/sh", "-c", "test -S \"$SSH_AUTH_SOCK\" && printf first-hook > .credential-first-hook"],
   "postStartCommand": ["/bin/sh", "-c", "test -S \"$SSH_AUTH_SOCK\" && printf detached > .credential-detached"],
@@ -794,6 +886,8 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
     let mut agent = Agent::start(temporary.path());
     let agent_socket = agent.socket.clone();
     let repository = create_repository(temporary.path(), &agent.public_key);
+    #[cfg(target_os = "linux")]
+    let git_ssh = GitSshServer::start(temporary.path(), &repository, &agent.public_key);
     let workspace = unique_name("credential-gate");
     let root_text = root.to_str().expect("root text");
     let repository_text = repository.to_str().expect("repository text");
@@ -905,6 +999,107 @@ fn packaged_commands_cover_lifecycle_sessions_recovery_and_revocation() {
         .output()
         .expect("verify managed agent signature");
     require_success(&verified, "managed agent signature verification");
+
+    #[cfg(target_os = "linux")]
+    {
+        let script = format!(
+            r#"set -eu
+mkdir -p .credential-git-ssh
+printf 'credential-origin %s\n' '{host_key}' > .credential-git-ssh/known_hosts
+export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5 -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UserKnownHostsFile=$PWD/.credential-git-ssh/known_hosts -o HostKeyAlias=credential-origin"
+git clone 'ssh://cdenv@credential.test:{port}{repository}' .credential-git-ssh/clone
+git -C .credential-git-ssh/clone -c user.name=Gate -c user.email=gate@example.invalid commit --allow-empty -m pushed
+git -C .credential-git-ssh/clone push origin HEAD:refs/heads/credential-pushed
+git -C .credential-git-ssh/clone fetch origin credential-pushed
+: > .credential-git-ssh/known_hosts
+if git -C .credential-git-ssh/clone ls-remote origin > .credential-git-ssh/rejected 2>&1; then exit 1; fi
+grep -q 'Host key verification failed' .credential-git-ssh/rejected
+printf 'credential-origin %s\n' "$(cat .devcontainer/fixture-agent-key.pub)" > .credential-git-ssh/known_hosts
+if git -C .credential-git-ssh/clone ls-remote origin > .credential-git-ssh/rejected 2>&1; then exit 1; fi
+grep -q 'Host key verification failed' .credential-git-ssh/rejected
+"#,
+            host_key = git_ssh.public_key.trim(),
+            port = git_ssh.port,
+            repository = git_ssh.repository.display(),
+        );
+        require_success(
+            &run(
+                &binary,
+                &[
+                    "--root",
+                    root_text,
+                    "ssh",
+                    &workspace,
+                    "--",
+                    "/bin/sh",
+                    "-c",
+                    &remote_script(&script),
+                ],
+                &environment,
+            ),
+            "Git-over-SSH clone/fetch/push and strict unknown/changed host-key rejection",
+        );
+    }
+
+    // An available agent with no identities is distinct from a missing backend.
+    // Exercise the real forwarded protocol, then restore the same agent without
+    // restarting the workspace or bridge.
+    require_success(
+        &run(Path::new("ssh-add"), &["-D"], &environment),
+        "remove controlled host-agent identities",
+    );
+    let empty_agent = run(
+        &binary,
+        &[
+            "--root",
+            root_text,
+            "ssh",
+            &workspace,
+            "--",
+            "/bin/sh",
+            "-c",
+            &remote_script("LC_ALL=C ssh-add -L"),
+        ],
+        &environment,
+    );
+    assert_eq!(
+        empty_agent.status.code(),
+        Some(1),
+        "empty agent exit status"
+    );
+    assert!(
+        String::from_utf8_lossy(&empty_agent.stdout).contains("The agent has no identities."),
+        "empty agent did not return the authenticated empty identity response"
+    );
+    require_success(
+        &run(
+            Path::new("ssh-add"),
+            &[agent
+                .public_key
+                .with_extension("")
+                .to_str()
+                .expect("fixture key path")],
+            &environment,
+        ),
+        "restore controlled host-agent identity",
+    );
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "ssh",
+                &workspace,
+                "--",
+                "/bin/sh",
+                "-c",
+                &remote_script("ssh-add -L | grep -q '^ssh-ed25519 '"),
+            ],
+            &environment,
+        ),
+        "host SSH-agent recovery after empty identity response",
+    );
 
     agent.restart_same_path();
     let refreshed_agent = run(

@@ -211,6 +211,56 @@ fn a_running_one_time_checkpoint_becomes_indeterminate_on_restart() {
 }
 
 #[test]
+fn mismatched_cancellation_does_not_publish_a_cancel_request() {
+    let directory = TempDir::new().expect("temporary directory");
+    let mut request = request(&directory, "mismatch-cancel", vec![]);
+    run_lifecycle(&request).expect("initial state");
+    request.stages.push(LifecycleStagePlan {
+        stage: LifecycleStage::PostStart,
+        commands: vec![shell("true")],
+    });
+    assert!(cancel_lifecycle(&request, Duration::ZERO).is_err());
+    assert!(
+        !directory
+            .path()
+            .join(".cdenv-lifecycle-mismatch-cancel.cancel")
+            .exists()
+    );
+}
+
+#[test]
+fn cancellation_timeout_does_not_signal_a_persisted_pid() {
+    use nix::fcntl::{Flock, FlockArg};
+
+    let directory = TempDir::new().expect("temporary directory");
+    let request = request(&directory, "stale-pid", vec![]);
+    run_lifecycle(&request).expect("initial state");
+    let mut unrelated = std::process::Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("unrelated process");
+    let state_path = directory.path().join(".cdenv-lifecycle-stale-pid.json");
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).expect("state")).expect("JSON");
+    state["runnerPid"] = serde_json::json!(unrelated.id());
+    state["phase"] = serde_json::json!("running");
+    fs::write(&state_path, serde_json::to_vec(&state).expect("encoding")).expect("write");
+    let lock = fs::File::open(directory.path().join(".cdenv-lifecycle-stale-pid.lock"))
+        .expect("lock file");
+    let _lock = Flock::lock(lock, FlockArg::LockExclusiveNonblock).expect("hold lock");
+    let inspection = cancel_lifecycle(&request, Duration::ZERO).expect("inspection");
+    let unrelated_alive = unrelated.try_wait().expect("process inspection").is_none();
+    let _ = unrelated.kill();
+    unrelated.wait().expect("reap unrelated process");
+    assert!(inspection.runner_active);
+    assert_eq!(inspection.state.phase, LifecyclePhase::Running);
+    assert!(
+        unrelated_alive,
+        "persisted PID must never authorize signaling"
+    );
+}
+
+#[test]
 fn long_running_later_stage_is_reported_active_and_cancels_definitely() {
     let directory = TempDir::new().expect("temporary directory");
     let request = request(

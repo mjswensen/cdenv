@@ -200,25 +200,28 @@ and cleanup. The packaged credential suite additionally configures a controlled
 hostname-valid TLS server signed by its private test CA for real smart-HTTP
 fetch/push, uncached token rotation, and denied-origin checks, and exercises a
 controlled real host `ssh-agent` for an identity-backed signing operation and
-through create, hooks, managed SSH, down/up, rebuild, and live disable. Until retained clean native runs pass, this fixture is
-configured evidence rather than a release result. It does not yet prove the
+through create, hooks, managed SSH, down/up, rebuild, and live disable. The clean native baseline below verifies these existing fixtures. It does not yet prove the
 controlled Git-over-SSH host-key workflow and all agent selection/failure/
 confirmation edges, provider-specific helper compatibility, or every lifecycle
 and secret surface. No live-provider
 helper matrix is claimed.
 
-Evidence status on 2026-09-15 (Linux aarch64, Rust 1.97.1):
+Evidence baseline on 2026-11-10: revision
+`c268e9e8980701e55de20b589e14f815062cc33a` passes
+[CI](https://github.com/mjswensen/cdenv/actions/runs/42833912796) and
+[Release packages](https://github.com/mjswensen/cdenv/actions/runs/42833912999).
 
 | Gate | Result | Scope |
 |---|---|---|
-| `cargo xtask check` | Passed | Formatting, strict Clippy, workspace tests/docs, cargo-deny; duplicate-dependency warnings remain advisory. |
-| `cargo xtask test-integration --suite openssh` | Previously passed, 4 discovered/executed | Existing OpenSSH transport interoperability, not credential forwarding. |
-| `cargo xtask test-integration --suite devcontainer-v1` | Previously passed, 8 discovered/executed | Existing profile/Docker/Compose preservation coverage, not the issue-68 broker. |
-| Packaged credential workflow | Implemented and strict CI matrix configured; no retained clean native run yet | A nested-container attempt discovered two tests but could not use container-private bind paths with its Docker Desktop daemon; this is a failed prerequisite, not a skip or release result. |
-| Linux x86_64 and arm64 credential workflows | Required observation pending | Both clean native architecture jobs must pass the exact discovered count. |
-| macOS Apple-silicon credential/keychain smoke | Required observation pending | Linux-container access to Docker Desktop is not a macOS host-helper test. |
+| Workspace quality and coverage | Passed | Linux and macOS workspace tests, strict quality and dependency checks; no host-provider smoke implied. |
+| Packaged credential workflows | 3 discovered, executed and passed per leg | Linux x86_64 and arm64, minimum and pinned dependencies, including instrumented coverage. |
+| Profile/OpenSSH and installed packages | Passed | Existing compatibility and operational smoke in the linked baseline runs. |
+| macOS Apple-silicon credential/keychain smoke | Required observation pending | Packaging and Linux-container access to Docker Desktop do not verify host helpers. |
 
-These host capabilities are outside repository profile semantics. V1 parsing,
-`customizations`, `secrets`, and `remoteEnv` behavior are unchanged. Credential
-broker/control compatibility is explicit and versioned; read-only commands do not
-migrate, repair, or silently replace incompatible live state.
+This baseline verifies only the scenarios present at that revision. Active
+owned detached-execution cancellation, remaining Git-over-SSH and agent-selection
+cases, synchronized in-flight revocation, credential-enabled rollback/partial
+replacement, and the complete secret-surface audit remain issue-78 blockers.
+Rerun affected gates after runtime or fixture changes. The
+[traceability manifest](../../tests/integration/fixtures/credential-coverage.json)
+distinguishes baseline observations from incomplete criteria.

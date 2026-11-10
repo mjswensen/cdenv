@@ -354,7 +354,7 @@ helpers”:
 | Surface | Minimum / tested | Evidence |
 |---|---|---|
 | Host Git | Git 2.39+ standard credential protocol | Real `git credential fill`; controlled shell-helper, trusted include, per-URL/path/account, rotation, expiry, and failure fixtures. |
-| Container Git | Git 2.39+ when HTTPS forwarding is used | Static cdenv helper and native-helper isolation tests plus a proper-CA authenticated smart-HTTP fetch/push/stale-token recovery fixture with two paths/accounts and a private submodule; retained clean native architecture runs remain an explicit release blocker. |
+| Container Git | Git 2.39+ when HTTPS forwarding is used | Static cdenv helper and native-helper isolation tests plus a proper-CA authenticated smart-HTTP fetch/push/stale-token recovery fixture with two paths/accounts and a private submodule; the [clean native baseline](adr/0002-opt-in-host-capabilities.md#remaining-implementation-and-release-evidence) passes these configured scenarios. |
 | Host/container OpenSSH | OpenSSH 10.0p2+ client and standard agent protocol | Real OpenSSH host-key-verified transport plus controlled real/fake host agents. |
 | Git Credential Manager | Noninteractive environment contract only | Prompt suppression is simulated; no provider/keychain login is claimed. |
 | GitHub CLI helper | `GH_PROMPT_DISABLED=1` contract only | Simulated environment verification; no provider login is claimed. |

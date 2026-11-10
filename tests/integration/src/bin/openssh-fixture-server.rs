@@ -1,11 +1,14 @@
 //! Stdio SSH server used only by the OpenSSH release gate.
 
+#[cfg(target_os = "linux")]
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+#[cfg(target_os = "linux")]
 use cdenv_agent::{SshServerConfig, SshServerRequest, serve_ssh_stream};
 
 /// Starts one agent SSH transport over standard I/O.
+#[cfg(target_os = "linux")]
 #[tokio::main]
 async fn main() -> ExitCode {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
@@ -33,4 +36,10 @@ async fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(not(target_os = "linux"))]
+fn main() -> ExitCode {
+    eprintln!("OpenSSH fixture requires Linux");
+    ExitCode::FAILURE
 }

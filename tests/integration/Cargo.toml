@@ -58,3 +58,8 @@ required-features = ["openssh"]
 
 [lints]
 workspace = true
+
+[[bin]]
+name = "credential-ssh-server"
+path = "src/bin/credential-ssh-server.rs"
+required-features = ["credentials"]

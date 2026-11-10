@@ -500,6 +500,9 @@ pub fn cancel_lifecycle(
 ) -> Result<LifecycleInspection, LifecycleError> {
     validate_request(request)?;
     let paths = RunnerPaths::new(request)?;
+    // Verify the immutable plan before publishing a request that the current
+    // runner could observe. A mismatched caller must not cancel owned work.
+    inspect_lifecycle(request)?;
     atomic_write(&paths.cancel, b"cancel\n")?;
     let deadline = Instant::now() + timeout;
     loop {
@@ -508,16 +511,11 @@ pub fn cancel_lifecycle(
             return Ok(inspection);
         }
         if Instant::now() >= deadline {
-            if let Some(pid) = inspection
-                .state
-                .runner_pid
-                .and_then(|value| i32::try_from(value).ok())
-            {
-                let _ = kill(Pid::from_raw(pid), Signal::SIGTERM);
-                thread::sleep(TERMINATION_GRACE);
-                let _ = kill(Pid::from_raw(pid), Signal::SIGKILL);
-            }
-            return inspect_lifecycle(request);
+            // A persisted PID is diagnostic information, not authority to signal a
+            // process: it may have been reused after a crash. Only the live runner
+            // owns the child handles needed for graceful/forced child cleanup.
+            // Preserve the active outcome when that runner cannot acknowledge.
+            return Ok(inspection);
         }
         thread::sleep(POLL_INTERVAL);
     }

@@ -1,86 +1,59 @@
 # cdenv
 
-`cdenv` is a host CLI for creating and operating isolated, Docker-backed development environments with system OpenSSH access. The supported Dev Container behavior is defined by the [`cdenv-devcontainer-v1` support matrix](docs/cdenv-devcontainer-v1-support.md).
+`cdenv` creates Docker-backed development environments from Git repositories and connects to them through your system OpenSSH client. It keeps project tools and dependencies in containers while letting you use an SSH-based terminal or editor workflow.
 
-## Workspace
+Environments use the repository's Dev Container configuration, including supported image, Dockerfile, Compose, Feature, and lifecycle settings. See the [support matrix](docs/cdenv-devcontainer-v1-support.md) for the exact supported subset.
 
-The Rust workspace contains platform-neutral core types, pure Dev Container profile logic, the host CLI, the Linux-targeted agent, `xtask`, and a non-published integration-test package. The disposable feasibility spike under `spikes/feasibility/` is intentionally excluded. End-user installation, getting started, trust, recovery, forwarding, and macOS smoke-test guidance is in the [operations guide](docs/operations.md).
+## Install
 
-## Install and get started
-
-On a supported host with Docker, Compose V2, OpenSSH, and Git installed:
+Supported hosts are Linux x86_64, Linux arm64, and Apple Silicon macOS. Install Docker, Docker Compose V2, OpenSSH, and Git first; the [operations guide](docs/operations.md#supported-hosts-and-exact-dependency-baseline) lists verified dependency versions.
 
 ```bash
 curl -fsSL https://github.com/mjswensen/cdenv/releases/latest/download/install.sh | sh
 cdenv doctor
-cdenv create https://github.com/example/project.git
-cdenv up project
+```
+
+The installer verifies the release archive's SHA-256 checksum and places `cdenv` in a writable directory on `PATH`. See [installation options](docs/operations.md#install-root-selection-and-uninstall) for a custom destination or pinned version.
+
+## Use
+
+Clone a repository into a managed checkout and start its environment:
+
+```bash
+cdenv create https://github.com/example/project.git --name project
 cdenv ssh project
 ```
 
-Use `cdenv list`, `cdenv status project`, and `cdenv down project` to inspect,
-monitor, and stop the environment. See the [operations guide](docs/operations.md)
-for dependency versions, installation overrides, SSH consent, and recovery.
+Replace the example URL with your repository. `create` clones and starts the environment; use `up` to start it again after stopping it.
 
-## Host credential permissions
+```bash
+cdenv list
+cdenv status project
+cdenv forward project 3000:3000  # Forward localhost:3000; Ctrl+C stops forwarding
+cdenv down project             # Stop the environment, retaining checkout and volumes
+cdenv up project
+cdenv rebuild project          # Apply changes to the environment configuration
+```
 
-`cdenv credentials` manages independently opted-in HTTPS, SSH-agent, and Git
-author-identity permissions, including staging before an explicitly named clone.
-The bounded broker, trusted host backends, reversible container integrations,
-authenticated live policy reconciliation, and production lifecycle/SSH enrollment
-are implemented. Cross-platform authenticated release evidence is still required
-for issue 68. See the [implemented boundary and command guide](docs/operations.md#host-credential-permissions-issue-68).
+`cdenv` asks before adding an Include to your SSH config. You can decline and still use `cdenv ssh`. Host Git credentials, SSH-agent access, and Git author identity are independently opt-in through [`cdenv credentials`](docs/operations.md#host-credential-permissions-issue-68).
 
-## Development
+Repository configuration and lifecycle commands run trusted code with Docker-user authority. Review repositories before starting their environments. The [operations guide](docs/operations.md) covers configuration, forwarding, credentials, and recovery.
 
-The development container uses the shared [`ghcr.io/mjswensen/devcontainer`](https://ghcr.io/mjswensen/devcontainer) image and runs as its `mjs` user. On creation it installs the tools pinned in `mise.toml` (Python 3.13.15 and Rust 1.97.1) and runs `mise bootstrap` to install the required [`cargo-deny`](https://github.com/EmbarkStudios/cargo-deny) 0.20.2 quality-gate dependency. To prepare a local checkout with the same required tooling, install [mise](https://mise.jdx.dev/) and run:
+## Develop
+
+Install [mise](https://mise.jdx.dev/), then prepare the pinned toolchain and run the local quality gate:
 
 ```bash
 mise install
 mise bootstrap
-```
-
-Then run the complete local gate:
-
-```bash
 cargo xtask check
 ```
 
-Build a locally verifiable release archive from a clean checkout (Docker Buildx builds and verifies both static Linux agents):
-
-```bash
-cargo xtask dist
-```
-
-See [release packaging](docs/release-packaging.md) for the three-host matrix,
-reproducibility contract, package-only smoke, and checksum-verified installed
-Linux workflow. The versioned [macOS Docker Desktop checklist](docs/smoke/macos-docker-desktop-v1.md)
-records the Apple Silicon runtime smoke separately.
-
-Matching `v<version>` tags run all required CI gates and prepare an unpublished
-GitHub Release with package hashes, test evidence, and a manual-review handoff.
-Use the [manual macOS helper](tests/release/manual-macos-smoke.py) against that
-draft; see [the release procedure](docs/release-packaging.md#publishing-a-tagged-release).
-
-`cargo xtask check` runs the same baseline commands used by CI:
-
-```bash
-cargo fmt --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --locked
-cargo doc --workspace --no-deps --locked
-cargo deny check
-```
-
-Ordinary workspace tests do not require Docker or OpenSSH. Environment-backed tests use an explicit named suite:
+The gate runs formatting, Clippy, workspace tests, documentation builds, and dependency checks. Workspace tests do not require Docker or OpenSSH. Run the environment-backed suites explicitly:
 
 ```bash
 cargo xtask test-integration --suite devcontainer-v1
 cargo xtask test-integration --suite openssh
 ```
 
-A suite fails when it is unknown, unavailable, discovers zero tests, skips tests,
-or executes fewer tests than it discovered; it never turns an empty package into
-a successful gate. Declared CI architecture and required fixture mismatches also
-fail. Missing or below-baseline Docker Engine/CLI, Compose V2, or OpenSSH
-prerequisites fail rather than skip.
+See [integration tests](tests/integration/README.md) for prerequisites and suites, and [release packaging](docs/release-packaging.md) for building and verifying release archives.

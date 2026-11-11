@@ -35,13 +35,12 @@ Each collection artifact contains:
   compiler/tool/commit identity and the generated instrumentation environment
   (not a dump of runner secrets).
 
-Every expected artifact directory and outcome starts as `not-run` before release
-prerequisites or coverage-tool installation. Independent ordinary suites and
-instrumented reruns use `always()` with explicit prerequisite conditions, so one
-suite failure does not suppress safe later evidence. Reports are attempted after
-an instrumented test failure. All artifacts are uploaded with `always()`, without
-empty-upload noise, and preserve original nonzero exits and logs. Setup failures
-also retain their diagnostics and leave later phases explicitly `not-run`.
+Collection and failure-retention mechanics live in
+[`coverage.sh`](../.github/scripts/coverage.sh),
+[`release-evidence.sh`](../.github/scripts/release-evidence.sh), and the
+[CI workflow](../.github/workflows/ci.yml). The
+[index validator](../.github/scripts/coverage-index.py) owns the expected inventory;
+failed, absent, and `not-run` outcomes must never become successful evidence.
 
 The inventory requires all 15 successful collections, successful ordinary gates
 for all 12 release rows, nonempty reports, and actual function and branch
@@ -56,12 +55,12 @@ Docker Desktop release-suite claim.
 
 ## Isolation, merging and exclusions
 
-Each scope starts with `cargo llvm-cov clean --workspace` in its own
-`target/coverage-build/<scope>` target directory. `show-env --branch` instruments
-Cargo subprocesses, including xtask's release test invocations. LLVM merges the
-profiles for that collection when generating each report. The profile's PID/module
-identifiers prevent concurrent test processes from overwriting one another.
-No raw profiles or build directories are cached or uploaded.
+The [collector](../.github/scripts/coverage.sh) cleans workspace packages and
+profiles before each collection. Sequential release suites share dependency
+builds, but their reports remain independent. Credential coverage builds an
+instrumented host with verified static agents; the ordinary credential gate uses
+the packaged release host. Raw profiles and reports must not be reused as cached
+evidence.
 
 The full JSON/LCOV exports retain per-file/function/branch records for downstream
 analysis. Merge LCOV traces only for identical source revisions, compiler/tool

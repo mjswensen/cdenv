@@ -1,77 +1,33 @@
-# GitHub Actions runtime baseline
+# GitHub Actions maintenance
 
-The CI and release workflows use GitHub-hosted `ubuntu-24.04`,
-`ubuntu-24.04-arm`, and `macos-15` runners. Their JavaScript actions are kept on
-reviewed Node.js 24 release lines:
+The [CI workflow](../.github/workflows/ci.yml) and
+[release workflow](../.github/workflows/release.yml) define runner images, action
+versions, dependency baselines, caches, timeouts, and artifact retention. The
+reviewed Node.js 24 action allowlist is enforced by
+[`test-action-runtimes.py`](../.github/scripts/test-action-runtimes.py).
 
-| Action | Release line | Migration notes |
-| --- | --- | --- |
-| `actions/cache/restore`, `actions/cache/save` | `v5` | Node.js 24; restore/save build caches even when subsequent tests fail. |
-| `actions/checkout` | `v5` | Node.js 24 migration release; checkout and credential behavior used here is unchanged. |
-| `actions/upload-artifact` | `v6` | Node.js 24 runtime and updated artifact client; existing names, paths, missing-file errors, and retention inputs remain supported. |
-| `actions/download-artifact` | `v7` | Node.js 24 runtime and updated artifact client; downloads by name and by pattern retain their existing layouts. |
-| `docker/setup-buildx-action` | `v4` | Node.js 24 migration release; removed deprecated inputs are not used here. |
-| `docker/setup-docker-action` | `v5` | Already declares Node.js 24. |
-| `docker/setup-compose-action` | `v2` | Already declares Node.js 24. |
-| `devcontainers/ci` | `v0.3` | Already declares Node.js 24. |
+For an action addition or major upgrade, review its declared runtime, minimum
+runner version, architecture support, and migration notes before updating the
+allowlist. Check artifact upload/download compatibility and download directory
+layout, including pattern downloads and `merge-multiple`: agent assembly and
+release collection depend on those layouts. If adding self-hosted runners, verify
+the actions' runner requirements explicitly.
 
-The migration releases require Actions Runner 2.327.1 or newer. This repository
-uses GitHub-hosted runners rather than self-hosted runners, and the supported
-x86_64, ARM64, and macOS images satisfy that requirement. All selected actions
-publish architecture-independent JavaScript distributions. The Buildx setup is
-still exercised natively on both Linux architectures.
+Keep these boundaries when changing CI:
 
-Artifact upload `v6` and download `v7` use the same current artifact service and
-are compatible with each other. The download path change introduced in `v5`
-affects single downloads selected by artifact ID; these workflows select by name
-or pattern, and preserve `merge-multiple` where assembly requires a flat target
-directory. Upload failure behavior (`if-no-files-found: error`) and coverage
-retention remain explicit. The release workflow exercises agent upload,
-pattern-based assembly, named host downloads, host-package upload, and final
-pattern-based release collection.
+- Caches may hold build inputs/outputs, never release evidence or verified-agent
+  downloads. Cargo fingerprints and package identity checks still apply after a
+  cache restore.
+- Coverage reruns must remain independent of ordinary release gates and of each
+  other. See [coverage reporting](coverage.md) for interpretation and review.
+- Version tags call CI from the release commit. Keep branch-push CI enabled when
+  suppressing duplicate tag invocations; a tag-only filter suppresses branch
+  pushes too.
+- Missing, skipped, cancelled, or failed required jobs must prevent a review-ready
+  draft. Publication remains a maintainer action after the
+  [manual macOS handoff](release-packaging.md#manual-apple-silicon-handoff).
 
-The reviewed action manifests and bundled dependencies no longer require the
-runner's Node.js 20 compatibility override. The artifact runtime releases also
-include the updated artifact client that removes the observed `punycode`,
-`url.parse()`, and `Buffer()` deprecations. The actions above are JavaScript
-rather than composite actions, so they do not hide additional `uses:` references;
-the Dev Container and Docker setup actions were audited alongside the four
-warning-producing actions. No known upstream-only runtime warning remains.
-
-`.github/scripts/test-action-runtimes.py` inventories every `uses:` reference in
-both workflow files, allowing existing local reusable workflow references. It
-fails when an unreviewed action or release line is added,
-so any future action addition or major upgrade must review its declared runtime,
-minimum runner, architecture support, and migration notes before updating the
-baseline table and test.
-
-Rust caches are separated by runner OS/architecture, job purpose, locked dependencies,
-toolchain, and coverage configuration. Commit-specific keys restore compatible prior
-builds; Cargo still validates fingerprints and the packaging gate validates embedded
-agent identities. Caches contain build inputs/outputs, never release evidence or
-verified-agent downloads. Release coverage suites share dependency artifacts but clean
-workspace packages and profiles before each suite to keep reports independent.
-Credential coverage builds an instrumented host in that shared coverage directory,
-embeds the already verified static agents, and selects it only for the coverage
-rerun. This adds a host build/link without another target directory or agent build;
-ordinary credential gates continue to exercise the packaged release host.
-Installed Linux smoke has a five-minute step deadline, bounded SSH calls and cleanup;
-package jobs have a twenty-minute outer deadline.
-
-Version-tag releases call `ci.yml` as a reusable workflow from the same commit;
-their ordinary push invocation is suppressed. The `required-gates` job runs even
-after upstream failures and rejects any missing, skipped, cancelled, or failed
-dependency. Release package agents use separate artifact names from CI agents.
-The draft-release job depends on the whole reusable CI invocation plus native
-packaging, and validates/attaches their combined evidence. See
-[release packaging](release-packaging.md) for the review-ready asset contract and
-manual macOS handoff. Publication remains a maintainer action.
-
-Branch pushes are explicitly included with `branches: ['**']` alongside the
-version-tag exclusion; a tag-only filter would suppress branch-push CI entirely.
-The shared OpenSSH installer checks the actual compiler/header packages before
-using apt, avoiding a needless `build-essential` metapackage fetch on prepared
-hosted runners. Missing dependencies still require a successful index refresh
-and installation, with bounded acquisition retries; source downloads also retry
-transient failures and retain the pinned checksum. Offline bootstrap regressions
-verify the preinstalled, missing-input, and failed-setup paths.
+The [OpenSSH bootstrap regressions](../.github/scripts/test-openssh-bootstrap.py)
+cover preinstalled dependencies, missing inputs, and failed setup without requiring
+network access. Preserve checksum validation and bounded retries when changing
+[the installer](../.github/scripts/install-openssh.sh).

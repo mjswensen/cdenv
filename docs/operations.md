@@ -393,12 +393,9 @@ labels/references, then remove only unreferenced cdenv-generated images and the
 selected root's cache/tmp data. Do not run broad Docker prune as cdenv cleanup.
 Removing the root is the final uninstall cleanup and discards recovery evidence.
 
-Automated guarantees consist of the strict Rust/`cargo-deny` gate, package checks,
-and nonempty Linux x86_64/arm64 profile, credential, OpenSSH, and installed
-workflows. The installed
-workflow consumes an issue-52 archive, verifies its checksum, runs without Node.js
-or an editor, exercises applicable Section 19 commands, and proves no `sshd` or
-published port 22. See [release packaging](release-packaging.md).
+For automated gates, archive validation, installed Linux smoke, and the boundary
+between rebuilt integration binaries and exact release archives, see
+[release packaging](release-packaging.md) and the linked workflows.
 
 Before a macOS release, complete and retain the versioned
 [Docker Desktop Apple Silicon checklist](smoke/macos-docker-desktop-v1.md). It

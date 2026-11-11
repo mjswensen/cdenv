@@ -137,6 +137,14 @@ crate = { path = "crate", version = "0.1.0" }
         needs = re.search(r"^    needs: \[([^\]]+)\]$", aggregate, re.MULTILINE)
         self.assertEqual({job.strip() for job in needs[1].split(",")}, release.GATES)
 
+    def test_ci_push_includes_branches_while_excluding_release_tags(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        push = workflow.split("\n  push:\n", 1)[1].split("\n  pull_request:", 1)[0]
+        # GitHub disables branch pushes when only tags/tags-ignore is specified.
+        self.assertRegex(push, r"(?m)^    branches: \['\*\*'\]$")
+        self.assertRegex(push, r"(?m)^    tags-ignore: \['v\*'\]$")
+        self.assertIn("\n  workflow_call:", workflow)
+
     def test_complete_bundle_binds_assets_and_remains_pending(self):
         self.prepare()
         self.bundle()

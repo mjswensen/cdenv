@@ -7,7 +7,20 @@ prefix="${RUNNER_TEMP:?}/openssh-$version"
 source_dir="$RUNNER_TEMP/openssh-$version-source"
 archive="$RUNNER_TEMP/openssh-$version.tar.gz"
 
+# Hosted runners already contain the compiler and headers, but may omit the
+# build-essential metapackage. Only fetch genuinely missing build inputs.
+missing=()
+for package in gcc make libc6-dev libssl-dev zlib1g-dev; do
+  status=$(dpkg-query --show --showformat='${db:Status-Status}' "$package" 2>/dev/null || true)
+  if [[ "$status" != installed ]]; then missing+=("$package"); fi
+done
+if ((${#missing[@]})); then
+  sudo apt-get -o Acquire::Retries=3 -o APT::Update::Error-Mode=any update
+  sudo apt-get -o Acquire::Retries=3 install --yes --no-install-recommends "${missing[@]}"
+fi
+
 curl --fail --silent --show-error --location \
+  --retry 3 --retry-all-errors --retry-max-time 120 --connect-timeout 15 --max-time 60 \
   "https://cdn.openbsd.org/pub/OpenBSD/OpenSSH/portable/openssh-$version.tar.gz" \
   --output "$archive"
 printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check --strict

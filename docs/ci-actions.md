@@ -66,3 +66,12 @@ The draft-release job depends on the whole reusable CI invocation plus native
 packaging, and validates/attaches their combined evidence. See
 [release packaging](release-packaging.md) for the review-ready asset contract and
 manual macOS handoff. Publication remains a maintainer action.
+
+Branch pushes are explicitly included with `branches: ['**']` alongside the
+version-tag exclusion; a tag-only filter would suppress branch-push CI entirely.
+The shared OpenSSH installer checks the actual compiler/header packages before
+using apt, avoiding a needless `build-essential` metapackage fetch on prepared
+hosted runners. Missing dependencies still require a successful index refresh
+and installation, with bounded acquisition retries; source downloads also retry
+transient failures and retain the pinned checksum. Offline bootstrap regressions
+verify the preinstalled, missing-input, and failed-setup paths.

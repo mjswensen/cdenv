@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: ['**']
     # Version tags run this same workflow through release.yml at the tagged SHA.
     tags-ignore: ['v*']
   pull_request:
@@ -34,6 +35,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-security-mutations.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-release-ready.py
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-openssh-bootstrap.py
       - name: Check installer success and verification failure handling
         run: |
           sh -n install.sh
@@ -223,10 +225,7 @@ jobs:
         with:
           version: v5.3.1
       - name: Build and select verified OpenSSH baseline
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes build-essential libssl-dev zlib1g-dev
-          .github/scripts/install-openssh.sh
+        run: .github/scripts/install-openssh.sh
       - name: Verify exact selected dependency versions
         run: |
           test "$(docker version --format '{{.Client.Version}}')" = 29.7.1

@@ -145,10 +145,7 @@ jobs:
           version: v5.3.1
       - name: Build and select baseline OpenSSH for the installed Linux workflow
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes build-essential libssl-dev zlib1g-dev
-          .github/scripts/install-openssh.sh
+        run: .github/scripts/install-openssh.sh
       - name: Run checksum-verified installed operational smoke
         timeout-minutes: 5
         if: runner.os == 'Linux'

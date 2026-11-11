@@ -10,12 +10,34 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  validate:
+    name: Validate release identity
+    runs-on: ubuntu-24.04
+    outputs:
+      prerelease: ${{ steps.identity.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Require a SemVer tag matching the workspace and lockfile
+        id: identity
+        run: python3 .github/scripts/release-ready.py identity
+
+  ci:
+    name: Release commit CI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
   agent:
     name: Build and verify static agent (${{ matrix.platform }})
+    needs: validate
     strategy:
       fail-fast: false
       matrix:
@@ -34,7 +56,7 @@ jobs:
       - run: cargo xtask stage-agent --platform '${{ matrix.platform }}'
       - uses: actions/upload-artifact@v6
         with:
-          name: verified-linux-agent-${{ matrix.architecture }}
+          name: verified-release-linux-agent-${{ matrix.architecture }}
           path: target/cdenv-agent/${{ github.sha }}/cdenv-agent-${{ matrix.architecture }}
           if-no-files-found: error
 
@@ -46,14 +68,14 @@ jobs:
       - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:
-          pattern: verified-linux-agent-*
+          pattern: verified-release-linux-agent-*
           path: target/verified-agents
           merge-multiple: true
       - name: Validate both static artifacts and create their manifest
         run: cargo xtask finalize-agents target/verified-agents
       - uses: actions/upload-artifact@v6
         with:
-          name: verified-linux-agents
+          name: verified-release-linux-agents
           path: target/verified-agents/
           if-no-files-found: error
 
@@ -91,12 +113,15 @@ jobs:
       - run: rustup show active-toolchain
       - uses: actions/download-artifact@v7
         with:
-          name: verified-linux-agents
+          name: verified-release-linux-agents
           path: target/verified-agents
       - name: Build locked host and smoke-test its archive
         env:
           CDENV_AGENT_ARTIFACT_DIR: ${{ github.workspace }}/target/verified-agents
-        run: cargo xtask dist
+        shell: bash
+        run: |
+          mkdir -p target/package-evidence
+          cargo xtask dist 2>&1 | tee target/package-evidence/build.log
       - name: Verify reproducible packaging and run package-only smoke again
         shell: bash
         env:
@@ -104,9 +129,9 @@ jobs:
         run: |
           cp target/dist/*.tar.sha256 target/first.sha256
           cargo clean --package cdenv-cli --release
-          cargo xtask dist
+          cargo xtask dist 2>&1 | tee target/package-evidence/rebuild.log
           cmp target/first.sha256 target/dist/*.tar.sha256
-          cargo xtask test-package target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar
+          cargo xtask test-package target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar 2>&1 | tee target/package-evidence/package-smoke.log
       - name: Set up pinned Docker for the installed Linux workflow
         if: runner.os == 'Linux'
         uses: docker/setup-docker-action@v5
@@ -127,7 +152,20 @@ jobs:
       - name: Run checksum-verified installed operational smoke
         timeout-minutes: 5
         if: runner.os == 'Linux'
-        run: cargo xtask test-installed target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar
+        shell: bash
+        run: |
+          mkdir -p target/package-evidence
+          cargo xtask test-installed target/dist/cdenv-${{ matrix.platform }}-${{ github.sha }}.tar 2>&1 | tee target/package-evidence/installed-smoke.log
+      - name: Record completed package gates
+        env:
+          PACKAGE_PLATFORM: ${{ matrix.platform }}
+        run: python3 .github/scripts/release-ready.py package target/package-evidence/package.json
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: package-evidence-${{ matrix.platform }}
+          path: target/package-evidence/
+          if-no-files-found: error
       - uses: actions/upload-artifact@v6
         with:
           name: cdenv-${{ matrix.platform }}
@@ -147,26 +185,51 @@ jobs:
           key: ${{ steps.rust_cache.outputs.cache-primary-key }}
 
   publish:
-    name: Prepare draft GitHub release
+    name: Prepare review-ready draft GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: host
+    needs: [validate, ci, host]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
       - uses: actions/download-artifact@v7
         with:
           pattern: cdenv-*
           path: target/release-artifacts
-      - name: Collect release assets
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: coverage-*
+          path: target/release-evidence
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: security-mutations-*
+          path: target/release-evidence
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: package-evidence-*
+          path: target/release-evidence
+      - uses: actions/download-artifact@v7
+        with:
+          name: ci-gate-results
+          path: target/release-evidence/ci-gate-results
+      - name: Validate assets and assemble durable review evidence
         run: |
-          mkdir -p target/dist
-          find target/release-artifacts -type f -name 'cdenv-*' -exec cp {} target/dist/ \;
-          cp "$(find target/release-artifacts -type f -name install.sh | head -n 1)" target/dist/install.sh
+          python3 .github/scripts/release-ready.py bundle target/release-artifacts target/release-evidence target/dist
+      - uses: actions/upload-artifact@v6
+        with:
+          name: review-ready-release
+          path: target/dist/
+          if-no-files-found: error
       # A maintainer publishes only after retaining the macOS Docker Desktop smoke record.
       - name: Upload assets to a draft release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >-
-          gh release create "$GITHUB_REF_NAME" target/dist/*
-          --repo "$GITHUB_REPOSITORY" --draft --generate-notes --verify-tag
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+        shell: bash
+        run: |
+          flags=()
+          if [[ "$PRERELEASE" == true ]]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" target/dist/* \
+            --repo "$GITHUB_REPOSITORY" --draft --generate-notes --verify-tag \
+            --notes-file target/dist/release-review.md "${flags[@]}"

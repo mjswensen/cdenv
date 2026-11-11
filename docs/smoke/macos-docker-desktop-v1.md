@@ -4,6 +4,12 @@ Checklist revision: **2**. Complete and retain one copy of this document for eve
 release candidate. This is a recorded Apple Silicon observation, not an automated
 release guarantee. Editor observations are optional, non-gating notes.
 
+The example [`manual-macos-smoke.py`](../../tests/release/manual-macos-smoke.py)
+downloads and verifies the exact draft package, prepares fixtures, and fills
+machine/package observations. Its optional `--run-basics` covers only a subset;
+all required fields and steps below still need a recorded outcome. See the
+[manual handoff](../release-packaging.md#manual-apple-silicon-handoff).
+
 ## Required record
 
 | Field | Recorded value |

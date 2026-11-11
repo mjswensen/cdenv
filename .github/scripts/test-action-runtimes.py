@@ -28,6 +28,9 @@ class ActionRuntimeTests(unittest.TestCase):
         seen = set()
         for workflow in WORKFLOWS:
             for reference in action_references(workflow):
+                if reference.startswith("./.github/workflows/"):
+                    self.assertTrue((ROOT / reference).is_file())
+                    continue
                 action, separator, release = reference.rpartition("@")
                 self.assertTrue(separator, f"unversioned action in {workflow}: {reference}")
                 self.assertIn(action, NODE24_RELEASES,

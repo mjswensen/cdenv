@@ -39,7 +39,8 @@ the Dev Container and Docker setup actions were audited alongside the four
 warning-producing actions. No known upstream-only runtime warning remains.
 
 `.github/scripts/test-action-runtimes.py` inventories every `uses:` reference in
-both workflow files. It fails when an unreviewed action or release line is added,
+both workflow files, allowing existing local reusable workflow references. It
+fails when an unreviewed action or release line is added,
 so any future action addition or major upgrade must review its declared runtime,
 minimum runner, architecture support, and migration notes before updating the
 baseline table and test.
@@ -56,3 +57,12 @@ rerun. This adds a host build/link without another target directory or agent bui
 ordinary credential gates continue to exercise the packaged release host.
 Installed Linux smoke has a five-minute step deadline, bounded SSH calls and cleanup;
 package jobs have a twenty-minute outer deadline.
+
+Version-tag releases call `ci.yml` as a reusable workflow from the same commit;
+their ordinary push invocation is suppressed. The `required-gates` job runs even
+after upstream failures and rejects any missing, skipped, cancelled, or failed
+dependency. Release package agents use separate artifact names from CI agents.
+The draft-release job depends on the whole reusable CI invocation plus native
+packaging, and validates/attaches their combined evidence. See
+[release packaging](release-packaging.md) for the review-ready asset contract and
+manual macOS handoff. Publication remains a maintainer action.

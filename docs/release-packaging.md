@@ -59,20 +59,126 @@ both Linux archive architectures. The macOS equivalent is the separately retaine
 
 ## Publishing a tagged release
 
-Pushing a `v*` tag builds all three platforms and uploads their archives,
-checksums, metadata, and `install.sh` to a **draft** GitHub Release. Only the
-release-upload job receives repository write permission. The workflow does not
-make the release public automatically: the macOS runtime gate is manual.
+The release workflow stops at a **review-ready draft**, with manual macOS runtime
+evidence explicitly pending. Only the release-upload job receives repository
+write permission. Nothing in this workflow publishes the release.
 
-Before publishing:
+Use SemVer for the shared workspace version and a matching `v<version>` tag.
+Before tagging, update `[workspace.package].version`, the version requirements
+for local `[workspace.dependencies]`, and the workspace entries in `Cargo.lock`
+(run Cargo to regenerate the lockfile). Commit those changes. For example:
 
-1. Download the macOS archive and checksum from the draft release as a repository
-   maintainer (or from the corresponding workflow artifacts).
-2. Complete the [Apple Silicon Docker Desktop checklist](smoke/macos-docker-desktop-v1.md)
-   against that exact archive. All required fields and steps must pass.
-3. Attach the completed record and redacted command output to the draft release.
-4. Publish the draft through GitHub's release UI. If the smoke fails or is missing,
-   leave the release in draft; do not publish it.
+```sh
+cargo check --workspace
+cargo xtask check
+git tag -a v0.1.0 -m 'Release v0.1.0'
+git push origin v0.1.0
+```
+
+Pushing the tag runs the following automated gates:
+
+1. Validate SemVer, tag/workspace/dependency/lockfile agreement, and classify
+   prereleases such as `v0.2.0-rc.1`.
+2. Call `ci.yml` from the same commit. All quality, mutation, workspace coverage,
+   native agent, and minimum/pinned Linux integration jobs must succeed. The
+   aggregate gate rejects failed, cancelled, skipped, and missing jobs. Ordinary
+   version-tag CI runs are suppressed to avoid duplicating this invocation.
+3. Build both static Linux agents and all three native host archives. Run the
+   existing reproducibility, package, and installed Linux smoke gates. CI and
+   release agent artifact names are separate within the shared workflow run.
+4. Require exactly the three expected packages, matching versions/build IDs,
+   matching embedded-agent hashes, correct archive checksums, identical tagged
+   installers, completed package evidence, the complete coverage/release-suite
+   inventory, and successful mutation records for the exact commit.
+5. Attach the assets below, generate release notes with the manual handoff, and
+   create a draft. Prerelease versions are also marked as GitHub prereleases.
+
+The same run holds both CI and package evidence. Integration suites rebuild a
+packaged host from the same commit; installed smoke exercises the actual release
+archives. Rebuilt integration binaries are not asserted to be those exact archive
+bytes. Detailed quality-job output is available at the linked Actions run;
+the durable evidence bundle retains its aggregate job result, not a copy of every
+Actions console log.
+
+Additional review assets:
+
+| Asset | Contents |
+| --- | --- |
+| `release-manifest.json` | Version/tag/commit, run and attempt, all required CI job results, package hashes, shared agent hashes, asset hashes, and pending manual status. |
+| `release-evidence.tar.gz` | Coverage and ordinary release-suite logs/reports, security mutation records, package build/rebuild/smoke logs, and aggregate CI results. |
+| `release-review.md` | Maintainer handoff prepended to generated release notes. |
+| `macos-docker-desktop-v1.md` | The checklist from the tagged source. |
+| `manual-macos-smoke.py` | The example preparation/basic-smoke helper from the tagged source. |
+
+The manifest hashes detect accidental asset mismatches; they are not an
+independent signature or provenance attestation. The draft and its assets remain
+trusted maintainer inputs. Assets are also retained as the `review-ready-release`
+Actions artifact. A rerun does not overwrite an existing draft or its assets:
+`gh release create` fails if the release already exists. Inspect any partial draft
+and reconcile it explicitly before retrying; never silently replace reviewed bytes.
+
+## Manual Apple Silicon handoff
+
+Use a checkout of the exact candidate tag, Python 3.11+, authenticated GitHub CLI
+with access to the draft, Git, local Docker Desktop, and the OpenSSH baseline.
+The helper does not build from source:
+
+```sh
+python3 tests/release/manual-macos-smoke.py v0.1.0 --repo mjswensen/cdenv
+# To also run the bounded noninteractive baseline:
+python3 tests/release/manual-macos-smoke.py v0.1.0 --repo mjswensen/cdenv --run-basics
+```
+
+Choose one invocation; each creates a new private, short directory under
+`/private/tmp`. It downloads the draft's manifest, exact macOS archive, adjacent
+checksum, metadata, and checklist. It verifies their hashes and runtime build/
+agent identity before using the binary. It prepares three local Git fixtures
+(image, Dockerfile with local Feature, two-service Compose), a shell environment,
+machine/dependency observations, a partially filled `smoke-record.md`, and
+`MANUAL.md` with the remaining steps and scoped cleanup instructions. Authentication
+comes from `gh`; no public access to draft assets is assumed.
+
+With `--run-basics`, it requires a local Docker Desktop endpoint, runs `doctor`,
+creates the fixtures, inspects status/list output, tests non-PTY and direct
+OpenSSH access, checks source preservation through image down/up/rebuild/no-cache,
+verifies the Feature installed, and checks repeated lock stability. Logs and
+environments remain available even if a check fails. Each subprocess is bounded
+to ten minutes; use Ctrl+C to interrupt and inspect the retained working directory.
+
+Preparation and baseline success **never** mark the full smoke passed. Complete
+every required field and all twelve steps in the
+[Apple Silicon Docker Desktop checklist](smoke/macos-docker-desktop-v1.md), including
+PTY behavior, lock rejection, forwarding, Compose isolation/volumes, recovery,
+real native helper/keychain and selected-agent observations, secret-marker scans,
+and cleanup. Label simulations explicitly; they cannot substitute for a required
+real observation. Record test credentials only in controlled private fixtures,
+and inspect/redact all evidence before uploading it.
+
+Then:
+
+1. Attach the completed passing `smoke-record.md` and reviewed, redacted logs to
+   the draft. The generated `MANUAL.md` includes an example upload command.
+2. Review the automated evidence and update the draft's pending-status notes to
+   reference the manual record. The manifest's pending field records the original
+   CI handoff; keep that original manifest unchanged.
+3. Publish through GitHub's release UI. If any required evidence is missing or
+   fails, leave the release in draft. Keep candidates marked prerelease; designate
+   the intended stable release as latest.
+
+After publication, exercise the public installer against the exact tag:
+
+```sh
+install_dir=$(mktemp -d)
+curl -fsSL https://github.com/mjswensen/cdenv/releases/download/v0.1.0/install.sh |
+  CDENV_VERSION=v0.1.0 CDENV_INSTALL_DIR="$install_dir" sh
+"$install_dir/cdenv" --version
+"$install_dir/cdenv" __validate-artifacts
+```
+
+For a stable release, also exercise the README's `/releases/latest/download/install.sh`
+URL with `CDENV_INSTALL_DIR` set to a temporary directory and no version override.
+The script never uploads evidence, publishes, modifies your normal install, or
+automatically removes the retained Docker resources.
 
 Draft releases are not available to the public installer. The default installation
 command continues to use the latest published, non-prerelease release until a

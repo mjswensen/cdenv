@@ -57,6 +57,11 @@ reproducibility contract, package-only smoke, and checksum-verified installed
 Linux workflow. The versioned [macOS Docker Desktop checklist](docs/smoke/macos-docker-desktop-v1.md)
 records the Apple Silicon runtime smoke separately.
 
+Matching `v<version>` tags run all required CI gates and prepare an unpublished
+GitHub Release with package hashes, test evidence, and a manual-review handoff.
+Use the [manual macOS helper](tests/release/manual-macos-smoke.py) against that
+draft; see [the release procedure](docs/release-packaging.md#publishing-a-tagged-release).
+
 `cargo xtask check` runs the same baseline commands used by CI:
 
 ```bash

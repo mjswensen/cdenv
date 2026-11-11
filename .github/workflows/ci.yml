@@ -2,7 +2,10 @@ name: CI
 
 on:
   push:
+    # Version tags run this same workflow through release.yml at the tagged SHA.
+    tags-ignore: ['v*']
   pull_request:
+  workflow_call:
 
 permissions:
   contents: read
@@ -30,6 +33,7 @@ jobs:
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-bootstrap.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-coverage.py
           PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-security-mutations.py
+          PYTHONDONTWRITEBYTECODE=1 python3 .github/scripts/test-release-ready.py
       - name: Check installer success and verification failure handling
         run: |
           sh -n install.sh
@@ -403,4 +407,22 @@ jobs:
         with:
           name: verified-linux-agents-ci
           path: target/verified-agents/
+          if-no-files-found: error
+
+  required-gates:
+    name: Require complete successful CI evidence
+    if: always()
+    needs: [quality, security-mutations, workspace-coverage, linux-release-gates, coverage-index, macos-agent-stub, linux-agent-targets, linux-agents]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Reject failed, cancelled, or skipped gates
+        env:
+          GATE_RESULTS: ${{ toJSON(needs) }}
+        run: python3 .github/scripts/release-ready.py gates target/ci-gate-results.json
+      - uses: actions/upload-artifact@v6
+        if: always()
+        with:
+          name: ci-gate-results
+          path: target/ci-gate-results.json
           if-no-files-found: error

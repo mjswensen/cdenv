@@ -11,7 +11,14 @@ depends-on:
   - 75
   - 76
   - 77
-  - 78
+  - 84
+  - 85
+  - 86
+  - 87
+  - 88
+  - 89
+  - 90
+  - 91
 ---
 
 # Forward host Git credentials with a workspace-scoped broker
@@ -24,26 +31,24 @@ This is an implementation issue with an agreed product contract, informed by a s
 
 ## Remaining implementation breakdown
 
-Planning baseline (2026-09-07): a permission/parser foundation has been prepared in the source working tree, including independent command grammar, staged/bound receipts, strict origin validation, redacted bounded credential types, read-only permission reporting, tests, and ADR 0002. It is not a working credential broker or complete lifecycle integration. Preserve and build on that foundation rather than treating it as evidence that the product acceptance criteria below are complete.
+Reconciled 2026-11-11 against source `4cf1774`: component issues 69–77 and release-gate fixes 79–83 are implemented in this history. The broker, capability integrations, packaged HTTPS/SSH workflows and Linux release gates exist; the earlier permission-foundation-only description is historical.
 
-The remaining work is split into the following blocking issues. This issue remains the umbrella and normative product/security contract; the split does not weaken its agreed decisions or acceptance criteria.
+Issue 78 is retired as an oversized coordination issue. This issue remains the normative product/security contract and depends directly on its focused successors:
 
 | Issue | Remaining work |
 |---|---|
-| [69](0069-wire-production-create-and-up-lifecycle-workflows.md) | Connect production `create`/`up` to the existing planning, provisioning, lifecycle, and forwarding coordinators. |
-| [70](0070-wire-production-down-rebuild-and-recovery-workflows.md) | Connect production `down`/`rebuild`, rollback, and Compose partial-recovery workflows. |
-| [71](0071-build-the-versioned-workspace-credential-broker-and-private-exec-bridge.md) | Implement versioned broker transport, verified workspace/generation leases, private container endpoints, and bounded multiplexing. |
-| [72](0072-implement-trusted-noninteractive-host-git-credential-lookups.md) | Implement trusted neutral-context, noninteractive, bounded host Git credential lookups without token caching. |
-| [73](0073-install-the-static-https-helper-and-preserve-container-git-configuration.md) | Install the static HTTPS helper and reversible per-origin integration that preserves configuration and isolates native helpers. |
-| [74](0074-relay-explicitly-selected-host-ssh-agents-through-the-credential-bridge.md) | Relay selected host SSH agents with socket validation, refresh, protocol bounds, and cancellation. |
-| [75](0075-implement-separately-enabled-missing-field-git-author-identity-defaults.md) | Supply separately enabled name/email defaults only where identity fields are genuinely missing. |
-| [76](0076-reconcile-live-credential-grants-revocation-and-health-reporting.md) | Implement authenticated live grant reconciliation, acknowledged selective revocation, and real per-capability health reporting. |
-| [77](0077-integrate-credentials-with-early-lifecycle-readiness-and-generation-handoff.md) | Enroll early/detached lifecycle and SSH work, establish workspace lifetime, and handle stop/reconnect/rebuild generation transitions. |
-| [78](0078-gate-credential-workflows-security-and-cross-platform-release-compatibility.md) | Supply authenticated end-to-end fixtures, security/release gates, Linux architecture coverage, macOS smoke, and final compatibility documentation. |
+| [84](0084-cancel-active-detached-lifecycle-work-with-verified-per-run-ownership.md) | Cancel active detached lifecycle work with verified per-run ownership |
+| [85](0085-test-packaged-ssh-agent-selection-refresh-and-confirmation-timeouts.md) | Test packaged SSH-agent selection refresh and confirmation timeouts |
+| [86](0086-test-synchronized-credential-revocation-and-old-client-denial.md) | Test synchronized credential revocation and old-client denial |
+| [87](0087-test-credential-generation-rollback-after-a-failed-rebuild.md) | Test credential generation rollback after a failed rebuild |
+| [88](0088-test-credentials-during-compose-partial-replacement-recovery.md) | Test credentials during Compose partial replacement recovery |
+| [89](0089-test-public-credential-backend-and-bridge-failure-classification.md) | Test public credential backend and bridge failure classification |
+| [90](0090-cover-missing-credential-secret-marker-surfaces.md) | Cover missing credential secret-marker surfaces |
+| [91](0091-record-macos-docker-desktop-credential-helper-and-agent-smoke.md) | Record macOS Docker Desktop credential helper and agent smoke |
 
-The dependency graph permits production create/up wiring (69), the transport substrate (71), and the host Git backend (72) to proceed independently once the foundation is available. Capability implementations feed live reconciliation (76); production lifecycle composition and live services then converge in 77, followed by release evidence in 78. Each child's `depends-on` frontmatter records its concrete prerequisites; no child depends on this umbrella, avoiding a cycle.
+Each successor has a finite acceptance boundary and owns the relevant test and documentation updates. Existing component and packaged coverage remains evidence for its actual scope; a new generic final-evidence task is not required. See [78](0078-gate-credential-workflows-security-and-cross-platform-release-compatibility.md) for delivered work and the archived planning/CI history.
 
-Keep issue 68 open until the complete contract has been reviewed against the implemented workflows and release evidence. Closing the component issues does not automatically resolve the umbrella or authorize treating missing platform evidence as a passing gate.
+Keep issue 68 open until the complete agreed contract has been reviewed against the implemented workflows and platform observations. Retiring 78 does not certify missing scenarios or automatically resolve this issue.
 
 ## Agreed decisions
 

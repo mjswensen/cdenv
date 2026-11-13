@@ -153,14 +153,16 @@ An unconfirmed launch or crashed runner leaves shutdown incomplete even when
 `down` stops the managed container. Repeating `down` retains that diagnostic;
 `up` refuses to retry uncertain work. After shutdown, explicit `rebuild` creates
 a fresh generation without treating the previous execution as successful.
-Targeted packaged active-cancellation, repeated-start, unconfirmed-launch, and
-runner-crash recovery scenarios passed on Linux arm64 with Docker Engine 29.7.1,
-including an unrelated process surviving the crashed-runner cancellation check.
-Targeted packaged one-time tests also passed: pending work resumed without
-replaying its prefix across down/up, while active one-time cancellation retained
-the prefix and blocked retry until a new rebuild generation. These observations
-use Linux arm64 and Docker Engine 29.7.1. Full supported-architecture credential
-release-gate observations are still required.
+The full credential release suite passed for commit
+[`38e45e0`](https://github.com/mjswensen/cdenv/commit/38e45e0d5eb3af9ed04056fd8c16994359a7401d)
+in [CI run 43522810912](https://github.com/mjswensen/cdenv/actions/runs/43522810912)
+on 2026-11-13. All four combinations of Linux x86_64/arm64 and minimum/pinned
+Docker Engine (29.6.2/29.7.1) discovered and passed all eight tests, with no
+failures, ignored tests, or filtered tests. The retained credential coverage
+artifacts verify active cancellation, repeated starts, unconfirmed-launch and
+runner-crash recovery, unrelated-process preservation, and one-time checkpoint
+semantics: pending work resumes without replaying its completed prefix, while
+active one-time cancellation blocks retry until a new rebuild generation.
 Compose replacement
 is build-first but not atomic; exact per-service partial evidence is persisted after
 post-recreation failure or cancellation. Ordinary `down` stops only the persisted

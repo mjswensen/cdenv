@@ -318,9 +318,14 @@ where
     L: Error + 'static,
     E: Error + 'static,
 {
-    let lifecycle_indeterminate = lifecycle
-        .as_ref()
-        .is_ok_and(|outcome| *outcome == LifecycleStopOutcome::Indeterminate);
+    // Absence of a live runner does not resolve an earlier uncertain execution.
+    // Keep reporting the recovery requirement until a replacement generation clears it.
+    let lifecycle_indeterminate = state
+        .active()
+        .is_some_and(|active| active.lifecycle().indeterminate())
+        || lifecycle
+            .as_ref()
+            .is_ok_and(|outcome| *outcome == LifecycleStopOutcome::Indeterminate);
     let failures = StopFailures {
         forwarding: forwarding.as_ref().err().map(|_| ()),
         lifecycle: lifecycle.as_ref().err().map(|_| ()),
@@ -658,6 +663,64 @@ mod tests {
                 .expect("active")
                 .lifecycle()
                 .indeterminate()
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_down_retains_indeterminate_diagnostic_and_still_stops_environment() {
+        let (_temporary, root, workspace) = workspace_fixture();
+        let mut stops = OrderedStops {
+            calls: Arc::new(Mutex::new(Vec::new())),
+            environment_outcomes: Arc::new(Mutex::new(vec![
+                EnvironmentStopOutcome::Stopped,
+                EnvironmentStopOutcome::AlreadyStopped,
+            ])),
+            lifecycle_outcome: LifecycleStopOutcome::Indeterminate,
+            fail_forwarding: false,
+        };
+        down_workspace(
+            &root,
+            DownRequest::new(&workspace, operation()),
+            &stops,
+            &stops,
+            &stops,
+        )
+        .await
+        .expect_err("first down records uncertain work");
+        stops.lifecycle_outcome = LifecycleStopOutcome::NotRunning;
+        let error = down_workspace(
+            &root,
+            DownRequest::new(&workspace, operation()),
+            &stops,
+            &stops,
+            &stops,
+        )
+        .await
+        .expect_err("no live runner does not resolve uncertain earlier work");
+        let DownError::Incomplete { failures } = error else {
+            panic!("retained lifecycle failure")
+        };
+        assert!(failures.lifecycle_indeterminate);
+        let state = load_workspace_state(&root.workspace(&workspace).state_file()).expect("state");
+        assert!(
+            state
+                .state()
+                .active()
+                .expect("active")
+                .lifecycle()
+                .indeterminate()
+        );
+        assert!(state.state().last_error().is_some());
+        assert_eq!(
+            *stops.calls.lock().expect("calls"),
+            vec![
+                "forwarding",
+                "lifecycle",
+                "environment",
+                "forwarding",
+                "lifecycle",
+                "environment",
+            ]
         );
     }
 

@@ -143,9 +143,15 @@ Docker Exec inspection. Persisted PIDs never authorize signaling. Failed,
 missing, mismatched, unstarted, legacy active, and unverifiable executions remain
 indeterminate. Interrupted one-time work and cancellation with pending one-time
 stages also retain the need for recovery rather than silently skipping hooks.
-The targeted packaged active-cancellation and repeated-start scenario passed on
-Linux arm64 with Docker Engine 29.7.1. Full supported-architecture credential
-release-gate observations are still required.
+An unconfirmed launch or crashed runner leaves shutdown incomplete even when
+`down` stops the managed container. Repeating `down` retains that diagnostic;
+`up` refuses to retry uncertain work. After shutdown, explicit `rebuild` creates
+a fresh generation without treating the previous execution as successful.
+Targeted packaged active-cancellation, repeated-start, unconfirmed-launch, and
+runner-crash recovery scenarios passed on Linux arm64 with Docker Engine 29.7.1,
+including an unrelated process surviving the crashed-runner cancellation check.
+Full supported-architecture credential release-gate observations and cancelled
+one-time checkpoint/retry scenarios are still required.
 Compose replacement
 is build-first but not atomic; exact per-service partial evidence is persisted after
 post-recreation failure or cancellation. Ordinary `down` stops only the persisted

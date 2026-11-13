@@ -1386,126 +1386,262 @@ grep -q 'Host key verification failed' .credential-git-ssh/rejected
     );
 }
 
-#[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one packaged scenario verifies ownership across down, up, and rebuild"
-)]
-fn packaged_active_lifecycle_cancels_on_down_and_rebuild_and_repeats_post_start() {
-    let binary = PathBuf::from(
-        std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
-            .expect("xtask must provide the packaged cdenv binary"),
-    );
-    require_success(
-        &run(&binary, &["__validate-artifacts"], &[]),
-        "artifact validation",
-    );
-    let shared = std::env::var_os("CDENV_INTEGRATION_SHARED_TMP")
-        .map_or_else(std::env::temp_dir, PathBuf::from);
-    let temporary = tempfile::Builder::new()
-        .prefix("cdenv-active-lifecycle-")
-        .tempdir_in(shared)
-        .expect("temporary workflow");
-    let root = temporary.path().join("cdenv-root");
-    let home = temporary.path().join("home");
-    fs::create_dir(&home).expect("home");
-    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("home mode");
-    let agent = Agent::start(temporary.path());
-    let repository = create_repository(temporary.path(), &agent.public_key);
-    let config_path = repository.join(".devcontainer/devcontainer.json");
-    let mut config: serde_json::Value =
-        serde_json::from_slice(&fs::read(&config_path).expect("config")).expect("JSON");
-    config["postStartCommand"] = serde_json::json!([
-        "/bin/sh",
-        "-c",
-        "test -S \"$SSH_AUTH_SOCK\" || exit 20; trap 'printf stopped >> .active-stops; exit 0' TERM; printf x >> .active-starts; touch .active-ready; while :; do sleep 1; done"
-    ]);
-    fs::write(
-        &config_path,
-        serde_json::to_vec(&config).expect("config JSON"),
-    )
-    .expect("config update");
-    require_success(
-        &Command::new("git")
-            .arg("-C")
-            .arg(&repository)
-            .args(["commit", "-am", "active lifecycle fixture"])
-            .output()
-            .expect("commit"),
-        "fixture commit",
-    );
-    let workspace = unique_name("active-lifecycle");
-    let root_text = root.to_str().expect("root");
-    let environment = [
-        ("HOME", home.as_path()),
-        ("SSH_AUTH_SOCK", agent.socket.as_path()),
-    ];
-    require_success(
-        &run(
-            &binary,
-            &[
-                "--root",
-                root_text,
+const ACTIVE_LIFECYCLE_SCRIPT: &str = "test -S \"$SSH_AUTH_SOCK\" || exit 20; trap 'printf stopped >> .active-stops; exit 0' TERM; printf x >> .active-starts; touch .active-ready; while :; do sleep 1; done";
+
+struct LifecycleWorkflow {
+    agent: Agent,
+    binary: PathBuf,
+    root: PathBuf,
+    home: PathBuf,
+    workspace: String,
+    checkout: PathBuf,
+    _temporary: tempfile::TempDir,
+}
+
+impl LifecycleWorkflow {
+    fn create() -> Self {
+        let binary = PathBuf::from(
+            std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
+                .expect("xtask must provide the packaged cdenv binary"),
+        );
+        require_success(
+            &run(&binary, &["__validate-artifacts"], &[]),
+            "artifact validation",
+        );
+        let shared = std::env::var_os("CDENV_INTEGRATION_SHARED_TMP")
+            .map_or_else(std::env::temp_dir, PathBuf::from);
+        let temporary = tempfile::Builder::new()
+            .prefix("cdenv-lifecycle-")
+            .tempdir_in(shared)
+            .expect("temporary workflow");
+        let root = temporary.path().join("root");
+        let home = temporary.path().join("home");
+        fs::create_dir(&home).expect("home");
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("home mode");
+        let agent = Agent::start(temporary.path());
+        let repository = create_repository(temporary.path(), &agent.public_key);
+        let config_path = repository.join(".devcontainer/devcontainer.json");
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&fs::read(&config_path).expect("config")).expect("JSON");
+        config["postStartCommand"] = serde_json::json!(["/bin/sh", "-c", ACTIVE_LIFECYCLE_SCRIPT]);
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&config).expect("config JSON"),
+        )
+        .expect("config update");
+        require_success(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["commit", "-am", "active lifecycle fixture"])
+                .output()
+                .expect("commit"),
+            "fixture commit",
+        );
+        let workspace = unique_name("lifecycle");
+        let checkout = root
+            .join("workspaces")
+            .join(&workspace)
+            .join("checkout")
+            .join(&workspace);
+        let workflow = Self {
+            agent,
+            binary,
+            root,
+            home,
+            workspace,
+            checkout,
+            _temporary: temporary,
+        };
+        require_success(
+            &workflow.invoke(&[
                 "credentials",
                 "enable",
-                &workspace,
+                &workflow.workspace,
                 "ssh-agent",
                 "--socket",
-                agent.socket.to_str().expect("socket"),
-            ],
-            &environment,
-        ),
-        "enable credentials",
-    );
-    require_success(
-        &run(
-            &binary,
-            &[
-                "--root",
-                root_text,
+                workflow.agent.socket.to_str().expect("socket"),
+            ]),
+            "enable credentials",
+        );
+        require_success(
+            &workflow.invoke(&[
                 "--no-modify-ssh-config",
                 "create",
                 repository.to_str().expect("repository"),
                 "--name",
-                &workspace,
+                &workflow.workspace,
+            ]),
+            "create active lifecycle",
+        );
+        workflow.wait_for_hook();
+        workflow
+    }
+
+    fn invoke(&self, arguments: &[&str]) -> Output {
+        let mut args = vec!["--root", self.root.to_str().expect("root")];
+        args.extend_from_slice(arguments);
+        run(
+            &self.binary,
+            &args,
+            &[
+                ("HOME", self.home.as_path()),
+                ("SSH_AUTH_SOCK", self.agent.socket.as_path()),
             ],
-            &environment,
-        ),
-        "create active lifecycle",
-    );
-    let workspace_root = root.join("workspaces").join(&workspace);
-    let checkout = workspace_root.join("checkout").join(&workspace);
-    let ready = checkout.join(".active-ready");
-    let record_path = workspace_root.join("runtime/lifecycle-exec.json");
-    let read_record = || -> serde_json::Value {
-        serde_json::from_slice(&fs::read(&record_path).expect("execution record"))
-            .expect("record JSON")
-    };
-    wait_for_path(&ready, "first active hook");
-    let first = read_record();
-    fs::remove_file(&ready).expect("clear readiness");
-    require_success(
-        &run(
-            &binary,
-            &["--root", root_text, "down", &workspace],
-            &environment,
-        ),
-        "cancel active hook on down",
-    );
+        )
+    }
+
+    fn command(&self, command: &str) -> Output {
+        self.invoke(&[command, &self.workspace])
+    }
+
+    fn workspace_root(&self) -> PathBuf {
+        self.root.join("workspaces").join(&self.workspace)
+    }
+
+    fn record(&self) -> serde_json::Value {
+        serde_json::from_slice(
+            &fs::read(self.workspace_root().join("runtime/lifecycle-exec.json"))
+                .expect("execution record"),
+        )
+        .expect("record JSON")
+    }
+
+    fn wait_for_hook(&self) {
+        wait_for_path(&self.checkout.join(".active-ready"), "active hook");
+    }
+
+    fn clear_hook_readiness(&self) {
+        fs::remove_file(self.checkout.join(".active-ready")).expect("clear readiness");
+    }
+
+    fn container_exec(&self, record: &serde_json::Value, arguments: &[&str]) -> Output {
+        assert_eq!(
+            record["identity"]["workspace"].as_str(),
+            Some(self.workspace.as_str())
+        );
+        let user = format!("{}:{}", record["request"]["uid"], record["request"]["gid"]);
+        let mut args = vec![
+            "exec",
+            "--user",
+            &user,
+            record["identity"]["container"].as_str().expect("container"),
+        ];
+        args.extend_from_slice(arguments);
+        run(Path::new("docker"), &args, &[])
+    }
+
+    fn checkpoint(&self, record: &serde_json::Value) -> serde_json::Value {
+        let path = format!(
+            "{}/.cdenv-run-{}.json",
+            record["request"]["stateDirectory"]
+                .as_str()
+                .expect("state directory"),
+            record["request"]["ownership"]["execution"]
+                .as_str()
+                .expect("execution")
+        );
+        let output = self.container_exec(record, &["cat", &path]);
+        require_success(&output, "read owned checkpoint");
+        let state: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("checkpoint JSON");
+        assert_eq!(state["plan"], record["request"]);
+        state
+    }
+
+    fn assert_recovery_required(&self) {
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(self.workspace_root().join("state.json")).expect("workspace state"),
+        )
+        .expect("state JSON");
+        assert_eq!(state["active"]["lifecycle"]["indeterminate"], true);
+        assert!(
+            state["lastError"]
+                .as_str()
+                .is_some_and(|error| !error.is_empty())
+        );
+        let up = self.command("up");
+        assert!(
+            !up.status.success(),
+            "uncertain work must not retry through up"
+        );
+        assert!(String::from_utf8_lossy(&up.stderr).contains("rebuild"));
+    }
+
+    fn assert_unverifiable_rebuild_blocked(&self, previous: &serde_json::Value) {
+        let rebuild = self.command("rebuild");
+        assert!(
+            !rebuild.status.success(),
+            "unverifiable active work must block replacement"
+        );
+        assert!(
+            String::from_utf8_lossy(&rebuild.stderr)
+                .contains("background lifecycle completion or cancellation could not be verified"),
+            "unexpected rebuild failure: {}",
+            String::from_utf8_lossy(&rebuild.stderr)
+        );
+        assert_eq!(
+            self.record(),
+            *previous,
+            "failed quiescing must preserve the exact old execution"
+        );
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(self.workspace_root().join("state.json")).expect("state"),
+        )
+        .expect("state JSON");
+        assert_eq!(
+            state["active"]["containerId"],
+            previous["identity"]["container"]
+        );
+    }
+
+    fn recover_after_uncertainty(&self, previous: &serde_json::Value) {
+        self.clear_hook_readiness();
+        for _ in 0..2 {
+            let down = self.command("down");
+            assert!(
+                !down.status.success(),
+                "uncertain down must report an incomplete shutdown"
+            );
+            self.assert_recovery_required();
+            assert_eq!(
+                fs::read(self.checkout.join(".active-starts")).expect("starts"),
+                b"x"
+            );
+        }
+        require_success(&self.command("rebuild"), "rebuild uncertain execution");
+        self.wait_for_hook();
+        let replacement = self.record();
+        assert_ne!(
+            previous["identity"]["generation"],
+            replacement["identity"]["generation"]
+        );
+        assert_ne!(
+            previous["request"]["ownership"]["execution"],
+            replacement["request"]["ownership"]["execution"]
+        );
+        assert_eq!(
+            fs::read(self.checkout.join(".active-starts")).expect("starts"),
+            b"xx"
+        );
+        require_success(&self.command("down"), "down recovered generation");
+        assert!(!contains_marker(&self.root));
+    }
+}
+
+#[test]
+fn packaged_active_lifecycle_cancels_on_down_and_rebuild_and_repeats_post_start() {
+    let workflow = LifecycleWorkflow::create();
+    let first = workflow.record();
+    workflow.clear_hook_readiness();
+    require_success(&workflow.command("down"), "cancel active hook on down");
     assert_eq!(
-        fs::read(checkout.join(".active-stops")).expect("TERM acknowledgement"),
+        fs::read(workflow.checkout.join(".active-stops")).expect("TERM acknowledgement"),
         b"stopped"
     );
-    require_success(
-        &run(
-            &binary,
-            &["--root", root_text, "up", &workspace],
-            &environment,
-        ),
-        "up after cancellation",
-    );
-    wait_for_path(&ready, "second active hook");
-    let second = read_record();
+    require_success(&workflow.command("up"), "up after cancellation");
+    workflow.wait_for_hook();
+    let second = workflow.record();
     assert_eq!(
         first["identity"]["generation"],
         second["identity"]["generation"]
@@ -1516,39 +1652,109 @@ fn packaged_active_lifecycle_cancels_on_down_and_rebuild_and_repeats_post_start(
         second["request"]["ownership"]["execution"]
     );
     assert_eq!(
-        fs::read(checkout.join(".active-starts")).expect("starts"),
+        fs::read(workflow.checkout.join(".active-starts")).expect("starts"),
         b"xx"
     );
-    fs::remove_file(&ready).expect("clear readiness");
-    require_success(
-        &run(
-            &binary,
-            &["--root", root_text, "rebuild", &workspace],
-            &environment,
-        ),
-        "rebuild cancels active hook",
-    );
-    wait_for_path(&ready, "replacement active hook");
-    let replacement = read_record();
+    workflow.clear_hook_readiness();
+    require_success(&workflow.command("rebuild"), "rebuild cancels active hook");
+    workflow.wait_for_hook();
+    let replacement = workflow.record();
     assert_ne!(
         second["identity"]["generation"],
         replacement["identity"]["generation"]
     );
     assert_eq!(
-        fs::read(checkout.join(".active-stops")).expect("stops"),
+        fs::read(workflow.checkout.join(".active-stops")).expect("stops"),
         b"stoppedstopped"
     );
-    require_success(
-        &run(
-            &binary,
-            &["--root", root_text, "down", &workspace],
-            &environment,
-        ),
-        "final active hook down",
-    );
+    require_success(&workflow.command("down"), "final active hook down");
     assert_eq!(
-        fs::read(checkout.join(".active-starts")).expect("starts"),
+        fs::read(workflow.checkout.join(".active-starts")).expect("starts"),
         b"xxx"
     );
-    assert!(!contains_marker(&root));
+    assert!(!contains_marker(&workflow.root));
+}
+
+#[test]
+fn packaged_lifecycle_unconfirmed_start_remains_indeterminate_until_rebuild() {
+    let workflow = LifecycleWorkflow::create();
+    let mut record = workflow.record();
+    assert_eq!(record["started"], true);
+    // Simulate the real crash window after Docker starts the runner but before
+    // the host durably confirms that start. The live work must remain unverified.
+    record["started"] = serde_json::json!(false);
+    fs::write(
+        workflow
+            .workspace_root()
+            .join("runtime/lifecycle-exec.json"),
+        serde_json::to_vec(&record).expect("record JSON"),
+    )
+    .expect("unconfirmed start");
+    workflow.assert_unverifiable_rebuild_blocked(&record);
+    workflow.recover_after_uncertainty(&record);
+}
+
+#[test]
+fn packaged_lifecycle_runner_crash_preserves_unrelated_process_and_requires_rebuild() {
+    let workflow = LifecycleWorkflow::create();
+    let record = workflow.record();
+    let state = workflow.checkpoint(&record);
+    assert_eq!(state["phase"], "running");
+    // This process is created by a separate Docker Exec, outside the hook's
+    // owned process group. Cancellation must never use it as a fallback target.
+    let witness = workflow.checkout.join(".unrelated-pid");
+    let remote_witness = "/workspaces/credential-release-gate/.unrelated-pid";
+    let container = record["identity"]["container"].as_str().expect("container");
+    require_success(
+        &run(
+            Path::new("docker"),
+            &[
+                "exec",
+                "--detach",
+                container,
+                "/bin/sh",
+                "-c",
+                "echo $$ > /workspaces/credential-release-gate/.unrelated-pid.tmp; mv /workspaces/credential-release-gate/.unrelated-pid.tmp /workspaces/credential-release-gate/.unrelated-pid; exec sleep 600",
+            ],
+            &[],
+        ),
+        "start unrelated process",
+    );
+    wait_for_path(&witness, "unrelated process");
+    let unrelated_pid = fs::read_to_string(&witness).expect("witness PID");
+    let unrelated_pid = unrelated_pid.trim();
+    let runner_pid = state["runnerPid"]
+        .as_u64()
+        .expect("live fixture runner PID")
+        .to_string();
+    require_success(
+        &workflow.container_exec(&record, &["/bin/kill", "-KILL", &runner_pid]),
+        "crash owned runner",
+    );
+    let request = serde_json::to_string(&record["request"]).expect("request");
+    // The provisioned executable path is authoritative, not guessed from an image layout.
+    let workspace_state: serde_json::Value = serde_json::from_slice(
+        &fs::read(workflow.workspace_root().join("state.json")).expect("state"),
+    )
+    .expect("state JSON");
+    let agent = workspace_state["active"]["provisioned"]["agentPath"]
+        .as_str()
+        .expect("provisioned agent path");
+    let acknowledgement =
+        workflow.container_exec(&record, &[agent, "lifecycle-cancel-owned", &request, "0"]);
+    require_success(&acknowledgement, "inspect crashed cancellation");
+    let inspection: serde_json::Value =
+        serde_json::from_slice(&acknowledgement.stdout).expect("inspection");
+    assert_eq!(inspection["runnerActive"], false);
+    assert_eq!(inspection["state"]["phase"], "failed");
+    workflow.assert_unverifiable_rebuild_blocked(&record);
+    require_success(
+        &workflow.container_exec(&record, &["/bin/kill", "-0", unrelated_pid]),
+        "unrelated process survived",
+    );
+    require_success(
+        &workflow.container_exec(&record, &["test", "-f", remote_witness]),
+        "unrelated marker survived",
+    );
+    workflow.recover_after_uncertainty(&record);
 }

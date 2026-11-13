@@ -49,6 +49,7 @@ fn request(
     })
     .expect("environment capture");
     LifecycleRunRequest {
+        ownership: None,
         generation: generation.to_owned(),
         build_id: BUILD_ID.to_owned(),
         protocol_version: PROTOCOL_VERSION,
@@ -432,4 +433,147 @@ fn cancellation_terminates_owned_process_groups_and_marks_one_time_work_indeterm
 
     assert!(!inspection.runner_active);
     assert_eq!(inspection.state.phase, LifecyclePhase::Indeterminate);
+}
+
+fn own_request(request: &mut LifecycleRunRequest, execution: char) {
+    request.ownership = Some(cdenv_agent::LifecycleRunOwnership {
+        installation: "installation".to_owned(),
+        workspace: "workspace".to_owned(),
+        container: "a".repeat(64),
+        execution: execution.to_string().repeat(64),
+    });
+}
+
+#[test]
+fn owned_runs_repeat_post_start_in_one_generation_without_replaying_a_run() {
+    let directory = TempDir::new().expect("temporary directory");
+    let mut first = request(
+        &directory,
+        "same-generation",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostStart,
+            commands: vec![shell("printf x >> starts")],
+        }],
+    );
+    own_request(&mut first, 'a');
+    run_lifecycle(&first).expect("first start");
+    run_lifecycle(&first).expect("idempotent exact run");
+    let mut second = first.clone();
+    own_request(&mut second, 'b');
+    run_lifecycle(&second).expect("second start in the same generation");
+    assert_eq!(
+        fs::read(directory.path().join("starts")).expect("starts"),
+        b"xx"
+    );
+    assert_eq!(
+        inspect_lifecycle(&first).expect("first state").state.phase,
+        LifecyclePhase::Complete
+    );
+    assert_eq!(
+        inspect_lifecycle(&second)
+            .expect("second state")
+            .state
+            .phase,
+        LifecyclePhase::Complete
+    );
+}
+
+#[test]
+fn owned_binary_cancellation_rejects_wrong_owners_and_cleans_term_resistant_descendants() {
+    use std::process::{Command, Stdio};
+
+    let directory = TempDir::new().expect("temporary directory");
+    let mut request = request(
+        &directory,
+        "owned-cancel",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostStart,
+            commands: vec![shell(
+                "sh -c 'trap \"\" TERM; echo $$ > descendant; while :; do sleep 1; done' & wait",
+            )],
+        }],
+    );
+    own_request(&mut request, 'c');
+    let mut unrelated = Command::new("sleep")
+        .arg("30")
+        .spawn()
+        .expect("unrelated process");
+    let mut runner = Command::new(env!("CARGO_BIN_EXE_cdenv-agent"))
+        .arg("lifecycle-run-owned")
+        .arg(serde_json::to_string(&request).expect("request"))
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("owned runner");
+    let ready = directory.path().join("descendant");
+    for _ in 0..200 {
+        if ready.exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let descendant: u32 = fs::read_to_string(&ready)
+        .expect("descendant ready")
+        .trim()
+        .parse()
+        .expect("PID");
+    for field in 0..4 {
+        let mut wrong = request.clone();
+        let owner = wrong.ownership.as_mut().expect("owner");
+        match field {
+            0 => owner.installation.push('x'),
+            1 => owner.workspace.push('x'),
+            2 => owner.container.push('x'),
+            _ => owner.execution = "d".repeat(64),
+        }
+        assert!(cancel_lifecycle(&wrong, Duration::ZERO).is_err());
+    }
+    assert!(
+        !directory
+            .path()
+            .join(format!(".cdenv-run-{}.cancel", "c".repeat(64)))
+            .exists()
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_cdenv-agent"))
+        .arg("lifecycle-cancel-owned")
+        .arg(serde_json::to_string(&request).expect("request"))
+        .arg("5000")
+        .output()
+        .expect("cancel command");
+    let inspection: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("acknowledgement");
+    let unrelated_alive = unrelated
+        .try_wait()
+        .expect("unrelated inspection")
+        .is_none();
+    let _ = unrelated.kill();
+    unrelated.wait().expect("reap unrelated");
+    for _ in 0..100 {
+        if runner.try_wait().expect("runner inspection").is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let runner_finished = runner.try_wait().expect("runner inspection").is_some();
+    if !runner_finished {
+        let _ = runner.kill();
+    }
+    runner.wait().expect("reap runner");
+    let descendant_state = fs::read_to_string(format!("/proc/{descendant}/stat")).ok();
+    assert!(output.status.success());
+    assert_eq!(inspection["runnerActive"], false);
+    assert_eq!(inspection["state"]["phase"], "cancelled");
+    assert_eq!(
+        inspection["state"]["plan"],
+        serde_json::to_value(&request).expect("plan")
+    );
+    assert!(runner_finished);
+    assert!(unrelated_alive);
+    assert!(
+        descendant_state.is_none_or(|stat| stat
+            .split(')')
+            .nth(1)
+            .is_some_and(|tail| tail.trim_start().starts_with('Z'))),
+        "descendant survived cancellation"
+    );
 }

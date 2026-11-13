@@ -140,7 +140,7 @@ impl DetachedExec {
 }
 
 /// Authoritative state returned by Docker's Exec inspect endpoint.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExecInspect {
     /// Exact Exec identity.
     pub id: ExecId,
@@ -150,6 +150,21 @@ pub struct ExecInspect {
     pub running: bool,
     /// Final exit code, when Docker has one.
     pub exit_code: Option<i64>,
+    /// Exact program and arguments, when Docker provides a complete process configuration.
+    pub command: Option<Vec<String>>,
+}
+
+impl std::fmt::Debug for ExecInspect {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ExecInspect")
+            .field("id", &self.id)
+            .field("container", &self.container)
+            .field("running", &self.running)
+            .field("exit_code", &self.exit_code)
+            .field("command", &self.command.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 /// Exact attached-stream, framing, cancellation, and exit-status failure.
@@ -395,6 +410,11 @@ impl<A: BollardApi> BollardAdapter<A> {
                 field: "Running",
             })?,
             exit_code: inspect.exit_code,
+            command: inspect.process_config.and_then(|process| {
+                let mut command = vec![process.entrypoint?];
+                command.extend(process.arguments?);
+                Some(command)
+            }),
         })
     }
 
@@ -1073,6 +1093,37 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn exec_inspection_preserves_exact_command_for_runner_ownership_but_redacts_debug() {
+        let mut response = inspect(Some(0), false);
+        let BollardApiResponse::ExecInspect(ref mut details) = response else {
+            unreachable!()
+        };
+        details.process_config = Some(bollard::models::ProcessConfig {
+            entrypoint: Some("/agent".to_owned()),
+            arguments: Some(vec![
+                "lifecycle-run-owned".to_owned(),
+                "private-plan-marker".to_owned(),
+            ]),
+            ..bollard::models::ProcessConfig::default()
+        });
+        let api = FakeApi::new([response], []);
+        let adapter = BollardAdapter::with_api(endpoint(), api, Duration::from_secs(1));
+        let inspected = adapter
+            .inspect_exec(&ExecId::parse(EXEC_ID).expect("exec"))
+            .await
+            .expect("inspect");
+        assert_eq!(
+            inspected.command,
+            Some(vec![
+                "/agent".to_owned(),
+                "lifecycle-run-owned".to_owned(),
+                "private-plan-marker".to_owned()
+            ])
+        );
+        assert!(!format!("{inspected:?}").contains("private-plan-marker"));
     }
 
     #[tokio::test]

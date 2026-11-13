@@ -950,7 +950,7 @@ impl ProductionEnvironment<'_> {
             &engine,
             &facts.container,
             plan.runtime.remote_user.as_str(),
-            provisioned.agent_path.as_str(),
+            &provisioned,
             initial.snapshot_path(),
             plan.runtime.workspace.folder.as_str(),
             &plan.lifecycle,
@@ -983,7 +983,7 @@ impl ProductionEnvironment<'_> {
             &engine,
             &facts.container,
             plan.runtime.remote_user.as_str(),
-            provisioned.agent_path.as_str(),
+            &provisioned,
             ssh_environment.snapshot_path(),
             plan.runtime.workspace.folder.as_str(),
             &plan.lifecycle,
@@ -1248,6 +1248,10 @@ struct AgentLifecycleStagePlan {
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
 enum AgentLifecycleStage {
+    OnCreate,
+    UpdateContent,
+    PostCreate,
+    PostStart,
     PostAttach,
 }
 
@@ -1368,7 +1372,14 @@ fn agent_lifecycle_stage(
     stage: &cdenv_devcontainer::LifecycleStagePlan,
 ) -> AgentLifecycleStagePlan {
     AgentLifecycleStagePlan {
-        stage: AgentLifecycleStage::PostAttach,
+        stage: match stage.stage {
+            DevLifecycleStage::OnCreate => AgentLifecycleStage::OnCreate,
+            DevLifecycleStage::UpdateContent => AgentLifecycleStage::UpdateContent,
+            DevLifecycleStage::PostCreate => AgentLifecycleStage::PostCreate,
+            DevLifecycleStage::PostStart => AgentLifecycleStage::PostStart,
+            DevLifecycleStage::PostAttach => AgentLifecycleStage::PostAttach,
+            DevLifecycleStage::Initialize => unreachable!("initialize runs on the host"),
+        },
         commands: stage.commands.iter().map(agent_lifecycle_command).collect(),
     }
 }
@@ -1431,7 +1442,7 @@ async fn execute_lifecycle(
     engine: &BollardAdapter,
     container: &ContainerId,
     user: &str,
-    agent: &str,
+    provisioned: &crate::AgentProvisioningFacts,
     environment: &str,
     workspace: &str,
     plan: &cdenv_devcontainer::LifecyclePlan,
@@ -1443,6 +1454,7 @@ async fn execute_lifecycle(
     credential_lease: Option<&crate::SupervisorCredentialLease>,
     cancellation: &CancellationToken,
 ) -> Result<(), WorkflowMessage> {
+    let agent = provisioned.agent_path.as_str();
     let mut stages = Vec::new();
     if new_generation {
         stages.extend([&plan.on_create, &plan.update_content, &plan.post_create]);
@@ -1450,7 +1462,7 @@ async fn execute_lifecycle(
     if transition != EnvironmentTransition::AlreadyRunning {
         stages.push(&plan.post_start);
     }
-    let mut background = String::new();
+    let mut background = Vec::new();
     for stage in stages {
         let stage_execution = if stage.stage <= plan.readiness {
             LifecycleExecution::Foreground
@@ -1460,14 +1472,14 @@ async fn execute_lifecycle(
         if stage_execution != execution {
             continue;
         }
+        if execution == LifecycleExecution::Background {
+            if !stage.commands.is_empty() {
+                background.push(agent_lifecycle_stage(stage));
+            }
+            continue;
+        }
         for group in &stage.commands {
             let script = lifecycle_group_script(group)?;
-            if execution == LifecycleExecution::Background {
-                background.push('(');
-                background.push_str(&script);
-                background.push_str(")||exit $?;");
-                continue;
-            }
             let command = lifecycle_agent_command(agent, environment, script, credential_lease)?;
             let output = engine
                 .execute(
@@ -1492,7 +1504,19 @@ async fn execute_lifecycle(
         }
     }
     if !background.is_empty() {
-        let command = lifecycle_agent_command(agent, environment, background, credential_lease)?;
+        let request = detached_lifecycle_request(
+            lifecycle_identity,
+            provisioned,
+            environment,
+            workspace,
+            background,
+            credential_lease,
+        )?;
+        let command = vec![
+            agent.to_owned(),
+            "lifecycle-run-owned".to_owned(),
+            serde_json::to_string(&request).map_err(message)?,
+        ];
         let exec = crate::ExecCommand {
             container,
             command: &command,
@@ -1503,14 +1527,67 @@ async fn execute_lifecycle(
         let detached = engine.create_detached_exec(&exec).await.map_err(message)?;
         // Publish the exact identity before start. An interrupted start remains
         // unknown (no successful final exit), never guessed to be complete.
-        persist_lifecycle_exec(lifecycle_record, lifecycle_identity, detached.id(), false)?;
+        persist_owned_lifecycle_exec(
+            lifecycle_record,
+            lifecycle_identity,
+            detached.id(),
+            false,
+            &request,
+        )?;
         engine
             .start_detached_exec(&detached)
             .await
             .map_err(message)?;
-        persist_lifecycle_exec(lifecycle_record, lifecycle_identity, detached.id(), true)?;
+        persist_owned_lifecycle_exec(
+            lifecycle_record,
+            lifecycle_identity,
+            detached.id(),
+            true,
+            &request,
+        )?;
     }
     Ok(())
+}
+
+fn detached_lifecycle_request(
+    identity: &LifecycleExecIdentity,
+    provisioned: &crate::AgentProvisioningFacts,
+    environment: &str,
+    workspace: &str,
+    stages: Vec<AgentLifecycleStagePlan>,
+    credential_lease: Option<&crate::SupervisorCredentialLease>,
+) -> Result<serde_json::Value, WorkflowMessage> {
+    let state_root = Path::new(environment)
+        .parent()
+        .filter(|path| path.file_name().is_some_and(|name| name == "environment"))
+        .and_then(Path::parent)
+        .filter(|path| path.file_name().is_some_and(|name| name == ".cdenv"))
+        .ok_or_else(|| message("environment path has no safe lifecycle state root"))?;
+    let mut nonce = [0_u8; 32];
+    getrandom::fill(&mut nonce).map_err(message)?;
+    let request = PostAttachManifestRequest {
+        generation: identity.generation.clone(),
+        build_id: identity.build.clone(),
+        protocol_version: identity.protocol,
+        state_directory: state_root.join("lifecycle").display().to_string(),
+        environment_path: environment.to_owned(),
+        workspace_folder: workspace.to_owned(),
+        uid: provisioned.identity.uid,
+        gid: provisioned.identity.gid,
+        stages,
+        credential_runtime: credential_lease.map(|lease| lease.runtime_directory.clone()),
+        credential_grants: credential_lease
+            .map(|lease| lease.grants.clone())
+            .unwrap_or_default(),
+    };
+    let mut value = serde_json::to_value(request).map_err(message)?;
+    value["ownership"] = serde_json::json!({
+        "installation": identity.installation,
+        "workspace": identity.workspace,
+        "container": identity.container,
+        "execution": hex::encode(nonce),
+    });
+    Ok(value)
 }
 
 fn lifecycle_agent_command(
@@ -1697,6 +1774,8 @@ fn resolve_feature_plan(
     Ok((resolved, generated, digests))
 }
 
+const MAXIMUM_LIFECYCLE_RECORD_BYTES: u64 = 96 * 1024;
+
 const fn host_architecture() -> cdenv_core::ContainerArchitecture {
     #[cfg(target_arch = "x86_64")]
     {
@@ -1734,6 +1813,8 @@ struct LifecycleExecRecord {
     identity: LifecycleExecIdentity,
     exec_id: String,
     started: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    request: Option<serde_json::Value>,
 }
 
 fn lifecycle_exec_path(root: &CdenvRoot, workspace: &WorkspaceName) -> PathBuf {
@@ -1742,11 +1823,32 @@ fn lifecycle_exec_path(root: &CdenvRoot, workspace: &WorkspaceName) -> PathBuf {
         .join("lifecycle-exec.json")
 }
 
+#[cfg(test)]
 fn persist_lifecycle_exec(
     path: &Path,
     identity: &LifecycleExecIdentity,
     exec_id: &crate::ExecId,
     started: bool,
+) -> Result<(), WorkflowMessage> {
+    persist_lifecycle_record(path, identity, exec_id, started, None)
+}
+
+fn persist_owned_lifecycle_exec(
+    path: &Path,
+    identity: &LifecycleExecIdentity,
+    exec_id: &crate::ExecId,
+    started: bool,
+    request: &serde_json::Value,
+) -> Result<(), WorkflowMessage> {
+    persist_lifecycle_record(path, identity, exec_id, started, Some(request.clone()))
+}
+
+fn persist_lifecycle_record(
+    path: &Path,
+    identity: &LifecycleExecIdentity,
+    exec_id: &crate::ExecId,
+    started: bool,
+    request: Option<serde_json::Value>,
 ) -> Result<(), WorkflowMessage> {
     crate::ensure_private_directory(
         path.parent()
@@ -1757,8 +1859,12 @@ fn persist_lifecycle_exec(
         identity: identity.clone(),
         exec_id: exec_id.to_string(),
         started,
+        request,
     })
     .map_err(message)?;
+    if bytes.len() as u64 > MAXIMUM_LIFECYCLE_RECORD_BYTES {
+        return Err(message("lifecycle execution record exceeded its bound"));
+    }
     crate::atomic_write(path, &bytes, crate::ManagedMode::PrivateFile).map_err(message)
 }
 
@@ -1777,7 +1883,7 @@ fn open_lifecycle_exec(path: &Path, expected: &std::fs::Metadata) -> Option<std:
         || opened.uid() != nix::unistd::geteuid().as_raw()
         || opened.mode() & 0o777 != 0o600
         || opened.nlink() != 1
-        || opened.len() > 4096
+        || opened.len() > MAXIMUM_LIFECYCLE_RECORD_BYTES
     {
         return None;
     }
@@ -1794,8 +1900,10 @@ fn load_lifecycle_exec(path: &Path) -> Option<LifecycleExecRecord> {
     let metadata = std::fs::symlink_metadata(path).ok()?;
     let file = open_lifecycle_exec(path, &metadata)?;
     let mut bytes = Vec::new();
-    file.take(4097).read_to_end(&mut bytes).ok()?;
-    if bytes.len() > 4096 {
+    file.take(MAXIMUM_LIFECYCLE_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAXIMUM_LIFECYCLE_RECORD_BYTES {
         return None;
     }
     serde_json::from_slice(&bytes).ok()
@@ -1832,7 +1940,7 @@ impl LifecycleRunnerStop for ProductionLifecycleStop<'_> {
     async fn cancel(
         &self,
         active: Option<&ActiveGeneration>,
-        _grace: std::time::Duration,
+        grace: std::time::Duration,
     ) -> Result<LifecycleStopOutcome, Self::Error> {
         let Some(active) = active.filter(|active| active.lifecycle().running().is_some()) else {
             return Ok(LifecycleStopOutcome::NotRunning);
@@ -1858,7 +1966,127 @@ impl LifecycleRunnerStop for ProductionLifecycleStop<'_> {
         let Ok(inspected) = self.engine.inspect_exec(&exec_id).await else {
             return Ok(LifecycleStopOutcome::Indeterminate);
         };
-        Ok(completed_lifecycle_exec(&record, &expected, &inspected))
+        let Some(request) = &record.request else {
+            return Ok(completed_lifecycle_exec(&record, &expected, &inspected));
+        };
+        let provisioned = active.provisioned();
+        let expected_command = vec![
+            provisioned.agent_path().to_owned(),
+            "lifecycle-run-owned".to_owned(),
+            serde_json::to_string(request).map_err(message)?,
+        ];
+        if !record.started
+            || inspected.command.as_ref() != Some(&expected_command)
+            || inspected.id.as_str() != record.exec_id
+            || inspected.container.as_str() != expected.container
+            || !owned_request_matches(request, &expected)
+        {
+            return Ok(LifecycleStopOutcome::Indeterminate);
+        }
+        let command = vec![
+            provisioned.agent_path().to_owned(),
+            "lifecycle-cancel-owned".to_owned(),
+            serde_json::to_string(request).map_err(message)?,
+            grace.as_millis().to_string(),
+        ];
+        let cancellation = CancellationToken::default();
+        let Ok(Ok(output)) = tokio::time::timeout(
+            grace + std::time::Duration::from_secs(1),
+            self.engine.execute(
+                crate::ExecCommand {
+                    container: active.container_id(),
+                    command: &command,
+                    user: Some(provisioned.remote_user()),
+                    working_directory: None,
+                    environment: &[],
+                },
+                &[],
+                &cancellation,
+            ),
+        )
+        .await
+        else {
+            return Ok(LifecycleStopOutcome::Indeterminate);
+        };
+        let outcome = owned_cancellation_outcome(request, &output.stdout);
+        if outcome == LifecycleStopOutcome::Indeterminate {
+            return Ok(outcome);
+        }
+        // Releasing the runner lock precedes exiting its Docker Exec. Require both
+        // acknowledgements rather than trusting a durable phase or a diagnostic PID.
+        let deadline = tokio::time::Instant::now() + grace;
+        loop {
+            let Ok(final_exec) = self.engine.inspect_exec(&exec_id).await else {
+                return Ok(LifecycleStopOutcome::Indeterminate);
+            };
+            if final_exec.id.as_str() != record.exec_id
+                || final_exec.container.as_str() != expected.container
+            {
+                return Ok(LifecycleStopOutcome::Indeterminate);
+            }
+            if !final_exec.running {
+                return Ok(if final_exec.exit_code == Some(0) {
+                    outcome
+                } else {
+                    LifecycleStopOutcome::Indeterminate
+                });
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(LifecycleStopOutcome::Indeterminate);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        }
+    }
+}
+
+fn owned_request_matches(request: &serde_json::Value, expected: &LifecycleExecIdentity) -> bool {
+    request["ownership"]["installation"].as_str() == Some(expected.installation.as_str())
+        && request["ownership"]["workspace"].as_str() == Some(expected.workspace.as_str())
+        && request["ownership"]["container"].as_str() == Some(expected.container.as_str())
+        && request["generation"].as_str() == Some(expected.generation.as_str())
+        && request["buildId"].as_str() == Some(expected.build.as_str())
+        && request["protocolVersion"].as_u64() == Some(u64::from(expected.protocol))
+        && request["ownership"]["execution"]
+            .as_str()
+            .is_some_and(|execution| {
+                execution.len() == 64 && execution.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
+}
+
+fn owned_cancellation_outcome(request: &serde_json::Value, output: &[u8]) -> LifecycleStopOutcome {
+    let Ok(inspection) = serde_json::from_slice::<serde_json::Value>(output) else {
+        return LifecycleStopOutcome::Indeterminate;
+    };
+    if inspection["runnerActive"].as_bool() != Some(false)
+        || inspection["state"]["plan"] != *request
+        || !inspection["state"]["runnerPid"].is_null()
+        || inspection["state"].get("runnerPid").is_none()
+    {
+        return LifecycleStopOutcome::Indeterminate;
+    }
+    match inspection["state"]["phase"].as_str() {
+        Some("complete") => LifecycleStopOutcome::NotRunning,
+        Some("cancelled") => {
+            let pending_one_time = request["stages"].as_array().is_some_and(|stages| {
+                let index = inspection["state"]["stageIndex"]
+                    .as_u64()
+                    .and_then(|index| usize::try_from(index).ok())
+                    .unwrap_or(0);
+                stages.iter().skip(index).any(|stage| {
+                    matches!(
+                        stage["stage"].as_str(),
+                        Some("onCreate" | "updateContent" | "postCreate")
+                    )
+                })
+            });
+            if pending_one_time {
+                LifecycleStopOutcome::Indeterminate
+            } else {
+                LifecycleStopOutcome::Graceful
+            }
+        }
+        // Interrupted one-time work remains indeterminate even after child cleanup.
+        _ => LifecycleStopOutcome::Indeterminate,
     }
 }
 
@@ -2255,7 +2483,7 @@ impl RebuildEnvironment<ProductionPlan> for ProductionImageRebuild<'_> {
                 "lifecycle runner required forced cancellation without persisted runner identity",
             )),
             LifecycleStopOutcome::Indeterminate => Err(message(
-                "background lifecycle completion is unverified; active runner cancellation is unavailable",
+                "background lifecycle completion or cancellation could not be verified",
             )),
         }
     }
@@ -2899,7 +3127,7 @@ impl ComposeRebuildRuntime<PreparedRebuildPlan<ProductionPlan>> for ProductionCo
             LifecycleStopOutcome::NotRunning | LifecycleStopOutcome::Graceful => {}
             LifecycleStopOutcome::Forced | LifecycleStopOutcome::Indeterminate => {
                 return Err(message(
-                    "background lifecycle completion is unverified; active runner cancellation is unavailable",
+                    "background lifecycle completion or cancellation could not be verified",
                 ));
             }
         }
@@ -3374,13 +3602,173 @@ mod tests {
             container: ContainerId::parse(&identity.container).expect("container"),
             running: false,
             exit_code: Some(0),
+            command: None,
         };
         let record = LifecycleExecRecord {
             identity,
             exec_id: inspected.id.to_string(),
             started: true,
+            request: None,
         };
         (record, inspected)
+    }
+
+    #[test]
+    fn detached_launch_uses_fresh_execution_identity_and_agent_compatible_plan() {
+        let (record, _) = lifecycle_exec_fixture();
+        let provisioned = crate::AgentProvisioningFacts {
+            identity: crate::RemoteAgentIdentity {
+                uid: 1000,
+                gid: 1000,
+                home: "/home/dev".to_owned(),
+                shell: "/bin/sh".to_owned(),
+            },
+            agent_path: "/usr/local/bin/cdenv-agent".to_owned(),
+            build_id: cdenv_core::AgentBuildId::parse(&record.identity.build).expect("build"),
+            protocol_version: ProtocolVersion::new(1).expect("protocol"),
+        };
+        let make_request = || {
+            detached_lifecycle_request(
+                &record.identity,
+                &provisioned,
+                "/home/dev/.cdenv/environment/1.bin",
+                "/workspaces/test",
+                vec![AgentLifecycleStagePlan {
+                    stage: AgentLifecycleStage::PostStart,
+                    commands: vec![AgentLifecycleCommand::Process {
+                        process: AgentLifecycleProcess::Shell {
+                            command: AgentLifecycleValue(vec![
+                                AgentLifecycleValueSegment::Literal {
+                                    value: "sleep 30".to_owned(),
+                                },
+                            ]),
+                        },
+                    }],
+                }],
+                None,
+            )
+            .expect("request")
+        };
+        let first = make_request();
+        let second = make_request();
+        assert_ne!(
+            first["ownership"]["execution"],
+            second["ownership"]["execution"]
+        );
+        assert!(owned_request_matches(&first, &record.identity));
+        assert_eq!(first["stages"][0]["stage"], "postStart");
+        assert_eq!(first["stateDirectory"], "/home/dev/.cdenv/lifecycle");
+        #[cfg(target_os = "linux")]
+        {
+            let decoded: cdenv_agent::LifecycleRunRequest =
+                serde_json::from_value(first.clone()).expect("agent request wire compatibility");
+            assert_eq!(
+                serde_json::to_value(decoded).expect("agent encoding"),
+                first
+            );
+        }
+    }
+
+    fn owned_request_fixture(identity: &LifecycleExecIdentity) -> serde_json::Value {
+        serde_json::json!({
+            "ownership": {
+                "installation": identity.installation,
+                "workspace": identity.workspace,
+                "container": identity.container,
+                "execution": "e".repeat(64),
+            },
+            "generation": identity.generation,
+            "buildId": identity.build,
+            "protocolVersion": identity.protocol,
+        })
+    }
+
+    #[test]
+    fn owned_cancellation_requires_every_identity_and_exact_terminal_acknowledgement() {
+        let (record, _) = lifecycle_exec_fixture();
+        let request = owned_request_fixture(&record.identity);
+        assert!(owned_request_matches(&request, &record.identity));
+        for path in [
+            "/ownership/installation",
+            "/ownership/workspace",
+            "/ownership/container",
+            "/ownership/execution",
+            "/generation",
+            "/buildId",
+            "/protocolVersion",
+        ] {
+            let mut wrong = request.clone();
+            *wrong.pointer_mut(path).expect("field") = serde_json::Value::Null;
+            assert!(!owned_request_matches(&wrong, &record.identity), "{path}");
+        }
+        let acknowledgement = serde_json::json!({
+            "runnerActive": false,
+            "state": {"plan": request, "phase": "cancelled", "runnerPid": null},
+        });
+        let outcome = |value: &serde_json::Value| {
+            owned_cancellation_outcome(
+                &request,
+                &serde_json::to_vec(value).expect("acknowledgement"),
+            )
+        };
+        assert_eq!(outcome(&acknowledgement), LifecycleStopOutcome::Graceful);
+        for phase in ["running", "before", "after", "failed", "indeterminate"] {
+            let mut wrong = acknowledgement.clone();
+            wrong["state"]["phase"] = serde_json::json!(phase);
+            assert_eq!(outcome(&wrong), LifecycleStopOutcome::Indeterminate);
+        }
+        for (path, value) in [
+            ("/runnerActive", serde_json::json!(true)),
+            ("/state/runnerPid", serde_json::json!(123)),
+            (
+                "/state/plan/ownership/execution",
+                serde_json::json!("f".repeat(64)),
+            ),
+        ] {
+            let mut wrong = acknowledgement.clone();
+            *wrong.pointer_mut(path).expect("field") = value;
+            assert_eq!(
+                outcome(&wrong),
+                LifecycleStopOutcome::Indeterminate,
+                "{path}"
+            );
+        }
+        let mut complete = acknowledgement;
+        complete["state"]["phase"] = serde_json::json!("complete");
+        assert_eq!(outcome(&complete), LifecycleStopOutcome::NotRunning);
+        assert_eq!(
+            owned_cancellation_outcome(&request, b"{}"),
+            LifecycleStopOutcome::Indeterminate
+        );
+    }
+
+    #[test]
+    fn cancelled_pending_one_time_work_keeps_recovery_required() {
+        let (record, _) = lifecycle_exec_fixture();
+        let mut request = owned_request_fixture(&record.identity);
+        request["stages"] = serde_json::json!([
+            {"stage": "postCreate", "commands": []},
+            {"stage": "postStart", "commands": []},
+        ]);
+        let mut acknowledgement = serde_json::json!({
+            "runnerActive": false,
+            "state": {"plan": request, "phase": "cancelled", "runnerPid": null, "stageIndex": 0},
+        });
+        assert_eq!(
+            owned_cancellation_outcome(
+                &request,
+                &serde_json::to_vec(&acknowledgement).expect("JSON")
+            ),
+            LifecycleStopOutcome::Indeterminate
+        );
+        acknowledgement["state"]["stageIndex"] = serde_json::json!(1);
+        assert_eq!(
+            owned_cancellation_outcome(
+                &request,
+                &serde_json::to_vec(&acknowledgement).expect("JSON")
+            ),
+            LifecycleStopOutcome::Graceful
+        );
     }
 
     #[test]

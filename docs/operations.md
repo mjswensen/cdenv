@@ -130,12 +130,22 @@ explicit empty manifest when no hook is configured. SSH never treats a missing o
 corrupt manifest as an empty hook: the connection fails before session access and
 `cdenv up NAME` reprovisions the selected agent, environment, and manifest for a
 safe retry. Rebuild installs a distinct manifest for the replacement generation.
-Detached lifecycle starts also retain a private Docker Exec record bound to the
-installation, workspace, container, generation, and agent build/protocol. `down`
-and `rebuild` recognize completion only after a confirmed start and an exact Exec
-inspection showing successful exit. Active, failed, missing, unstarted, or
-unverifiable executions remain indeterminate: authenticated cancellation of
-active detached work is not yet implemented, and no process or PID is guessed.
+Detached lifecycle starts retain a private Docker Exec record and an immutable
+agent request bound to the installation, workspace, container, generation,
+agent build/protocol, and a fresh random execution identity. Each actual start
+uses a separate checkpoint, so `postStartCommand` can repeat after down/up in the
+same generation. Credential-enabled children enroll before their hooks run.
+`down` and `rebuild` request cancellation only through that matching agent plan.
+The live runner terminates its owned child process groups, escalates to kill after
+a bounded grace period, and records its final checkpoint before releasing its
+lock. The host requires that acknowledgement and an exact successful final
+Docker Exec inspection. Persisted PIDs never authorize signaling. Failed,
+missing, mismatched, unstarted, legacy active, and unverifiable executions remain
+indeterminate. Interrupted one-time work and cancellation with pending one-time
+stages also retain the need for recovery rather than silently skipping hooks.
+The targeted packaged active-cancellation and repeated-start scenario passed on
+Linux arm64 with Docker Engine 29.7.1. Full supported-architecture credential
+release-gate observations are still required.
 Compose replacement
 is build-first but not atomic; exact per-service partial evidence is persisted after
 post-recreation failure or cancellation. Ordinary `down` stops only the persisted

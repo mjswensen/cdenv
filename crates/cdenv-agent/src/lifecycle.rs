@@ -5,7 +5,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::process::CommandExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use cdenv_core::credentials::CredentialGrants;
 use nix::fcntl::{Flock, FlockArg};
 use nix::sys::signal::{Signal, kill};
+use nix::sys::wait::{Id, WaitPidFlag, WaitStatus, waitid};
 use nix::unistd::{Pid, getegid, geteuid};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -130,10 +131,27 @@ pub struct LifecycleStagePlan {
     pub commands: Vec<LifecycleCommand>,
 }
 
+/// Ownership of one production detached execution, independent of generation checkpoints.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LifecycleRunOwnership {
+    /// Installation owning the execution.
+    pub installation: String,
+    /// Workspace owning the execution.
+    pub workspace: String,
+    /// Exact Docker container identity.
+    pub container: String,
+    /// Fresh, unpredictable execution identity for this launch.
+    pub execution: String,
+}
+
 /// Immutable generation and runtime plan consumed by the container runner.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LifecycleRunRequest {
+    /// Per-launch ownership; absent only for the legacy generation runner and attach hooks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ownership: Option<LifecycleRunOwnership>,
     /// Stable generation identity.
     pub generation: String,
     /// Expected agent build identity.
@@ -335,9 +353,7 @@ pub fn run_lifecycle(
     let _lock = Flock::lock(lock_file, FlockArg::LockExclusiveNonblock)
         .map_err(|(_, _)| LifecycleError::AlreadyRunning)?;
     let mut state = load_or_create(request, &paths)?;
-    if state.plan != *request {
-        return Err(LifecycleError::PlanMismatch);
-    }
+    validate_state(request, &state)?;
     if state.phase == LifecyclePhase::Running {
         state.phase = if current_stage(&state).is_some_and(LifecycleStage::is_one_time) {
             LifecyclePhase::Indeterminate
@@ -360,8 +376,13 @@ pub fn run_lifecycle(
 
     state.runner_pid = Some(std::process::id());
     store_state(&paths, &state)?;
-    let environment = EnvironmentSnapshot::load(Path::new(&request.environment_path))
+    let mut environment = EnvironmentSnapshot::load(Path::new(&request.environment_path))
         .map_err(|source| LifecycleError::Environment { source })?;
+    if let Some(runtime) = &request.credential_runtime {
+        environment
+            .enroll_credentials(Path::new(runtime), &request.credential_grants)
+            .map_err(|source| LifecycleError::Environment { source })?;
+    }
     while state.stage_index < request.stages.len() {
         let stage_plan = &request.stages[state.stage_index];
         while state.command_index < stage_plan.commands.len() {
@@ -466,9 +487,7 @@ pub fn inspect_lifecycle(
     validate_request(request)?;
     let paths = RunnerPaths::new(request)?;
     let state = load_state(&paths.state)?;
-    if state.plan != *request {
-        return Err(LifecycleError::PlanMismatch);
-    }
+    validate_state(request, &state)?;
     let file = open_lock(&paths.lock)?;
     let runner_active = match Flock::lock(file, FlockArg::LockExclusiveNonblock) {
         Ok(_) => false,
@@ -573,6 +592,15 @@ pub fn run_post_attach(request: &LifecycleRunRequest) -> Result<(), LifecycleErr
 }
 
 fn validate_request(request: &LifecycleRunRequest) -> Result<(), LifecycleError> {
+    if let Some(owner) = &request.ownership
+        && ([&owner.installation, &owner.workspace, &owner.container]
+            .iter()
+            .any(|value| value.is_empty() || value.len() > 256 || value.contains('\0'))
+            || owner.execution.len() != 64
+            || !owner.execution.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(LifecycleError::InvalidRequest { field: "ownership" });
+    }
     if request.build_id != BUILD_ID {
         return Err(LifecycleError::IdentityMismatch { field: "buildId" });
     }
@@ -662,7 +690,11 @@ struct RunnerPaths {
 
 impl RunnerPaths {
     fn new(request: &LifecycleRunRequest) -> Result<Self, LifecycleError> {
-        Self::with_stem(request, &format!(".cdenv-lifecycle-{}", request.generation))
+        let stem = request.ownership.as_ref().map_or_else(
+            || format!(".cdenv-lifecycle-{}", request.generation),
+            |owner| format!(".cdenv-run-{}", owner.execution),
+        );
+        Self::with_stem(request, &stem)
     }
 
     fn new_attach(request: &LifecycleRunRequest) -> Result<Self, LifecycleError> {
@@ -772,6 +804,32 @@ fn load_or_create(
         store_state(paths, &state)?;
         Ok(state)
     }
+}
+
+fn validate_state(
+    request: &LifecycleRunRequest,
+    state: &LifecycleRunnerState,
+) -> Result<(), LifecycleError> {
+    if state.plan != *request
+        || state.generation != request.generation
+        || state.build_id != request.build_id
+        || state.protocol_version != request.protocol_version
+    {
+        return Err(LifecycleError::PlanMismatch);
+    }
+    if state.stage_index > request.stages.len()
+        || request
+            .stages
+            .get(state.stage_index)
+            .map_or(state.command_index != 0, |stage| {
+                state.command_index > stage.commands.len()
+            })
+        || (state.phase == LifecyclePhase::Complete
+            && (state.stage_index != request.stages.len() || state.runner_pid.is_some()))
+    {
+        return Err(LifecycleError::UnsafeState);
+    }
+    Ok(())
 }
 
 fn load_state(path: &Path) -> Result<LifecycleRunnerState, LifecycleError> {
@@ -998,9 +1056,7 @@ fn wait_children(children: &mut [OwnedChild], cancel: &Path) -> Result<(), Execu
         let mut failed = false;
         for owned in &mut *children {
             if owned.status.is_none() {
-                owned.status = owned
-                    .child
-                    .try_wait()
+                owned.status = observe_child(&owned.child)
                     .map_err(|error| ExecutionFailure::Error(error.to_string()))?;
             }
             complete &= owned.status.is_some();
@@ -1011,41 +1067,48 @@ fn wait_children(children: &mut [OwnedChild], cancel: &Path) -> Result<(), Execu
             return Err(ExecutionFailure::Error("nonzero exit status".to_owned()));
         }
         if complete {
+            // Keep exited leaders unreaped until their groups have been cleaned.
+            // This reserves the group identity and prevents PID reuse while signaling.
+            finish_children(children);
             return Ok(());
         }
         thread::sleep(POLL_INTERVAL);
     }
 }
 
+fn observe_child(child: &Child) -> Result<Option<ExitStatus>, nix::Error> {
+    let pid = i32::try_from(child.id()).map_err(|_| nix::errno::Errno::EINVAL)?;
+    match waitid(
+        Id::Pid(Pid::from_raw(pid)),
+        WaitPidFlag::WEXITED | WaitPidFlag::WNOHANG | WaitPidFlag::WNOWAIT,
+    )? {
+        WaitStatus::Exited(_, code) => Ok(Some(ExitStatus::from_raw(code << 8))),
+        WaitStatus::Signaled(_, signal, core) => Ok(Some(ExitStatus::from_raw(
+            signal as i32 | if core { 0x80 } else { 0 },
+        ))),
+        _ => Ok(None),
+    }
+}
+
 fn terminate_children(children: &mut [OwnedChild]) {
     for owned in &*children {
-        if owned.status.is_none() {
-            signal_group(&owned.child, Signal::SIGTERM);
-        }
+        signal_group(&owned.child, Signal::SIGTERM);
     }
+    // A shell may exit on TERM while a grandchild ignores it. Do not reap that
+    // shell or acknowledge cancellation until the entire owned group is killed.
     let deadline = Instant::now() + TERMINATION_GRACE;
     while Instant::now() < deadline {
-        let mut complete = true;
-        for owned in &mut *children {
-            if owned.status.is_none() {
-                owned.status = owned.child.try_wait().ok().flatten();
-            }
-            complete &= owned.status.is_some();
-        }
-        if complete {
-            return;
-        }
         thread::sleep(POLL_INTERVAL);
     }
+    finish_children(children);
+}
+
+fn finish_children(children: &mut [OwnedChild]) {
     for owned in &*children {
-        if owned.status.is_none() {
-            signal_group(&owned.child, Signal::SIGKILL);
-        }
+        signal_group(&owned.child, Signal::SIGKILL);
     }
-    for owned in &mut *children {
-        if owned.status.is_none() {
-            let _ = owned.child.wait();
-        }
+    for owned in children {
+        let _ = owned.child.wait();
     }
 }
 

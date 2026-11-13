@@ -1385,3 +1385,170 @@ grep -q 'Host key verification failed' .credential-git-ssh/rejected
         "final down",
     );
 }
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one packaged scenario verifies ownership across down, up, and rebuild"
+)]
+fn packaged_active_lifecycle_cancels_on_down_and_rebuild_and_repeats_post_start() {
+    let binary = PathBuf::from(
+        std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
+            .expect("xtask must provide the packaged cdenv binary"),
+    );
+    require_success(
+        &run(&binary, &["__validate-artifacts"], &[]),
+        "artifact validation",
+    );
+    let shared = std::env::var_os("CDENV_INTEGRATION_SHARED_TMP")
+        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let temporary = tempfile::Builder::new()
+        .prefix("cdenv-active-lifecycle-")
+        .tempdir_in(shared)
+        .expect("temporary workflow");
+    let root = temporary.path().join("cdenv-root");
+    let home = temporary.path().join("home");
+    fs::create_dir(&home).expect("home");
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("home mode");
+    let agent = Agent::start(temporary.path());
+    let repository = create_repository(temporary.path(), &agent.public_key);
+    let config_path = repository.join(".devcontainer/devcontainer.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).expect("config")).expect("JSON");
+    config["postStartCommand"] = serde_json::json!([
+        "/bin/sh",
+        "-c",
+        "test -S \"$SSH_AUTH_SOCK\" || exit 20; trap 'printf stopped >> .active-stops; exit 0' TERM; printf x >> .active-starts; touch .active-ready; while :; do sleep 1; done"
+    ]);
+    fs::write(
+        &config_path,
+        serde_json::to_vec(&config).expect("config JSON"),
+    )
+    .expect("config update");
+    require_success(
+        &Command::new("git")
+            .arg("-C")
+            .arg(&repository)
+            .args(["commit", "-am", "active lifecycle fixture"])
+            .output()
+            .expect("commit"),
+        "fixture commit",
+    );
+    let workspace = unique_name("active-lifecycle");
+    let root_text = root.to_str().expect("root");
+    let environment = [
+        ("HOME", home.as_path()),
+        ("SSH_AUTH_SOCK", agent.socket.as_path()),
+    ];
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "credentials",
+                "enable",
+                &workspace,
+                "ssh-agent",
+                "--socket",
+                agent.socket.to_str().expect("socket"),
+            ],
+            &environment,
+        ),
+        "enable credentials",
+    );
+    require_success(
+        &run(
+            &binary,
+            &[
+                "--root",
+                root_text,
+                "--no-modify-ssh-config",
+                "create",
+                repository.to_str().expect("repository"),
+                "--name",
+                &workspace,
+            ],
+            &environment,
+        ),
+        "create active lifecycle",
+    );
+    let workspace_root = root.join("workspaces").join(&workspace);
+    let checkout = workspace_root.join("checkout").join(&workspace);
+    let ready = checkout.join(".active-ready");
+    let record_path = workspace_root.join("runtime/lifecycle-exec.json");
+    let read_record = || -> serde_json::Value {
+        serde_json::from_slice(&fs::read(&record_path).expect("execution record"))
+            .expect("record JSON")
+    };
+    wait_for_path(&ready, "first active hook");
+    let first = read_record();
+    fs::remove_file(&ready).expect("clear readiness");
+    require_success(
+        &run(
+            &binary,
+            &["--root", root_text, "down", &workspace],
+            &environment,
+        ),
+        "cancel active hook on down",
+    );
+    assert_eq!(
+        fs::read(checkout.join(".active-stops")).expect("TERM acknowledgement"),
+        b"stopped"
+    );
+    require_success(
+        &run(
+            &binary,
+            &["--root", root_text, "up", &workspace],
+            &environment,
+        ),
+        "up after cancellation",
+    );
+    wait_for_path(&ready, "second active hook");
+    let second = read_record();
+    assert_eq!(
+        first["identity"]["generation"],
+        second["identity"]["generation"]
+    );
+    assert_ne!(first["execId"], second["execId"]);
+    assert_ne!(
+        first["request"]["ownership"]["execution"],
+        second["request"]["ownership"]["execution"]
+    );
+    assert_eq!(
+        fs::read(checkout.join(".active-starts")).expect("starts"),
+        b"xx"
+    );
+    fs::remove_file(&ready).expect("clear readiness");
+    require_success(
+        &run(
+            &binary,
+            &["--root", root_text, "rebuild", &workspace],
+            &environment,
+        ),
+        "rebuild cancels active hook",
+    );
+    wait_for_path(&ready, "replacement active hook");
+    let replacement = read_record();
+    assert_ne!(
+        second["identity"]["generation"],
+        replacement["identity"]["generation"]
+    );
+    assert_eq!(
+        fs::read(checkout.join(".active-stops")).expect("stops"),
+        b"stoppedstopped"
+    );
+    require_success(
+        &run(
+            &binary,
+            &["--root", root_text, "down", &workspace],
+            &environment,
+        ),
+        "final active hook down",
+    );
+    assert_eq!(
+        fs::read(checkout.join(".active-starts")).expect("starts"),
+        b"xxx"
+    );
+    assert!(!contains_marker(&root));
+}

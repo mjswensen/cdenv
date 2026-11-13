@@ -235,6 +235,16 @@ fn run_machine_command(arguments: &[OsString]) -> Result<String, String> {
             #[cfg(target_os = "linux")]
             [command] if command == "install-post-attach" => install_post_attach(),
             #[cfg(target_os = "linux")]
+            [command, request] if command == "lifecycle-run-owned" => {
+                owned_lifecycle(request, None)
+            }
+            #[cfg(target_os = "linux")]
+            [command, request, timeout] if command == "lifecycle-cancel-owned" => timeout
+                .to_string_lossy()
+                .parse::<u64>()
+                .map_err(|_| "invalid lifecycle cancellation timeout".to_owned())
+                .and_then(|milliseconds| owned_lifecycle(request, Some(Duration::from_millis(milliseconds)))),
+            #[cfg(target_os = "linux")]
             [command, manifest] if command == "lifecycle-runner" => {
                 lifecycle_runner(Path::new(manifest))
             }
@@ -391,6 +401,24 @@ fn install_post_attach() -> Result<String, String> {
     let result =
         cdenv_agent::install_post_attach_manifest(&request).map_err(|error| error.to_string())?;
     serde_json::to_string(&result).map_err(|_| "cannot encode lifecycle manifest path".to_owned())
+}
+
+#[cfg(target_os = "linux")]
+fn owned_lifecycle(request: &std::ffi::OsStr, timeout: Option<Duration>) -> Result<String, String> {
+    let request: cdenv_agent::LifecycleRunRequest =
+        serde_json::from_slice(request.as_encoded_bytes())
+            .map_err(|_| "invalid owned lifecycle request".to_owned())?;
+    if request.ownership.is_none() {
+        return Err("missing lifecycle execution ownership".to_owned());
+    }
+    if let Some(timeout) = timeout {
+        let inspection =
+            cdenv_agent::cancel_lifecycle(&request, timeout).map_err(|error| error.to_string())?;
+        serde_json::to_string(&inspection).map_err(|_| "cannot encode lifecycle state".to_owned())
+    } else {
+        let state = cdenv_agent::run_lifecycle(&request).map_err(|error| error.to_string())?;
+        serde_json::to_string(&state).map_err(|_| "cannot encode lifecycle state".to_owned())
+    }
 }
 
 #[cfg(target_os = "linux")]

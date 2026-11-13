@@ -50,6 +50,7 @@ fn request(
     .expect("environment capture");
     LifecycleRunRequest {
         ownership: None,
+        initialize_one_time: false,
         generation: generation.to_owned(),
         build_id: BUILD_ID.to_owned(),
         protocol_version: PROTOCOL_VERSION,
@@ -575,5 +576,248 @@ fn owned_binary_cancellation_rejects_wrong_owners_and_cleans_term_resistant_desc
             .nth(1)
             .is_some_and(|tail| tail.trim_start().starts_with('Z'))),
         "descendant survived cancellation"
+    );
+}
+
+#[test]
+fn owned_one_time_progress_survives_fresh_runs_while_post_start_repeats() {
+    let directory = TempDir::new().expect("directory");
+    let mut first = request(
+        &directory,
+        "once-success",
+        vec![
+            LifecycleStagePlan {
+                stage: LifecycleStage::PostCreate,
+                commands: vec![shell("printf x >> once")],
+            },
+            LifecycleStagePlan {
+                stage: LifecycleStage::PostStart,
+                commands: vec![shell("printf x >> starts")],
+            },
+        ],
+    );
+    own_request(&mut first, 'a');
+    first.initialize_one_time = true;
+    run_lifecycle(&first).expect("first run");
+    let mut next = first.clone();
+    own_request(&mut next, 'b');
+    next.initialize_one_time = false;
+    run_lifecycle(&next).expect("fresh run resumes the completed generation");
+    assert_eq!(fs::read(directory.path().join("once")).expect("once"), b"x");
+    assert_eq!(
+        fs::read(directory.path().join("starts")).expect("starts"),
+        b"xx"
+    );
+    own_request(&mut next, 'c');
+    next.stages[0].commands.push(shell("touch must-not-run"));
+    assert!(
+        run_lifecycle(&next).is_err(),
+        "another one-time plan cannot reuse progress"
+    );
+    assert!(!directory.path().join("must-not-run").exists());
+    own_request(&mut next, 'd');
+    next.stages.clear();
+    assert!(
+        run_lifecycle(&next).is_err(),
+        "omitting all one-time work cannot bypass progress"
+    );
+}
+
+#[test]
+fn owned_cancel_before_first_child_remains_retryable_without_reusing_the_cancelled_run() {
+    let directory = TempDir::new().expect("directory");
+    let mut first = request(
+        &directory,
+        "pending-once",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostCreate,
+            commands: vec![shell("printf x >> once")],
+        }],
+    );
+    own_request(&mut first, 'a');
+    first.initialize_one_time = true;
+    fs::write(
+        directory
+            .path()
+            .join(format!(".cdenv-run-{}.cancel", "a".repeat(64))),
+        b"cancel",
+    )
+    .expect("pending cancellation");
+    assert_eq!(
+        run_lifecycle(&first).expect("cancel before start").phase,
+        LifecyclePhase::Cancelled
+    );
+    assert!(
+        inspect_lifecycle(&first)
+            .expect("inspection")
+            .pending_one_time_retryable
+    );
+    run_lifecycle(&first).expect("same cancelled run remains terminal");
+    assert!(!directory.path().join("once").exists());
+    let mut next = first.clone();
+    own_request(&mut next, 'b');
+    next.initialize_one_time = false;
+    run_lifecycle(&next).expect("retry definitely pending work in a fresh run");
+    assert_eq!(fs::read(directory.path().join("once")).expect("once"), b"x");
+}
+
+#[test]
+fn owned_one_time_cancellation_preserves_completed_prefix_and_requires_a_new_generation() {
+    let directory = TempDir::new().expect("directory");
+    let mut first = request(
+        &directory,
+        "active-once",
+        vec![
+            LifecycleStagePlan {
+                stage: LifecycleStage::UpdateContent,
+                commands: vec![shell("printf x >> prefix")],
+            },
+            LifecycleStagePlan {
+                stage: LifecycleStage::PostCreate,
+                commands: vec![shell("touch ready; test -f allow-finish || sleep 30")],
+            },
+        ],
+    );
+    own_request(&mut first, 'a');
+    first.initialize_one_time = true;
+    let runner_request = first.clone();
+    let runner = std::thread::spawn(move || run_lifecycle(&runner_request));
+    for _ in 0..200 {
+        if directory.path().join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(directory.path().join("ready").exists());
+    let inspection = cancel_lifecycle(&first, Duration::from_secs(5)).expect("cancel");
+    assert!(runner.join().expect("runner").is_err());
+    assert_eq!(inspection.state.phase, LifecyclePhase::Indeterminate);
+    assert_eq!(
+        (inspection.state.stage_index, inspection.state.command_index),
+        (1, 0)
+    );
+    assert!(!inspection.pending_one_time_retryable);
+    fs::write(directory.path().join("allow-finish"), b"yes").expect("allow replacement");
+    let mut next = first.clone();
+    own_request(&mut next, 'b');
+    next.initialize_one_time = false;
+    assert!(
+        run_lifecycle(&next).is_err(),
+        "fresh execution cannot replay uncertain work"
+    );
+    assert_eq!(
+        fs::read(directory.path().join("prefix")).expect("prefix"),
+        b"x"
+    );
+    next.generation = "replacement".to_owned();
+    next.initialize_one_time = true;
+    own_request(&mut next, 'c');
+    run_lifecycle(&next).expect("new generation can execute one-time work");
+    assert_eq!(
+        fs::read(directory.path().join("prefix")).expect("prefix"),
+        b"xx"
+    );
+}
+
+#[test]
+fn missing_owned_generation_checkpoint_cannot_reset_successful_one_time_work() {
+    let directory = TempDir::new().expect("directory");
+    let mut first = request(
+        &directory,
+        "lost-once",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostCreate,
+            commands: vec![shell("printf x >> once")],
+        }],
+    );
+    own_request(&mut first, 'a');
+    first.initialize_one_time = true;
+    run_lifecycle(&first).expect("first run");
+    fs::remove_file(directory.path().join(".cdenv-once-lost-once.json")).expect("lose checkpoint");
+    assert!(
+        run_lifecycle(&first).is_err(),
+        "completed run cannot recreate its journal"
+    );
+    let mut next = first;
+    own_request(&mut next, 'b');
+    next.initialize_one_time = false;
+    assert!(
+        run_lifecycle(&next).is_err(),
+        "restart cannot recreate a missing journal"
+    );
+    assert_eq!(fs::read(directory.path().join("once")).expect("once"), b"x");
+}
+
+#[test]
+fn a_failed_one_time_group_never_replays_its_successful_prefix_in_a_fresh_run() {
+    let directory = TempDir::new().expect("directory");
+    let mut first = request(
+        &directory,
+        "failed-once",
+        vec![LifecycleStagePlan {
+            stage: LifecycleStage::PostCreate,
+            commands: vec![shell("printf x >> prefix"), shell("exit 7")],
+        }],
+    );
+    own_request(&mut first, 'a');
+    first.initialize_one_time = true;
+    assert!(run_lifecycle(&first).is_err());
+    let mut next = first.clone();
+    own_request(&mut next, 'b');
+    next.initialize_one_time = false;
+    assert!(matches!(
+        run_lifecycle(&next),
+        Err(cdenv_agent::LifecycleError::OneTimeFailed)
+    ));
+    assert_eq!(
+        fs::read(directory.path().join("prefix")).expect("prefix"),
+        b"x"
+    );
+}
+
+#[test]
+fn concurrent_fresh_executions_cannot_share_one_time_generation_progress() {
+    let directory = TempDir::new().expect("directory");
+    let mut first = request(
+        &directory,
+        "concurrent-once",
+        vec![
+            LifecycleStagePlan {
+                stage: LifecycleStage::PostCreate,
+                commands: vec![shell("printf x >> prefix")],
+            },
+            LifecycleStagePlan {
+                stage: LifecycleStage::PostStart,
+                commands: vec![shell("touch ready; sleep 30")],
+            },
+        ],
+    );
+    own_request(&mut first, 'a');
+    first.initialize_one_time = true;
+    let runner_request = first.clone();
+    let runner = std::thread::spawn(move || run_lifecycle(&runner_request));
+    for _ in 0..200 {
+        if directory.path().join("ready").exists() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(directory.path().join("ready").exists());
+    let mut next = first.clone();
+    own_request(&mut next, 'b');
+    next.initialize_one_time = false;
+    let concurrent = run_lifecycle(&next);
+    cancel_lifecycle(&first, Duration::from_secs(5)).expect("cancel owner");
+    runner
+        .join()
+        .expect("runner")
+        .expect("post-start cancellation");
+    assert!(matches!(
+        concurrent,
+        Err(cdenv_agent::LifecycleError::AlreadyRunning)
+    ));
+    assert_eq!(
+        fs::read(directory.path().join("prefix")).expect("prefix"),
+        b"x"
     );
 }

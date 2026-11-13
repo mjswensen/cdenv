@@ -22,6 +22,8 @@ use thiserror::Error;
 
 use crate::{BUILD_ID, EnvironmentError, EnvironmentSnapshot, PROTOCOL_VERSION};
 
+mod one_time;
+
 const MAXIMUM_LOG_BYTES: u64 = 1024 * 1024;
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const TERMINATION_GRACE: Duration = Duration::from_secs(2);
@@ -152,6 +154,9 @@ pub struct LifecycleRunRequest {
     /// Per-launch ownership; absent only for the legacy generation runner and attach hooks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ownership: Option<LifecycleRunOwnership>,
+    /// Allows the first launch of a generation to initialize its one-time checkpoint.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub initialize_one_time: bool,
     /// Stable generation identity.
     pub generation: String,
     /// Expected agent build identity.
@@ -262,6 +267,8 @@ pub struct LifecycleRunnerState {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LifecycleInspection {
+    /// The generation checkpoint proves pending one-time work can resume in a fresh run.
+    pub pending_one_time_retryable: bool,
     /// Verified durable checkpoint.
     pub state: LifecycleRunnerState,
     /// Whether a runner currently owns the generation lock.
@@ -302,6 +309,9 @@ pub enum LifecycleError {
     /// A prior one-time command has an unknowable result.
     #[error("one-time lifecycle execution is indeterminate and requires rebuild")]
     Indeterminate,
+    /// A definite one-time failure must not be replayed in another execution.
+    #[error("one-time lifecycle work failed; rebuild before retrying")]
+    OneTimeFailed,
     /// One command group failed.
     #[error("lifecycle stage {stage:?} command group {command_index} failed")]
     CommandFailed {
@@ -354,6 +364,7 @@ pub fn run_lifecycle(
         .map_err(|(_, _)| LifecycleError::AlreadyRunning)?;
     let mut state = load_or_create(request, &paths)?;
     validate_state(request, &state)?;
+    let mut one_time = one_time::OneTimeRun::open(request, &state)?;
     if state.phase == LifecyclePhase::Running {
         state.phase = if current_stage(&state).is_some_and(LifecycleStage::is_one_time) {
             LifecyclePhase::Indeterminate
@@ -383,14 +394,31 @@ pub fn run_lifecycle(
             .enroll_credentials(Path::new(runtime), &request.credential_grants)
             .map_err(|source| LifecycleError::Environment { source })?;
     }
+    let mut one_time_index = one_time_command_offset(request, &state);
     while state.stage_index < request.stages.len() {
         let stage_plan = &request.stages[state.stage_index];
         while state.command_index < stage_plan.commands.len() {
+            if stage_plan.stage.is_one_time()
+                && one_time
+                    .as_ref()
+                    .is_some_and(|checkpoint| checkpoint.already_completed(one_time_index))
+            {
+                one_time_index += 1;
+                state.command_index += 1;
+                state.phase = LifecyclePhase::After;
+                store_state(&paths, &state)?;
+                continue;
+            }
             if paths.cancel.exists() {
                 state.phase = LifecyclePhase::Cancelled;
                 state.runner_pid = None;
                 store_state(&paths, &state)?;
                 return Ok(state);
+            }
+            if stage_plan.stage.is_one_time()
+                && let Some(checkpoint) = &mut one_time
+            {
+                checkpoint.begin(one_time_index)?;
             }
             state.phase = LifecyclePhase::Running;
             store_state(&paths, &state)?;
@@ -402,37 +430,17 @@ pub fn run_lifecycle(
                 &paths,
                 false,
             );
-            match result {
-                Ok(()) => {
-                    state.phase = LifecyclePhase::After;
-                    state.command_index += 1;
-                    store_state(&paths, &state)?;
-                }
-                Err(ExecutionFailure::Cancelled) => {
-                    state.phase = if stage_plan.stage.is_one_time() {
-                        LifecyclePhase::Indeterminate
-                    } else {
-                        LifecyclePhase::Cancelled
-                    };
-                    state.runner_pid = None;
-                    state.failure = Some("cancelled".to_owned());
-                    store_state(&paths, &state)?;
-                    return if state.phase == LifecyclePhase::Indeterminate {
-                        Err(LifecycleError::Indeterminate)
-                    } else {
-                        Ok(state)
-                    };
-                }
-                Err(ExecutionFailure::Error(error)) => {
-                    state.phase = LifecyclePhase::Failed;
-                    state.runner_pid = None;
-                    state.failure = Some(error);
-                    store_state(&paths, &state)?;
-                    return Err(LifecycleError::CommandFailed {
-                        stage: stage_plan.stage,
-                        command_index: state.command_index,
-                    });
-                }
+            let checkpoint = if stage_plan.stage.is_one_time() {
+                one_time.as_mut()
+            } else {
+                None
+            };
+            if !checkpoint_command_result(result, &paths, &mut state, stage_plan.stage, checkpoint)?
+            {
+                return Ok(state);
+            }
+            if stage_plan.stage.is_one_time() {
+                one_time_index += 1;
             }
         }
         state.stage_index += 1;
@@ -446,6 +454,73 @@ pub fn run_lifecycle(
     store_state(&paths, &state)?;
     let _ = fs::remove_file(&paths.cancel);
     Ok(state)
+}
+
+fn one_time_command_offset(request: &LifecycleRunRequest, state: &LifecycleRunnerState) -> usize {
+    let completed_stages: usize = request
+        .stages
+        .iter()
+        .take(state.stage_index)
+        .filter(|stage| stage.stage.is_one_time())
+        .map(|stage| stage.commands.len())
+        .sum();
+    completed_stages
+        + if current_stage(state).is_some_and(LifecycleStage::is_one_time) {
+            state.command_index
+        } else {
+            0
+        }
+}
+
+fn checkpoint_command_result(
+    result: Result<(), ExecutionFailure>,
+    paths: &RunnerPaths,
+    state: &mut LifecycleRunnerState,
+    current: LifecycleStage,
+    checkpoint: Option<&mut one_time::OneTimeRun>,
+) -> Result<bool, LifecycleError> {
+    match result {
+        Ok(()) => {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.complete()?;
+            }
+            state.phase = LifecyclePhase::After;
+            state.command_index += 1;
+            store_state(paths, state)?;
+            Ok(true)
+        }
+        Err(ExecutionFailure::Cancelled) => {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.fail(LifecyclePhase::Indeterminate)?;
+            }
+            state.phase = if current.is_one_time() {
+                LifecyclePhase::Indeterminate
+            } else {
+                LifecyclePhase::Cancelled
+            };
+            state.runner_pid = None;
+            state.failure = Some("cancelled".to_owned());
+            store_state(paths, state)?;
+            if state.phase == LifecyclePhase::Indeterminate {
+                Err(LifecycleError::Indeterminate)
+            } else {
+                Ok(false)
+            }
+        }
+        Err(ExecutionFailure::Error(error)) => {
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.fail(LifecyclePhase::Failed)?;
+            }
+            state.phase = LifecyclePhase::Failed;
+            state.runner_pid = None;
+            state.failure = Some(error);
+            store_state(paths, state)?;
+            Err(LifecycleError::CommandFailed {
+                stage: current,
+                command_index: state.command_index,
+            })
+        }
+    }
 }
 
 /// Executes one command group synchronously with an explicit stdin policy.
@@ -503,6 +578,7 @@ pub fn inspect_lifecycle(
         visible.runner_pid = None;
     }
     Ok(LifecycleInspection {
+        pending_one_time_retryable: one_time::pending_retryable(request, &visible)?,
         state: visible,
         runner_active,
     })
@@ -591,7 +667,20 @@ pub fn run_post_attach(request: &LifecycleRunRequest) -> Result<(), LifecycleErr
     store_attach_state(&paths, request, true)
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde predicates borrow the field"
+)]
+fn is_false(value: &bool) -> bool {
+    !value
+}
+
 fn validate_request(request: &LifecycleRunRequest) -> Result<(), LifecycleError> {
+    if request.initialize_one_time && request.ownership.is_none() {
+        return Err(LifecycleError::InvalidRequest {
+            field: "initializeOneTime",
+        });
+    }
     if let Some(owner) = &request.ownership
         && ([&owner.installation, &owner.workspace, &owner.container]
             .iter()
@@ -1048,10 +1137,6 @@ fn resolve(
 
 fn wait_children(children: &mut [OwnedChild], cancel: &Path) -> Result<(), ExecutionFailure> {
     loop {
-        if cancel.exists() {
-            terminate_children(children);
-            return Err(ExecutionFailure::Cancelled);
-        }
         let mut complete = true;
         let mut failed = false;
         for owned in &mut *children {
@@ -1071,6 +1156,10 @@ fn wait_children(children: &mut [OwnedChild], cancel: &Path) -> Result<(), Execu
             // This reserves the group identity and prevents PID reuse while signaling.
             finish_children(children);
             return Ok(());
+        }
+        if cancel.exists() {
+            terminate_children(children);
+            return Err(ExecutionFailure::Cancelled);
         }
         thread::sleep(POLL_INTERVAL);
     }
@@ -1192,5 +1281,39 @@ fn stream_reader(
 fn join_readers(readers: Vec<thread::JoinHandle<()>>) {
     for reader in readers {
         let _ = reader.join();
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_tests {
+    use super::*;
+
+    #[test]
+    fn a_known_successful_exit_wins_over_late_cancellation() {
+        let directory = tempfile::tempdir().expect("directory");
+        let cancel = directory.path().join("cancel");
+        let child = Command::new("/bin/sh")
+            .args(["-c", "exit 0"])
+            .process_group(0)
+            .spawn()
+            .expect("child");
+        for _ in 0..200 {
+            if observe_child(&child).expect("observe").is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(observe_child(&child).expect("finished child").is_some());
+        fs::write(&cancel, b"cancel").expect("late request");
+        assert!(
+            wait_children(
+                &mut [OwnedChild {
+                    child,
+                    status: None
+                }],
+                &cancel
+            )
+            .is_ok()
+        );
     }
 }

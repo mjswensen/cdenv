@@ -1400,6 +1400,10 @@ struct LifecycleWorkflow {
 
 impl LifecycleWorkflow {
     fn create() -> Self {
+        Self::with_one_time(None)
+    }
+
+    fn with_one_time(hooks: Option<(&str, &str)>) -> Self {
         let binary = PathBuf::from(
             std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
                 .expect("xtask must provide the packaged cdenv binary"),
@@ -1424,6 +1428,11 @@ impl LifecycleWorkflow {
         let mut config: serde_json::Value =
             serde_json::from_slice(&fs::read(&config_path).expect("config")).expect("JSON");
         config["postStartCommand"] = serde_json::json!(["/bin/sh", "-c", ACTIVE_LIFECYCLE_SCRIPT]);
+        if let Some((update, create)) = hooks {
+            config["waitFor"] = serde_json::json!("onCreateCommand");
+            config["updateContentCommand"] = serde_json::json!(["/bin/sh", "-c", update]);
+            config["postCreateCommand"] = serde_json::json!(["/bin/sh", "-c", create]);
+        }
         fs::write(
             &config_path,
             serde_json::to_vec(&config).expect("config JSON"),
@@ -1474,7 +1483,14 @@ impl LifecycleWorkflow {
             ]),
             "create active lifecycle",
         );
-        workflow.wait_for_hook();
+        if hooks.is_some() {
+            wait_for_path(
+                &workflow.checkout.join(".once-ready"),
+                "one-time hook boundary",
+            );
+        } else {
+            workflow.wait_for_hook();
+        }
         workflow
     }
 
@@ -1547,6 +1563,38 @@ impl LifecycleWorkflow {
             serde_json::from_slice(&output.stdout).expect("checkpoint JSON");
         assert_eq!(state["plan"], record["request"]);
         state
+    }
+
+    fn cancel_owned(&self, record: &serde_json::Value, timeout: &str) -> serde_json::Value {
+        let workspace_state: serde_json::Value = serde_json::from_slice(
+            &fs::read(self.workspace_root().join("state.json")).expect("state"),
+        )
+        .expect("state JSON");
+        let agent = workspace_state["active"]["provisioned"]["agentPath"]
+            .as_str()
+            .expect("provisioned agent path");
+        let request = serde_json::to_string(&record["request"]).expect("request");
+        let output = self.container_exec(
+            record,
+            &[agent, "lifecycle-cancel-owned", &request, timeout],
+        );
+        require_success(&output, "owned cancellation acknowledgement");
+        serde_json::from_slice(&output.stdout).expect("inspection")
+    }
+
+    fn one_time_checkpoint(&self, record: &serde_json::Value) -> serde_json::Value {
+        let path = format!(
+            "{}/.cdenv-once-{}.json",
+            record["request"]["stateDirectory"]
+                .as_str()
+                .expect("directory"),
+            record["request"]["generation"]
+                .as_str()
+                .expect("generation")
+        );
+        let output = self.container_exec(record, &["cat", &path]);
+        require_success(&output, "generation checkpoint");
+        serde_json::from_slice(&output.stdout).expect("checkpoint JSON")
     }
 
     fn assert_recovery_required(&self) {
@@ -1757,4 +1805,161 @@ fn packaged_lifecycle_runner_crash_preserves_unrelated_process_and_requires_rebu
         "unrelated marker survived",
     );
     workflow.recover_after_uncertainty(&record);
+}
+
+#[test]
+fn packaged_one_time_pending_retry_skips_the_completed_prefix_in_a_fresh_execution() {
+    let workflow = LifecycleWorkflow::with_one_time(Some((
+        "test -S \"$SSH_AUTH_SOCK\" || exit 20; printf x >> .once-first; kill -STOP \"$PPID\"; printf '%s' \"$$\" > .once-ready.tmp; mv .once-ready.tmp .once-ready",
+        "test -S \"$SSH_AUTH_SOCK\" && printf x >> .once-second",
+    )));
+    let first = workflow.record();
+    let state = workflow.checkpoint(&first);
+    let runner_pid = state["runnerPid"]
+        .as_u64()
+        .expect("fixture runner")
+        .to_string();
+    let child_pid =
+        fs::read_to_string(workflow.checkout.join(".once-ready")).expect("exited fixture child");
+    // Freeze the live runner before its next poll, then prove that its first
+    // child has already exited. Cancellation must checkpoint that known success.
+    require_success(
+        &workflow.container_exec(
+            &first,
+            &[
+                "/bin/sh",
+                "-c",
+                r#"
+        i=0
+        while [ "$i" -lt 100 ]; do
+            case "$(cat /proc/"$1"/stat)" in *') Z '*) exit 0 ;; esac
+            i=$((i+1)); sleep 0.01
+        done
+        exit 1
+    "#,
+                "fixture",
+                &child_pid,
+            ],
+        ),
+        "first child exited while runner is stopped",
+    );
+    let queued = workflow.cancel_owned(&first, "0");
+    assert_eq!(queued["runnerActive"], true);
+    require_success(
+        &workflow.container_exec(&first, &["/bin/kill", "-CONT", &runner_pid]),
+        "resume fixture runner",
+    );
+    let cancelled = workflow.cancel_owned(&first, "5000");
+    assert_eq!(cancelled["runnerActive"], false);
+    assert_eq!(cancelled["state"]["phase"], "cancelled");
+    assert_eq!(cancelled["state"]["stageIndex"], 1);
+    assert_eq!(cancelled["pendingOneTimeRetryable"], true);
+    let checkpoint = workflow.one_time_checkpoint(&first);
+    assert_eq!(checkpoint["completed"], 1);
+    assert_eq!(checkpoint["phase"], "before");
+    assert!(!workflow.checkout.join(".once-second").exists());
+    require_success(
+        &workflow.command("down"),
+        "down definitely pending one-time work",
+    );
+    require_success(&workflow.command("up"), "retry pending one-time work");
+    workflow.wait_for_hook();
+    let retry = workflow.record();
+    assert_eq!(
+        first["identity"]["generation"],
+        retry["identity"]["generation"]
+    );
+    assert_ne!(
+        first["request"]["ownership"]["execution"],
+        retry["request"]["ownership"]["execution"]
+    );
+    assert_eq!(
+        fs::read(workflow.checkout.join(".once-first")).expect("first"),
+        b"x"
+    );
+    assert_eq!(
+        fs::read(workflow.checkout.join(".once-second")).expect("second"),
+        b"x"
+    );
+    workflow.clear_hook_readiness();
+    require_success(&workflow.command("down"), "down completed one-time work");
+    require_success(&workflow.command("up"), "start after successful completion");
+    workflow.wait_for_hook();
+    assert_eq!(
+        fs::read(workflow.checkout.join(".once-first")).expect("first"),
+        b"x"
+    );
+    assert_eq!(
+        fs::read(workflow.checkout.join(".once-second")).expect("second"),
+        b"x"
+    );
+    assert_eq!(
+        fs::read(workflow.checkout.join(".active-starts")).expect("starts"),
+        b"xx"
+    );
+    require_success(
+        &workflow.command("down"),
+        "final pending-retry fixture down",
+    );
+    assert!(!contains_marker(&workflow.root));
+}
+
+#[test]
+fn packaged_one_time_active_cancellation_retains_prefix_and_requires_rebuild() {
+    let workflow = LifecycleWorkflow::with_one_time(Some((
+        "test -S \"$SSH_AUTH_SOCK\" && printf x >> .once-first",
+        "test -S \"$SSH_AUTH_SOCK\" || exit 20; printf x >> .once-started; touch .once-ready; if [ ! -f .once-release ]; then trap 'exit 0' TERM; while :; do sleep 1; done; fi",
+    )));
+    let first = workflow.record();
+    let cancelled = workflow.cancel_owned(&first, "5000");
+    assert_eq!(cancelled["runnerActive"], false);
+    assert_eq!(cancelled["state"]["phase"], "indeterminate");
+    assert_eq!(cancelled["state"]["stageIndex"], 1);
+    assert_eq!(cancelled["state"]["commandIndex"], 0);
+    assert_eq!(cancelled["pendingOneTimeRetryable"], false);
+    let checkpoint = workflow.one_time_checkpoint(&first);
+    assert_eq!(checkpoint["completed"], 1);
+    assert_eq!(checkpoint["phase"], "indeterminate");
+    for _ in 0..2 {
+        assert!(!workflow.command("down").status.success());
+        workflow.assert_recovery_required();
+        assert_eq!(
+            fs::read(workflow.checkout.join(".once-first")).expect("first"),
+            b"x"
+        );
+        assert_eq!(
+            fs::read(workflow.checkout.join(".once-started")).expect("started"),
+            b"x"
+        );
+        assert!(!workflow.checkout.join(".active-starts").exists());
+    }
+    fs::write(
+        workflow.checkout.join(".once-release"),
+        b"allow replacement",
+    )
+    .expect("release");
+    require_success(
+        &workflow.command("rebuild"),
+        "rebuild uncertain one-time work",
+    );
+    workflow.wait_for_hook();
+    let replacement = workflow.record();
+    assert_ne!(
+        first["identity"]["generation"],
+        replacement["identity"]["generation"]
+    );
+    assert_eq!(
+        fs::read(workflow.checkout.join(".once-first")).expect("first"),
+        b"xx"
+    );
+    assert_eq!(
+        fs::read(workflow.checkout.join(".once-started")).expect("started"),
+        b"xx"
+    );
+    assert_eq!(
+        workflow.one_time_checkpoint(&replacement)["phase"],
+        "complete"
+    );
+    require_success(&workflow.command("down"), "down rebuilt fixture");
+    assert!(!contains_marker(&workflow.root));
 }

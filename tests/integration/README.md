@@ -33,8 +33,10 @@ suite drives proper-CA authenticated smart-HTTP fetch/push, stale-token recovery
 two path/account credentials, a private submodule, native-helper isolation, token
 rotation and origin denial, plus staged enable/create, first and detached hooks,
 PTY/non-PTY real forwarded-agent signing, same-path agent restart,
-unavailable-backend recovery, concurrent SSH children, down/up/rebuild, unconfirmed lifecycle launches, controlled runner-crash recovery
-with unrelated-process preservation, controlled supervisor-loss recovery, and live
+unavailable-backend recovery, concurrent SSH children, down/up/rebuild,
+unconfirmed lifecycle launches, controlled runner-crash recovery with unrelated
+process preservation, generation-owned one-time progress and pending retries
+without prefix replay, controlled supervisor-loss recovery, and live
 revocation with old-session/new-child isolation through the
 packaged executable. It rejects an empty or partially skipped run. Its
 `fixtures/credential-coverage.json` record distinguishes integrated evidence,

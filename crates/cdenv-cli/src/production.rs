@@ -997,9 +997,12 @@ impl ProductionEnvironment<'_> {
         )
         .await?;
         let running = [
-            previous.is_none().then_some(&plan.lifecycle.on_create),
-            previous.is_none().then_some(&plan.lifecycle.update_content),
-            previous.is_none().then_some(&plan.lifecycle.post_create),
+            (previous.is_none() || transition == EnvironmentTransition::Started)
+                .then_some(&plan.lifecycle.on_create),
+            (previous.is_none() || transition == EnvironmentTransition::Started)
+                .then_some(&plan.lifecycle.update_content),
+            (previous.is_none() || transition == EnvironmentTransition::Started)
+                .then_some(&plan.lifecycle.post_create),
             (transition != EnvironmentTransition::AlreadyRunning)
                 .then_some(&plan.lifecycle.post_start),
         ]
@@ -1456,7 +1459,12 @@ async fn execute_lifecycle(
 ) -> Result<(), WorkflowMessage> {
     let agent = provisioned.agent_path.as_str();
     let mut stages = Vec::new();
-    if new_generation {
+    if new_generation
+        || (execution == LifecycleExecution::Background
+            && transition == EnvironmentTransition::Started)
+    {
+        // Fresh owned runners consult the generation checkpoint before executing
+        // any one-time background group. Completed prefixes are never replayed.
         stages.extend([&plan.on_create, &plan.update_content, &plan.post_create]);
     }
     if transition != EnvironmentTransition::AlreadyRunning {
@@ -1511,6 +1519,7 @@ async fn execute_lifecycle(
             workspace,
             background,
             credential_lease,
+            new_generation,
         )?;
         let command = vec![
             agent.to_owned(),
@@ -1556,6 +1565,7 @@ fn detached_lifecycle_request(
     workspace: &str,
     stages: Vec<AgentLifecycleStagePlan>,
     credential_lease: Option<&crate::SupervisorCredentialLease>,
+    initialize_one_time: bool,
 ) -> Result<serde_json::Value, WorkflowMessage> {
     let state_root = Path::new(environment)
         .parent()
@@ -1581,6 +1591,9 @@ fn detached_lifecycle_request(
             .unwrap_or_default(),
     };
     let mut value = serde_json::to_value(request).map_err(message)?;
+    if initialize_one_time {
+        value["initializeOneTime"] = serde_json::json!(true);
+    }
     value["ownership"] = serde_json::json!({
         "installation": identity.installation,
         "workspace": identity.workspace,
@@ -2079,7 +2092,7 @@ fn owned_cancellation_outcome(request: &serde_json::Value, output: &[u8]) -> Lif
                     )
                 })
             });
-            if pending_one_time {
+            if pending_one_time && inspection["pendingOneTimeRetryable"].as_bool() != Some(true) {
                 LifecycleStopOutcome::Indeterminate
             } else {
                 LifecycleStopOutcome::Graceful
@@ -3646,6 +3659,7 @@ mod tests {
                     }],
                 }],
                 None,
+                true,
             )
             .expect("request")
         };
@@ -3761,6 +3775,15 @@ mod tests {
             ),
             LifecycleStopOutcome::Indeterminate
         );
+        acknowledgement["pendingOneTimeRetryable"] = serde_json::json!(true);
+        assert_eq!(
+            owned_cancellation_outcome(
+                &request,
+                &serde_json::to_vec(&acknowledgement).expect("JSON")
+            ),
+            LifecycleStopOutcome::Graceful
+        );
+        acknowledgement["pendingOneTimeRetryable"] = serde_json::json!(false);
         acknowledgement["state"]["stageIndex"] = serde_json::json!(1);
         assert_eq!(
             owned_cancellation_outcome(

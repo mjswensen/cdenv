@@ -15,7 +15,7 @@ use cdenv_core::credentials::CredentialGrants;
 use nix::sys::signal::{Signal, killpg};
 use nix::unistd::{Pid, geteuid};
 use russh::keys::ssh_key::{Algorithm, PrivateKey, PublicKey};
-use russh::server::{Auth, Msg, Session};
+use russh::server::{Auth, Msg, PublicKeyOffer, Session, VerifiedPublicKey};
 use russh::{Channel, ChannelId, ChannelMsg, MethodKind, Sig};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -286,17 +286,25 @@ impl russh::server::Handler for SshHandler {
     async fn auth_publickey_offered(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: PublicKeyOffer<'_>,
     ) -> Result<Auth, Self::Error> {
-        Ok(authenticate(user, public_key, &self.authorized_key))
+        Ok(authenticate(
+            user,
+            public_key.public_key,
+            &self.authorized_key,
+        ))
     }
 
     async fn auth_publickey(
         &mut self,
         user: &str,
-        public_key: &PublicKey,
+        public_key: VerifiedPublicKey<'_>,
     ) -> Result<Auth, Self::Error> {
-        Ok(authenticate(user, public_key, &self.authorized_key))
+        Ok(authenticate(
+            user,
+            public_key.public_key,
+            &self.authorized_key,
+        ))
     }
 
     async fn auth_keyboard_interactive<'a>(
@@ -1001,8 +1009,15 @@ mod tests {
 
         async fn check_server_key(
             &mut self,
-            server_public_key: &PublicKey,
+            server_public_key: &russh::keys::PublicKeyOrCertificate,
         ) -> Result<bool, Self::Error> {
+            let russh::keys::PublicKeyOrCertificate::PublicKey {
+                key: server_public_key,
+                ..
+            } = server_public_key
+            else {
+                return Ok(false);
+            };
             *self.observed_host.lock().expect("host observation lock") =
                 Some(server_public_key.clone());
             Ok(server_public_key == &self.expected_host)

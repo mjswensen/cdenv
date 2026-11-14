@@ -6,7 +6,7 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SECRET_MARKER: &str = "credential-marker-must-not-persist";
 
@@ -1384,6 +1384,398 @@ grep -q 'Host key verification failed' .credential-git-ssh/rejected
         ),
         "final down",
     );
+}
+
+// Every SSH child in these scenarios has an outer deadline so a regression in
+// broker cancellation fails the gate instead of hanging its runner.
+struct BoundedChild(Option<Child>);
+
+impl BoundedChild {
+    fn finish(mut self, limit: Duration) -> Output {
+        let deadline = Instant::now() + limit;
+        loop {
+            if self
+                .0
+                .as_mut()
+                .expect("child")
+                .try_wait()
+                .expect("inspect public command")
+                .is_some()
+            {
+                return self
+                    .0
+                    .take()
+                    .expect("child")
+                    .wait_with_output()
+                    .expect("public command output");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "public command exceeded {limit:?}"
+            );
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
+impl Drop for BoundedChild {
+    fn drop(&mut self) {
+        if let Some(child) = &mut self.0 {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+struct AgentWorkflow {
+    binary: PathBuf,
+    root: PathBuf,
+    home: PathBuf,
+    workspace: String,
+    checkout: PathBuf,
+}
+
+impl AgentWorkflow {
+    fn create(directory: &Path, key: &Path, selected: &Path, automatic: &Path) -> Self {
+        let binary = PathBuf::from(
+            std::env::var_os("CDENV_CREDENTIAL_TEST_BINARY")
+                .expect("xtask must provide the packaged cdenv binary"),
+        );
+        require_success(
+            &run(&binary, &["__validate-artifacts"], &[]),
+            "artifact validation",
+        );
+        let root = directory.join("root");
+        let home = directory.join("home");
+        fs::create_dir(&home).expect("home");
+        fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).expect("home mode");
+        let repository = create_repository(directory, key);
+        // An untrusted container environment must not select a host endpoint.
+        let config_path = repository.join(".devcontainer/devcontainer.json");
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&fs::read(&config_path).expect("config")).expect("config JSON");
+        config["containerEnv"] = serde_json::json!({"SSH_AUTH_SOCK": automatic});
+        fs::write(
+            &config_path,
+            serde_json::to_vec(&config).expect("config JSON"),
+        )
+        .expect("config");
+        require_success(
+            &Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["commit", "-am", "container-supplied socket fixture"])
+                .output()
+                .expect("commit"),
+            "commit container environment",
+        );
+        let workspace = unique_name("agent-selection");
+        let checkout = root
+            .join("workspaces")
+            .join(&workspace)
+            .join("checkout")
+            .join(&workspace);
+        let workflow = Self {
+            binary,
+            root,
+            home,
+            workspace,
+            checkout,
+        };
+        require_success(
+            &workflow.invoke(
+                &[
+                    "credentials",
+                    "enable",
+                    &workflow.workspace,
+                    "ssh-agent",
+                    "--socket",
+                    selected.to_str().expect("selector"),
+                ],
+                automatic,
+            ),
+            "select agent",
+        );
+        require_success(
+            &workflow.invoke(
+                &[
+                    "--no-modify-ssh-config",
+                    "create",
+                    repository.to_str().expect("repository"),
+                    "--name",
+                    &workflow.workspace,
+                ],
+                automatic,
+            ),
+            "create agent workspace",
+        );
+        workflow
+    }
+
+    fn spawn(&self, arguments: &[&str], automatic: &Path) -> BoundedChild {
+        BoundedChild(Some(
+            Command::new(&self.binary)
+                .args(["--root", self.root.to_str().expect("root")])
+                .args(arguments)
+                .env("HOME", &self.home)
+                .env("SSH_AUTH_SOCK", automatic)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("start public command"),
+        ))
+    }
+
+    fn invoke(&self, arguments: &[&str], automatic: &Path) -> Output {
+        self.spawn(arguments, automatic)
+            .finish(Duration::from_mins(2))
+    }
+
+    fn ssh(&self, script: &str, automatic: &Path) -> BoundedChild {
+        self.spawn(
+            &[
+                "ssh",
+                &self.workspace,
+                "--",
+                "/bin/sh",
+                "-c",
+                &remote_script(script),
+            ],
+            automatic,
+        )
+    }
+
+    fn select(&self, selected: &Path, automatic: &Path) {
+        require_success(
+            &self.invoke(
+                &[
+                    "credentials",
+                    "enable",
+                    &self.workspace,
+                    "ssh-agent",
+                    "--socket",
+                    selected.to_str().expect("selector"),
+                ],
+                automatic,
+            ),
+            "explicit agent reconciliation",
+        );
+    }
+
+    fn assert_identity(&self, expected: &Path, automatic: &Path) {
+        let output = self
+            .ssh("ssh-add -L", automatic)
+            .finish(Duration::from_secs(15));
+        require_success(&output, "selected agent identity");
+        let expected = fs::read_to_string(expected).expect("public key");
+        let output = String::from_utf8(output.stdout).expect("identity text");
+        assert_eq!(
+            output.lines().count(),
+            1,
+            "only the selected agent identity is exposed"
+        );
+        assert_eq!(
+            output.split_whitespace().take(2).collect::<Vec<_>>(),
+            expected.split_whitespace().take(2).collect::<Vec<_>>()
+        );
+    }
+}
+
+impl Drop for AgentWorkflow {
+    fn drop(&mut self) {
+        let _ = self.invoke(&["down", &self.workspace], Path::new("/nonexistent-agent"));
+    }
+}
+
+#[test]
+fn packaged_ssh_agent_explicit_auto_selection_refresh_and_container_socket_isolation() {
+    let shared = std::env::var_os("CDENV_INTEGRATION_SHARED_TMP")
+        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let temporary = tempfile::Builder::new()
+        .prefix("cdenv-selection-")
+        .tempdir_in(shared)
+        .expect("temporary");
+    let second_root = temporary.path().join("second");
+    fs::create_dir(&second_root).expect("second agent directory");
+    let mut first = Agent::start(temporary.path());
+    let second = Agent::start(&second_root);
+    let workflow = AgentWorkflow::create(
+        temporary.path(),
+        &first.public_key,
+        &first.socket,
+        &second.socket,
+    );
+    workflow.assert_identity(&first.public_key, &second.socket);
+
+    // A container-provided host pathname is not a host endpoint selector.
+    let attack = workflow
+        .ssh(
+            &format!("SSH_AUTH_SOCK='{}' ssh-add -L", second.socket.display()),
+            &second.socket,
+        )
+        .finish(Duration::from_secs(15));
+    assert!(
+        !attack.status.success(),
+        "container path reached a host endpoint"
+    );
+    workflow.assert_identity(&first.public_key, &second.socket);
+
+    let _ = first.child.kill();
+    let _ = first.child.wait();
+    // Reconciliation retains the unavailable explicit selector, even with a
+    // healthy different agent in the invoking host environment.
+    workflow.select(&first.socket, &second.socket);
+    let unavailable = workflow
+        .ssh("ssh-add -L", &second.socket)
+        .finish(Duration::from_secs(15));
+    assert!(
+        !unavailable.status.success(),
+        "explicit selector fell back to automatic agent"
+    );
+    first.restart_same_path();
+    workflow.assert_identity(&first.public_key, &second.socket);
+
+    workflow.select(Path::new("auto"), &first.socket);
+    workflow.assert_identity(&first.public_key, &first.socket);
+    // Read/use commands with a different host environment cannot mutate auto.
+    workflow.assert_identity(&first.public_key, &second.socket);
+    workflow.select(Path::new("auto"), &second.socket);
+    workflow.assert_identity(&second.public_key, &second.socket);
+    workflow.select(Path::new("auto"), &first.socket);
+    workflow.assert_identity(&first.public_key, &first.socket);
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the ordered confirmation and concurrent-client scenario stays auditable"
+)]
+fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_client_isolation() {
+    let shared = std::env::var_os("CDENV_INTEGRATION_SHARED_TMP")
+        .map_or_else(std::env::temp_dir, PathBuf::from);
+    let temporary = tempfile::Builder::new()
+        .prefix("cdenv-confirmation-")
+        .tempdir_in(shared)
+        .expect("temporary");
+    let agent = Agent::start(temporary.path());
+    let socket = temporary.path().join("confirmation.sock");
+    let policy = temporary.path().join("confirmation-policy");
+    let pending = temporary.path().join("confirmation-pending");
+    fs::write(&policy, "allow").expect("allow policy");
+    let _confirmation = BoundedChild(Some(
+        Command::new(env!("CARGO_BIN_EXE_credential-confirmation-agent"))
+            .args([&socket, &agent.socket, &policy, &pending])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("simulated confirmation agent"),
+    ));
+    wait_for_path(&socket, "simulated confirmation agent");
+    let workflow =
+        AgentWorkflow::create(temporary.path(), &agent.public_key, &socket, &agent.socket);
+    let sign = "printf confirmation-message > .confirmation-message; rm -f .confirmation-message.sig; ssh-keygen -Y sign -f .devcontainer/fixture-agent-key.pub -n cdenv .confirmation-message";
+    require_success(
+        &workflow
+            .ssh(sign, &agent.socket)
+            .finish(Duration::from_secs(15)),
+        "simulated allowed signature",
+    );
+    let allowed = temporary.path().join("allowed-signers");
+    fs::write(
+        &allowed,
+        format!(
+            "fixture {}",
+            fs::read_to_string(&agent.public_key).expect("key")
+        ),
+    )
+    .expect("allowed signers");
+    let message = fs::File::open(workflow.checkout.join(".confirmation-message")).expect("message");
+    require_success(
+        &Command::new("ssh-keygen")
+            .args(["-Y", "verify", "-f"])
+            .arg(&allowed)
+            .args(["-I", "fixture", "-n", "cdenv", "-s"])
+            .arg(workflow.checkout.join(".confirmation-message.sig"))
+            .stdin(message)
+            .output()
+            .expect("verify"),
+        "real signature from simulated allow policy",
+    );
+
+    fs::write(&policy, "reject").expect("reject policy");
+    let rejected = workflow
+        .ssh(sign, &agent.socket)
+        .finish(Duration::from_secs(15));
+    assert!(
+        !rejected.status.success(),
+        "simulated rejected signing succeeded"
+    );
+    assert!(!workflow.checkout.join(".confirmation-message.sig").exists());
+    workflow.assert_identity(&agent.public_key, &agent.socket);
+
+    // Hold an unrelated public SSH session across both pending confirmation and
+    // timeout. A second signing client must also succeed while the first waits.
+    let mut unrelated = workflow.ssh("touch .confirmation-client-ready; while [ ! -f .confirmation-client-release ]; do sleep 0.1; done; printf survived", &agent.socket);
+    wait_for_path(
+        &workflow.checkout.join(".confirmation-client-ready"),
+        "unrelated client",
+    );
+    fs::write(&policy, "timeout").expect("timeout policy");
+    let start = Instant::now();
+    let waiting = workflow.ssh(sign, &agent.socket);
+    wait_for_path(&pending, "simulated pending confirmation");
+    fs::write(&policy, "allow").expect("allow other clients");
+    workflow.assert_identity(&agent.public_key, &agent.socket);
+    // Use a separate message so concurrent clients cannot overwrite each
+    // other's output artifacts.
+    let other_sign = sign.replace(".confirmation-message", ".confirmation-other-message");
+    require_success(
+        &workflow
+            .ssh(&other_sign, &agent.socket)
+            .finish(Duration::from_secs(15)),
+        "sign while confirmation pending",
+    );
+    let timeout = cdenv_core::credential_broker::BROKER_OPERATION_TIMEOUT;
+    let timed_out = waiting.finish(timeout + Duration::from_secs(15));
+    assert!(
+        !timed_out.status.success(),
+        "pending confirmation unexpectedly signed"
+    );
+    assert!(
+        start.elapsed() >= timeout,
+        "signing failed before the confirmation deadline"
+    );
+    assert!(
+        start.elapsed() < timeout + Duration::from_secs(20),
+        "confirmation timeout was not bounded"
+    );
+    assert!(!workflow.checkout.join(".confirmation-message.sig").exists());
+    assert!(
+        unrelated
+            .0
+            .as_mut()
+            .expect("child")
+            .try_wait()
+            .expect("unrelated client")
+            .is_none(),
+        "timeout stopped an unrelated client"
+    );
+    require_success(
+        &workflow
+            .ssh(sign, &agent.socket)
+            .finish(Duration::from_secs(15)),
+        "signing recovers after confirmation timeout",
+    );
+    fs::write(
+        workflow.checkout.join(".confirmation-client-release"),
+        b"release",
+    )
+    .expect("release client");
+    let survived = unrelated.finish(Duration::from_secs(15));
+    require_success(&survived, "unrelated client survived confirmation timeout");
+    assert_eq!(survived.stdout, b"survived");
 }
 
 const ACTIVE_LIFECYCLE_SCRIPT: &str = "test -S \"$SSH_AUTH_SOCK\" || exit 20; trap 'printf stopped >> .active-stops; exit 0' TERM; printf x >> .active-starts; touch .active-ready; while :; do sleep 1; done";

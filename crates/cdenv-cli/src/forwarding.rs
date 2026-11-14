@@ -39,7 +39,7 @@ use crate::{
 use crate::{LockBehavior, LockGuard, LockMode};
 
 /// Private host-supervisor protocol version.
-pub const FORWARDING_SUPERVISOR_PROTOCOL: u32 = 1;
+pub const FORWARDING_SUPERVISOR_PROTOCOL: u32 = 2;
 /// Maximum bytes accepted for one private control message.
 pub const MAXIMUM_CONTROL_MESSAGE_BYTES: u64 = 8 * 1024;
 /// Bound used while waiting for detached supervisor readiness and control replies.
@@ -168,6 +168,7 @@ enum ControlCommand {
     Reconcile {
         revision: u64,
         grants: CredentialGrants,
+        selected_ssh_agent: Option<PathBuf>,
     },
 }
 
@@ -626,6 +627,7 @@ struct LiveCredentialPolicy {
     https_epoch: u64,
     agent_epoch: u64,
     identity_epoch: u64,
+    ssh_agent: Option<HostSshAgentAdapter>,
 }
 
 /// Supervisor-owned live authority. The lock contains no credential values and
@@ -636,7 +638,6 @@ struct LiveCredentialBackend {
     ready: std::sync::atomic::AtomicBool,
     ready_notify: tokio::sync::Notify,
     git: Option<HostGitCredentialAdapter>,
-    ssh_agent: Option<HostSshAgentAdapter>,
 }
 
 impl LiveCredentialBackend {
@@ -667,12 +668,12 @@ impl LiveCredentialBackend {
                 https_epoch: lease.grant_revision,
                 agent_epoch: lease.grant_revision,
                 identity_epoch: lease.grant_revision,
+                ssh_agent,
             }),
             lease,
             ready: std::sync::atomic::AtomicBool::new(false),
             ready_notify: tokio::sync::Notify::new(),
             git,
-            ssh_agent,
         }
     }
 
@@ -683,11 +684,17 @@ impl LiveCredentialBackend {
         self.ready_notify.notified().await;
     }
 
-    fn reconcile(&self, revision: u64, grants: CredentialGrants) -> Result<u64, &'static str> {
+    fn reconcile(
+        &self,
+        revision: u64,
+        grants: CredentialGrants,
+        selected_ssh_agent: Option<&Path>,
+    ) -> Result<u64, &'static str> {
         grants.validate().map_err(|_| "invalid credential grants")?;
         if revision == 0 {
             return Err("invalid credential revision");
         }
+        let ssh_agent = reconciled_ssh_agent(&grants, selected_ssh_agent)?;
         let mut policy = self
             .policy
             .write()
@@ -698,9 +705,21 @@ impl LiveCredentialBackend {
         if policy.grants.https_origins() != grants.https_origins() {
             policy.https_epoch = revision;
         }
-        if policy.grants.ssh_selector() != grants.ssh_selector() {
-            policy.agent_epoch = revision;
+        if policy.grants.ssh_selector() != grants.ssh_selector()
+            || policy
+                .ssh_agent
+                .as_ref()
+                .map(HostSshAgentAdapter::selected_path)
+                != ssh_agent.as_ref().map(HostSshAgentAdapter::selected_path)
+        {
+            // An automatic selection can change without a persisted grant
+            // revision. Invalidate in-flight responses from the old endpoint.
+            policy.agent_epoch = policy
+                .agent_epoch
+                .checked_add(1)
+                .ok_or("credential epoch exhausted")?;
         }
+        policy.ssh_agent = ssh_agent;
         if policy
             .grants
             .enabled(cdenv_core::credentials::CredentialCapability::GitIdentity)
@@ -729,6 +748,46 @@ impl LiveCredentialBackend {
             && identity.agent_protocol == self.lease.agent_protocol
             && identity.broker_protocol == self.lease.broker_protocol
     }
+}
+
+// Only authenticated host control requests reach this function. The container
+// broker's AgentOpen packet carries no endpoint and cannot invoke reconciliation.
+fn reconciled_ssh_agent(
+    grants: &CredentialGrants,
+    path: Option<&Path>,
+) -> Result<Option<HostSshAgentAdapter>, &'static str> {
+    let Some(selector) = grants.ssh_selector() else {
+        return if path.is_none() {
+            Ok(None)
+        } else {
+            Err("unexpected agent selection")
+        };
+    };
+    let Some(path) = path else {
+        return if selector.explicit_path().is_none() {
+            Ok(None)
+        } else {
+            Err("missing explicit agent selection")
+        };
+    };
+    if selector
+        .explicit_path()
+        .is_some_and(|explicit| Path::new(explicit) != path)
+    {
+        return Err("agent selection does not match explicit grant");
+    }
+    let selected = path
+        .to_str()
+        .ok_or("invalid agent selection")?
+        .parse::<cdenv_core::credentials::SshAgentSelector>()
+        .map_err(|_| "invalid agent selection")?;
+    if selected.explicit_path().is_none() {
+        return Err("unresolved agent selection");
+    }
+    SelectedHostSshAgent::resolve_for_mutation(&selected, &ProcessHostSshAgentEnvironment)
+        .map(HostSshAgentAdapter::new)
+        .map(Some)
+        .map_err(|_| "invalid agent selection")
 }
 
 impl CredentialBrokerBackend for LiveCredentialBackend {
@@ -808,9 +867,14 @@ impl CredentialBrokerBackend for LiveCredentialBackend {
 
     fn connect_agent(&self) -> BrokerBackendFuture<'_, std::pin::Pin<Box<dyn BrokerByteStream>>> {
         Box::pin(async move {
-            self.ssh_agent
-                .as_ref()
-                .ok_or(BrokerBackendError)?
+            let agent = self
+                .policy
+                .read()
+                .map_err(|_| BrokerBackendError)?
+                .ssh_agent
+                .clone()
+                .ok_or(BrokerBackendError)?;
+            agent
                 .connect()
                 .await
                 .map(|stream| Box::pin(stream) as std::pin::Pin<Box<dyn BrokerByteStream>>)
@@ -1003,11 +1067,17 @@ async fn handle_control(
                 None,
             ),
             ControlCommand::Down => (true, true, None, None),
-            ControlCommand::Reconcile { revision, grants } => match credential_backend {
-                Some(backend) => match backend.reconcile(revision, grants) {
-                    Ok(acknowledged) => (true, false, Some(acknowledged), None),
-                    Err(reason) => (false, false, None, Some(reason.to_owned())),
-                },
+            ControlCommand::Reconcile {
+                revision,
+                grants,
+                selected_ssh_agent,
+            } => match credential_backend {
+                Some(backend) => {
+                    match backend.reconcile(revision, grants, selected_ssh_agent.as_deref()) {
+                        Ok(acknowledged) => (true, false, Some(acknowledged), None),
+                        Err(reason) => (false, false, None, Some(reason.to_owned())),
+                    }
+                }
                 None if grants.is_empty() => (true, false, Some(revision), None),
                 None => (
                     false,
@@ -1089,6 +1159,13 @@ pub async fn reconcile_supervisor_credentials(
     let command = ControlCommand::Reconcile {
         revision,
         grants: grants.clone(),
+        // Resolve in the explicit host invocation, never in the long-lived
+        // supervisor's stale launch environment or from container traffic.
+        selected_ssh_agent: grants.ssh_selector().and_then(|selector| {
+            SelectedHostSshAgent::resolve_for_mutation(selector, &ProcessHostSshAgentEnvironment)
+                .ok()
+                .map(|selected| selected.path().to_path_buf())
+        }),
     };
     let response = control_exchange(socket, token, claim, command, "credential reconcile").await?;
     if response.credential_revision != Some(revision) {
@@ -1627,6 +1704,75 @@ mod tests {
     fn target_validation_accepts_container_and_compose_names() {
         assert!(validate_target("localhost", 3000).is_ok());
         assert!(validate_target("database.internal", 5432).is_ok());
+    }
+
+    #[tokio::test]
+    async fn ssh_selection_reconcile_replaces_endpoint_at_the_same_revision_and_fails_closed() {
+        let parent = fs::canonicalize("/tmp").expect("temporary root");
+        let temporary = tempfile::tempdir_in(parent).expect("temporary");
+        let manifest = manifest(temporary.path());
+        let first = temporary.path().join("first.sock");
+        let second = temporary.path().join("second.sock");
+        let first_listener = tokio::net::UnixListener::bind(&first).expect("first agent");
+        let second_listener = tokio::net::UnixListener::bind(&second).expect("second agent");
+        let mut grants = CredentialGrants::default();
+        grants.enable_ssh_agent(first.to_str().expect("path").parse().expect("selector"));
+        let lease = SupervisorCredentialLease {
+            workspace_receipt: "0123456789abcdef0123456789abcdef".to_owned(),
+            user: CredentialUserIdentity {
+                uid: 1000,
+                gid: 1000,
+            },
+            grant_revision: 1,
+            grants: grants.clone(),
+            runtime_directory: "/tmp/credential-runtime".to_owned(),
+        };
+        let identity = credential_identity(&manifest, &lease).expect("lease identity");
+        let backend = LiveCredentialBackend::new(identity, grants.clone(), &manifest);
+        let initial_epoch = backend.authorization_epoch(BrokerFrameKind::AgentOpen);
+        let _first_connection = backend.connect_agent().await.expect("initial selection");
+        first_listener
+            .accept()
+            .await
+            .expect("first endpoint selected");
+        // Explicit selectors reject a different path supplied even by control.
+        assert!(backend.reconcile(2, grants.clone(), Some(&second)).is_err());
+        assert_eq!(backend.revision(), Some(1));
+        assert_eq!(
+            backend.authorization_epoch(BrokerFrameKind::AgentOpen),
+            initial_epoch
+        );
+
+        grants.enable_ssh_agent(cdenv_core::credentials::SshAgentSelector::automatic());
+        backend
+            .reconcile(2, grants.clone(), Some(&first))
+            .expect("auto selection");
+        let epoch = backend.authorization_epoch(BrokerFrameKind::AgentOpen);
+        backend
+            .reconcile(2, grants.clone(), Some(&second))
+            .expect("refresh auto at same revision");
+        assert!(backend.authorization_epoch(BrokerFrameKind::AgentOpen) > epoch);
+        let _second_connection = backend.connect_agent().await.expect("refreshed selection");
+        second_listener
+            .accept()
+            .await
+            .expect("second endpoint selected");
+        assert!(backend.reconcile(1, grants.clone(), Some(&first)).is_err());
+        // Absent auto selection removes the previous adapter; it cannot reuse a
+        // stale environment or fall back to the previously working socket.
+        backend
+            .reconcile(2, grants.clone(), None)
+            .expect("absent automatic socket");
+        assert!(backend.connect_agent().await.is_err());
+        backend
+            .reconcile(2, grants, Some(&second))
+            .expect("automatic recovery");
+        let _recovered = backend.connect_agent().await.expect("recovered selection");
+        second_listener.accept().await.expect("recovered endpoint");
+        backend
+            .reconcile(3, CredentialGrants::default(), None)
+            .expect("disable");
+        assert!(backend.connect_agent().await.is_err());
     }
 
     #[tokio::test]

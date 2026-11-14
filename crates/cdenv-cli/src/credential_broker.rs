@@ -185,6 +185,7 @@ where
                             send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?;
                             continue;
                         };
+                        let epoch = backend.authorization_epoch(BrokerFrameKind::AgentOpen);
                         let connection = tokio::time::timeout(BROKER_OPERATION_TIMEOUT, backend.connect_agent()).await;
                         let Ok(Ok(connection)) = connection else { remember_rejected_agent(&mut rejected_agents, frame.stream_id)?; send_error(&outgoing_tx, &byte_admission, frame.stream_id).await?; continue; };
                         let (tx, rx) = mpsc::channel(8);
@@ -195,7 +196,7 @@ where
                             let _permit = permit;
                             let close_outgoing = outgoing.clone();
                             let close_bytes = bytes.clone();
-                            let result = relay_agent(connection, stream_id, rx, outgoing, bytes, backend, identity).await;
+                            let result = relay_agent(connection, stream_id, rx, outgoing, bytes, backend, (identity, epoch)).await;
                             if result.is_err()
                                 && let Ok(frame) = BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())
                             {
@@ -279,14 +280,15 @@ async fn relay_agent<B: CredentialBrokerBackend>(
     outgoing: mpsc::Sender<QueuedFrame>,
     bytes: Arc<Semaphore>,
     backend: Arc<B>,
-    identity: CredentialLeaseIdentity,
+    (identity, epoch): (CredentialLeaseIdentity, u64),
 ) -> Result<(), HostCredentialBrokerError> {
     let (mut agent_read, mut agent_write) = tokio::io::split(connection);
     loop {
         let frame = tokio::select! {
             frame = incoming.recv() => frame.ok_or(BrokerProtocolError::UnknownStream)?,
             () = tokio::time::sleep(std::time::Duration::from_millis(100)) => {
-                if backend.is_authorized(&identity, BrokerFrameKind::AgentOpen) { continue; }
+                if backend.is_authorized(&identity, BrokerFrameKind::AgentOpen)
+                    && backend.authorization_epoch(BrokerFrameKind::AgentOpen) == epoch { continue; }
                 send_queued(&outgoing, &bytes, BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())?).await?;
                 return Ok(());
             }
@@ -294,7 +296,17 @@ async fn relay_agent<B: CredentialBrokerBackend>(
         match frame.kind {
             BrokerFrameKind::StreamData => {
                 validate_agent_packet(frame.payload())?;
-                let epoch = backend.authorization_epoch(BrokerFrameKind::AgentOpen);
+                if backend.authorization_epoch(BrokerFrameKind::AgentOpen) != epoch
+                    || !backend.is_authorized(&identity, BrokerFrameKind::AgentOpen)
+                {
+                    send_queued(
+                        &outgoing,
+                        &bytes,
+                        BrokerFrame::new(BrokerFrameKind::StreamClose, stream_id, Vec::new())?,
+                    )
+                    .await?;
+                    return Ok(());
+                }
                 tokio::time::timeout(
                     BROKER_OPERATION_TIMEOUT,
                     agent_write.write_all(frame.payload()),
@@ -638,6 +650,73 @@ mod tests {
                 BrokerProtocolError::UnknownStream
             ))
         ));
+    }
+
+    struct AgentEpochBackend(std::sync::atomic::AtomicU64);
+
+    impl CredentialBrokerBackend for AgentEpochBackend {
+        fn is_authorized(&self, _: &CredentialLeaseIdentity, _: BrokerFrameKind) -> bool {
+            true
+        }
+        fn authorization_epoch(&self, _: BrokerFrameKind) -> u64 {
+            self.0.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn credential_lookup(&self, _: Vec<u8>) -> BrokerBackendFuture<'_, Vec<u8>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+        fn connect_agent(&self) -> BrokerBackendFuture<'_, Pin<Box<dyn BrokerByteStream>>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+        fn identity_metadata(&self) -> BrokerBackendFuture<'_, Vec<u8>> {
+            Box::pin(async { Err(BrokerBackendError) })
+        }
+    }
+
+    #[tokio::test]
+    async fn selection_refresh_closes_idle_and_pending_old_agent_streams() {
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            for pending in [false, true] {
+                let backend = Arc::new(AgentEpochBackend(std::sync::atomic::AtomicU64::new(1)));
+                let (stream, mut agent) = tokio::io::duplex(64);
+                let (input, incoming) = mpsc::channel(8);
+                let (outgoing, mut output) = mpsc::channel(8);
+                let bytes = Arc::new(Semaphore::new(1024));
+                let task = tokio::spawn(relay_agent(
+                    Box::pin(stream),
+                    7,
+                    incoming,
+                    outgoing,
+                    bytes,
+                    backend.clone(),
+                    (identity(), 1),
+                ));
+                if pending {
+                    input
+                        .send(
+                            BrokerFrame::new(BrokerFrameKind::StreamData, 7, vec![0, 0, 0, 1, 11])
+                                .expect("request"),
+                        )
+                        .await
+                        .expect("send request");
+                    let mut request = [0; 5];
+                    agent
+                        .read_exact(&mut request)
+                        .await
+                        .expect("old agent received request");
+                }
+                backend.0.store(2, std::sync::atomic::Ordering::SeqCst);
+                let closed = output.recv().await.expect("old stream closed");
+                assert_eq!(closed.frame.kind, BrokerFrameKind::StreamClose);
+                assert!(closed.frame.payload().is_empty());
+                task.await.expect("relay task").expect("clean cancellation");
+                assert!(
+                    output.recv().await.is_none(),
+                    "old agent must not release a response"
+                );
+            }
+        })
+        .await
+        .expect("selection refresh cancellation deadline");
     }
 
     struct PausedBackend {

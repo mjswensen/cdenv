@@ -33,7 +33,9 @@ suite drives proper-CA authenticated smart-HTTP fetch/push, stale-token recovery
 two path/account credentials, a private submodule, native-helper isolation, token
 rotation and origin denial, plus staged enable/create, first and detached hooks,
 PTY/non-PTY real forwarded-agent signing, same-path agent restart,
-unavailable-backend recovery, concurrent SSH children, down/up/rebuild,
+unavailable-backend recovery, explicit and automatic agent selection and refresh,
+container-supplied socket isolation, simulated confirmation allow/reject/bounded
+timeout with recovery and concurrent-client preservation, concurrent SSH children, down/up/rebuild,
 unconfirmed lifecycle launches, controlled runner-crash recovery with unrelated
 process preservation, generation-owned one-time progress and pending retries
 without prefix replay, controlled supervisor-loss recovery, and live
@@ -49,3 +51,10 @@ parsing is offline.
 `fixtures/devcontainer-v1-coverage.json` maps every Section 17.5 support-matrix
 row and security promise to release-gate coverage. The editor-server simulator
 is a repository-owned protocol fixture rather than an editor dependency.
+
+The confirmation fixture is a host-owned protocol proxy over a real OpenSSH
+agent. It simulates allow, reject, and pending decisions; allowed signatures are
+cryptographically verified. The packaged test uses the production 30-second
+operation deadline and an outer process deadline, and exercises another signing
+client plus an unrelated SSH session while confirmation is pending. It does not
+establish platform UI or hardware-key confirmation behavior (issue 91).

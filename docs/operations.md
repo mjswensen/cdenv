@@ -394,7 +394,13 @@ uses a controlled hostname-valid TLS certificate signed by its private test CA
 for real smart-HTTP fetch/push, stale-token recovery, two path/account grants, a
 private submodule, native-helper isolation, token rotation, and denied-origin
 checks. It also uses a real host `ssh-agent` for an identity-backed signing
-operation, same-path socket restart and unavailable-backend recovery, and through
+operation, same-path socket restart and unavailable-backend recovery. Named
+packaged tests also cover explicit/automatic selection refresh, container socket
+isolation, and simulated confirmation allow/reject/timeout with recovery and
+unrelated-client preservation. Confirmation decisions come from a controlled
+protocol proxy; real platform confirmation observations remain separate. These
+scenarios require a passing native credential-suite run as recorded in the
+traceability fixture. The suite exercises credentials through
 create, foreground/detached hooks, postAttach, PTY/non-PTY and concurrent SSH
 children, down/up, rebuild, controlled
 supervisor-loss recovery, and live revocation that preserves an old SSH session

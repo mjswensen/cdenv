@@ -161,6 +161,11 @@ impl HostSshAgentAdapter {
         }
     }
 
+    /// Borrows the exact host-selected endpoint for reconciliation comparison.
+    pub(crate) fn selected_path(&self) -> &Path {
+        self.selected.path()
+    }
+
     /// Returns the latest value-free connection/probe fact.
     #[must_use]
     pub fn health(&self) -> HostSshAgentHealth {

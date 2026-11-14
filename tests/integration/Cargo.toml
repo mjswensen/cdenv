@@ -63,3 +63,8 @@ workspace = true
 name = "credential-ssh-server"
 path = "src/bin/credential-ssh-server.rs"
 required-features = ["credentials"]
+
+[[bin]]
+name = "credential-confirmation-agent"
+path = "src/bin/credential-confirmation-agent.rs"
+required-features = ["credentials"]

@@ -10,7 +10,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SECRET_MARKER: &str = "credential-marker-must-not-persist";
 const AGENT_PUBLIC_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
-const AGENT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn unique_name(prefix: &str) -> String {
     let nanos = SystemTime::now()
@@ -1593,26 +1592,9 @@ impl AgentWorkflow {
         );
     }
 
-    fn wait_until_available(&self, automatic: &Path) {
-        let deadline = Instant::now() + AGENT_RECOVERY_TIMEOUT;
-        let mut last = None;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                break;
-            }
-            let output = self
-                .ssh(":", automatic)
-                .finish(remaining.min(AGENT_PUBLIC_COMMAND_TIMEOUT));
-            if output.status.success() {
-                require_success(&output, "credential bridge recovery");
-                return;
-            }
-            last = Some(output);
-            std::thread::sleep(Duration::from_millis(100));
-        }
+    fn recover(&self, automatic: &Path) {
         require_success(
-            last.as_ref().expect("at least one recovery attempt"),
+            &self.invoke(&["up", &self.workspace], automatic),
             "credential bridge recovery",
         );
     }
@@ -1799,7 +1781,7 @@ fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_c
             .is_none(),
         "timeout stopped an unrelated client"
     );
-    workflow.wait_until_available(&agent.socket);
+    workflow.recover(&agent.socket);
     require_success(
         &workflow
             .ssh(sign, &agent.socket)

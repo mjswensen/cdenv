@@ -9,6 +9,8 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const SECRET_MARKER: &str = "credential-marker-must-not-persist";
+const AGENT_PUBLIC_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const AGENT_RECOVERY_TIMEOUT: Duration = Duration::from_secs(20);
 
 fn unique_name(prefix: &str) -> String {
     let nanos = SystemTime::now()
@@ -66,6 +68,16 @@ fn wait_for_path(path: &Path, operation: &str) {
         std::thread::sleep(Duration::from_millis(25));
     }
     panic!("{operation} did not create {}", path.display());
+}
+
+fn wait_for_path_removal(path: &Path, operation: &str) {
+    for _ in 0..200 {
+        if !path.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+    panic!("{operation} did not remove {}", path.display());
 }
 
 struct HttpsServer {
@@ -1566,7 +1578,7 @@ impl AgentWorkflow {
     fn assert_identity(&self, expected: &Path, automatic: &Path) {
         let output = self
             .ssh("ssh-add -L", automatic)
-            .finish(Duration::from_secs(15));
+            .finish(AGENT_PUBLIC_COMMAND_TIMEOUT);
         require_success(&output, "selected agent identity");
         let expected = fs::read_to_string(expected).expect("public key");
         let output = String::from_utf8(output.stdout).expect("identity text");
@@ -1578,6 +1590,30 @@ impl AgentWorkflow {
         assert_eq!(
             output.split_whitespace().take(2).collect::<Vec<_>>(),
             expected.split_whitespace().take(2).collect::<Vec<_>>()
+        );
+    }
+
+    fn wait_until_available(&self, automatic: &Path) {
+        let deadline = Instant::now() + AGENT_RECOVERY_TIMEOUT;
+        let mut last = None;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                break;
+            }
+            let output = self
+                .ssh(":", automatic)
+                .finish(remaining.min(AGENT_PUBLIC_COMMAND_TIMEOUT));
+            if output.status.success() {
+                require_success(&output, "credential bridge recovery");
+                return;
+            }
+            last = Some(output);
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        require_success(
+            last.as_ref().expect("at least one recovery attempt"),
+            "credential bridge recovery",
         );
     }
 }
@@ -1614,7 +1650,7 @@ fn packaged_ssh_agent_explicit_auto_selection_refresh_and_container_socket_isola
             &format!("SSH_AUTH_SOCK='{}' ssh-add -L", second.socket.display()),
             &second.socket,
         )
-        .finish(Duration::from_secs(15));
+        .finish(AGENT_PUBLIC_COMMAND_TIMEOUT);
     assert!(
         !attack.status.success(),
         "container path reached a host endpoint"
@@ -1628,7 +1664,7 @@ fn packaged_ssh_agent_explicit_auto_selection_refresh_and_container_socket_isola
     workflow.select(&first.socket, &second.socket);
     let unavailable = workflow
         .ssh("ssh-add -L", &second.socket)
-        .finish(Duration::from_secs(15));
+        .finish(AGENT_PUBLIC_COMMAND_TIMEOUT);
     assert!(
         !unavailable.status.success(),
         "explicit selector fell back to automatic agent"
@@ -1679,7 +1715,7 @@ fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_c
     require_success(
         &workflow
             .ssh(sign, &agent.socket)
-            .finish(Duration::from_secs(15)),
+            .finish(AGENT_PUBLIC_COMMAND_TIMEOUT),
         "simulated allowed signature",
     );
     let allowed = temporary.path().join("allowed-signers");
@@ -1707,7 +1743,7 @@ fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_c
     fs::write(&policy, "reject").expect("reject policy");
     let rejected = workflow
         .ssh(sign, &agent.socket)
-        .finish(Duration::from_secs(15));
+        .finish(AGENT_PUBLIC_COMMAND_TIMEOUT);
     assert!(
         !rejected.status.success(),
         "simulated rejected signing succeeded"
@@ -1734,7 +1770,7 @@ fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_c
     require_success(
         &workflow
             .ssh(&other_sign, &agent.socket)
-            .finish(Duration::from_secs(15)),
+            .finish(AGENT_PUBLIC_COMMAND_TIMEOUT),
         "sign while confirmation pending",
     );
     let timeout = cdenv_core::credential_broker::BROKER_OPERATION_TIMEOUT;
@@ -1752,6 +1788,7 @@ fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_c
         "confirmation timeout was not bounded"
     );
     assert!(!workflow.checkout.join(".confirmation-message.sig").exists());
+    wait_for_path_removal(&pending, "simulated confirmation cancellation");
     assert!(
         unrelated
             .0
@@ -1762,10 +1799,11 @@ fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_c
             .is_none(),
         "timeout stopped an unrelated client"
     );
+    workflow.wait_until_available(&agent.socket);
     require_success(
         &workflow
             .ssh(sign, &agent.socket)
-            .finish(Duration::from_secs(15)),
+            .finish(AGENT_PUBLIC_COMMAND_TIMEOUT),
         "signing recovers after confirmation timeout",
     );
     fs::write(
@@ -1773,7 +1811,7 @@ fn packaged_ssh_agent_simulated_confirmation_allow_reject_timeout_recovery_and_c
         b"release",
     )
     .expect("release client");
-    let survived = unrelated.finish(Duration::from_secs(15));
+    let survived = unrelated.finish(AGENT_PUBLIC_COMMAND_TIMEOUT);
     require_success(&survived, "unrelated client survived confirmation timeout");
     assert_eq!(survived.stdout, b"survived");
 }

@@ -51,6 +51,7 @@ async fn serve(
                 // other client or forwarding a signature after the broker timeout.
                 let mut byte = [0];
                 let _ = client.read(&mut byte).await?;
+                std::fs::remove_file(pending)?;
                 return Ok(());
             }
         }
@@ -122,8 +123,11 @@ mod tests {
 
         let (mut client, peer) = UnixStream::pair().expect("other client");
         let other_policy = policy.clone();
+        let other_pending = pending.clone();
         let other =
-            tokio::spawn(async move { serve(peer, &upstream, &other_policy, &pending).await });
+            tokio::spawn(
+                async move { serve(peer, &upstream, &other_policy, &other_pending).await },
+            );
         std::fs::write(&policy, "reject").expect("policy");
         let reject = vec![13];
         respond(&mut client, &reject).await.expect("reject sign");
@@ -142,6 +146,10 @@ mod tests {
         task.await
             .expect("cancelled task")
             .expect("cancelled stream");
+        assert!(
+            !pending.exists(),
+            "pending marker records live requests only"
+        );
         drop(client);
         let _ = other.await;
         server.abort();

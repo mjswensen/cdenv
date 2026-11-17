@@ -398,9 +398,15 @@ operation, same-path socket restart and unavailable-backend recovery. Named
 packaged tests also cover explicit/automatic selection refresh, container socket
 isolation, and simulated confirmation allow/reject/timeout with recovery and
 unrelated-client preservation. Confirmation decisions come from a controlled
-protocol proxy; real platform confirmation observations remain separate. These
-scenarios require a passing native credential-suite run as recorded in the
-traceability fixture. The suite exercises credentials through
+protocol proxy; real platform confirmation observations remain separate. The
+full native matrix passed these scenarios for commit
+[`91e2a4e`](https://github.com/mjswensen/cdenv/commit/91e2a4e0e2515568bee11cf609afbda66bf533c1)
+in [CI run 44108221658](https://github.com/mjswensen/cdenv/actions/runs/44108221658)
+on 2026-11-17. All four Linux x86_64/arm64 and minimum/pinned Docker Engine
+combinations discovered, executed, and passed all ten credential tests in both
+ordinary and coverage-instrumented executions, with no failures, ignored tests,
+or filtered tests. The traceability fixture records the retained artifacts. The
+suite exercises credentials through
 create, foreground/detached hooks, postAttach, PTY/non-PTY and concurrent SSH
 children, down/up, rebuild, controlled
 supervisor-loss recovery, and live revocation that preserves an old SSH session
